@@ -1,0 +1,34 @@
+import { colorForName } from '../utils'
+
+interface AgentAvatarProps {
+  name: string
+  icon?: string
+  color?: string
+  size?: 'xs' | 'sm' | 'md'
+  showOnlineDot?: boolean
+}
+
+/** Returns true if the string starts with an emoji (non-ASCII grapheme) */
+function isEmoji(str: string): boolean {
+  if (!str) return false
+  return /^[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u.test(str)
+}
+
+export function AgentAvatar({ name, icon, color, size = 'md', showOnlineDot = false }: AgentAvatarProps) {
+  const bgColor = color || colorForName(name)
+  const hasEmoji = icon && isEmoji(icon)
+
+  return (
+    <div
+      className={`avatar ${size !== 'md' ? size : ''} ${hasEmoji ? 'avatar-emoji' : ''}`}
+      style={{ background: bgColor }}
+    >
+      {hasEmoji ? (
+        <span className="avatar-emoji-char">{icon}</span>
+      ) : (
+        name[0].toUpperCase()
+      )}
+      {showOnlineDot && <span className="online-dot" />}
+    </div>
+  )
+}
