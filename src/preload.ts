@@ -100,4 +100,5 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('wiki:write', params),
   wikiDelete: (params: { workspaceId: string; name: string }) =>
     ipcRenderer.invoke('wiki:delete', params),
+  stopAllAgents: () => ipcRenderer.invoke('agent:stopAll'),
 })

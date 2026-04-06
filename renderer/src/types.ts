@@ -13,6 +13,12 @@ export interface PendingHandoff {
   approved?: boolean         // undefined = waiting, true = approved (chain kicked off), false = dismissed
 }
 
+export interface PermissionRequest {
+  permissions: Array<'fileWrite' | 'bash' | 'network'>  // which permissions the agent needs
+  granted?: boolean          // undefined = waiting, true = granted, false = dismissed
+  agentPath?: string         // path to the .octo file to update
+}
+
 export interface Message {
   id: string
   agentName: string | 'user'
@@ -23,6 +29,7 @@ export interface Message {
   activity?: string
   attachments?: Attachment[]
   handoff?: PendingHandoff    // set when this agent's message proposes calling others
+  permissionRequest?: PermissionRequest  // set when agent needs permissions to fulfill user's request
 }
 
 export interface ActivityLogEntry {

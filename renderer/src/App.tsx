@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { ActivityLogEntry, Attachment, Message } from './types'
+import type { ActivityLogEntry, Attachment, Message, PermissionRequest } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { WikiPanel } from './components/WikiPanel'
@@ -7,6 +7,8 @@ import { RightSidebar } from './components/RightSidebar'
 import { ActivityPanel } from './components/ActivityPanel'
 import { CreateAgentModal } from './components/modals/CreateAgentModal'
 import { CreateWorkspaceModal } from './components/modals/CreateWorkspaceModal'
+import { WelcomeModal } from './components/modals/WelcomeModal'
+import { OpenFolderModal } from './components/modals/OpenFolderModal'
 import { EditAgentModal } from './components/modals/EditAgentModal'
 
 export function App() {
@@ -23,6 +25,7 @@ export function App() {
   const [input, setInput] = useState('')
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
+  const [showWelcome, setShowWelcome] = useState(false)
   const [editingAgent, setEditingAgent] = useState<OctoFile | null>(null)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
@@ -52,11 +55,14 @@ export function App() {
 
   // Load state on mount
   useEffect(() => {
-    window.api.loadState().then((s) => {
-      setState(s)
+    window.api.loadState().then(async (s) => {
       if (s.workspaces.length === 0) {
-        setShowCreateWorkspace(true)
+        // 첫 실행: "Personal" 스페이스 자동 생성 후 웰컴 모달
+        const fresh = await window.api.createWorkspace('Personal')
+        setState(fresh)
+        setShowWelcome(true)
       } else {
+        setState(s)
         const active = s.workspaces.find((w) => w.id === s.activeWorkspaceId)
         if (active && active.folders.length > 0) setActiveFolder(active.folders[0])
       }
@@ -75,28 +81,167 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.activeWorkspaceId])
 
+  // Track folders that have already bootstrapped their default agent so we
+  // don't re-trigger during the same session (e.g. when re-selecting a folder).
+  const bootstrappedFoldersRef = useRef<Set<string>>(new Set())
+
   // Load octos + history when folder changes (paged — last PAGE_SIZE messages)
   useEffect(() => {
     if (!activeFolder) {
       setOctos([])
       return
     }
-    window.api.listOctos(activeFolder).then(setOctos)
-    window.api.loadHistoryPaged({ folderPath: activeFolder, limit: PAGE_SIZE }).then(({ messages: history, hasMore }) => {
-      setHasMoreMessages((prev) => ({ ...prev, [activeFolder]: hasMore }))
+
+    const folder = activeFolder // capture for async closures
+
+    const bootstrap = async () => {
+      const existingOctos = await window.api.listOctos(folder)
+
+      // Auto-create assistant.octo if the folder has no agents
+      if (existingOctos.length === 0 && !bootstrappedFoldersRef.current.has(folder)) {
+        bootstrappedFoldersRef.current.add(folder)
+        const createResult = await window.api.createOcto({
+          folderPath: folder,
+          name: 'assistant',
+          role: 'General assistant. Scans the project, answers questions, and helps with tasks.',
+          icon: '🐙',
+        })
+        if (createResult.ok) {
+          // Re-list to pick up the new agent
+          const refreshed = await window.api.listOctos(folder)
+          setOctos(refreshed)
+
+          // Load history (should be empty for a fresh folder)
+          const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
+          setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
+          setMessages((prev) => ({ ...prev, [folder]: history }))
+
+          // Auto-send first message from assistant
+          const assistant = refreshed.find((o) => o.name === 'assistant')
+          if (assistant && history.length === 0) {
+            const ts = Date.now()
+            const pendingId = `p-${ts}-assistant-first`
+            const runId = `run-${ts}-assistant-first-${Math.random().toString(36).slice(2, 8)}`
+            runMapRef.current.set(runId, { folderPath: folder, messageId: pendingId })
+
+            setMessages((prev) => ({
+              ...prev,
+              [folder]: [
+                ...(prev[folder] || []),
+                {
+                  id: pendingId,
+                  agentName: 'assistant',
+                  text: '',
+                  ts,
+                  pending: true,
+                  activity: 'Scanning project…',
+                },
+              ],
+            }))
+
+            const firstPrompt = [
+              'You have just been added to this project folder. This is your first interaction — there is no user message yet.',
+              'Scan the project folder to understand what it contains, then provide a welcome message.',
+              '',
+              'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:',
+              '',
+              'If the folder has code/files:',
+              '```',
+              '👋 Hi! I\'m your AI assistant for this project.',
+              '',
+              '**Here\'s what I found:**',
+              '- 📁 Project: `<project-name>` (<framework> + <language>)',
+              '- 📦 Dependencies: <top 3-5 notable deps>',
+              '- 📄 <N> files scanned',
+              '',
+              '**Try asking me:**',
+              '- "Explain the project structure"',
+              '- "Find where <relevant feature> is handled"',
+              '- "Help me fix a bug in <relevant area>"',
+              '',
+              '💡 **Tips:**',
+              '- Need more help? **Hire AI teammates** — specialists like designers, planners, or reviewers!',
+              '- Each agent\'s capabilities (file write, shell, network) can be configured in their settings.',
+              '- You\'ll see a real-time **activity log** of everything agents do in the sidebar.',
+              '```',
+              '',
+              'If the folder is empty:',
+              '```',
+              '👋 Hi! I\'m your AI assistant.',
+              '',
+              'This folder is empty — no worries! I can help you:',
+              '- 🛠 Scaffold a new project',
+              '- 📝 Create config files',
+              '- 💡 Brainstorm ideas',
+              '- 🤖 Hire more AI teammates to collaborate with',
+              '',
+              '🔐 **About permissions:**',
+              '- I can read files by default, but writing/shell/network need to be **enabled in agent settings**.',
+              '- When an agent suggests involving another teammate, you\'ll see **Approve / Dismiss** buttons to stay in control.',
+              '- Check the **activity log** in the sidebar to see everything agents are doing in real time.',
+              '',
+              'Just type a message to get started!',
+              '```',
+              '',
+              'IMPORTANT: Output ONLY the message content (not the ``` fences). Keep the emoji, bold, and bullet formatting exactly as shown.',
+              'Fill in the placeholders with actual project info. Tailor the "Try asking me" suggestions to the specific project.',
+              'Keep it short and friendly (under 150 words). Do not ask questions.',
+            ].join('\n')
+
+            const res = await window.api.sendMessage({
+              folderPath: folder,
+              octoPath: assistant.path,
+              prompt: firstPrompt,
+              userTs: ts,
+              runId,
+              peers: [],
+            })
+
+            runMapRef.current.delete(runId)
+
+            setMessages((prev) => {
+              const list = prev[folder] || []
+              const rawText = res.ok ? res.output : `Error: ${(res as any).error}`
+              const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name) : undefined
+              return {
+                ...prev,
+                [folder]: list.map((m) =>
+                  m.id === pendingId
+                    ? {
+                        ...m,
+                        text: permReq ? stripPermissionTag(rawText) : rawText,
+                        pending: false,
+                        error: !res.ok,
+                        activity: undefined,
+                        permissionRequest: permReq,
+                      }
+                    : m
+                ),
+              }
+            })
+          }
+          return // already loaded history above
+        }
+      }
+
+      setOctos(existingOctos)
+
+      // Load history normally
+      const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
+      setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
       setMessages((prev) => {
-        // Preserve in-progress (pending) messages that haven't been saved to disk yet
-        const existing = prev[activeFolder] || []
+        const existing = prev[folder] || []
         const pendingMessages = existing.filter((m) => m.pending)
         if (pendingMessages.length === 0) {
-          return { ...prev, [activeFolder]: history }
+          return { ...prev, [folder]: history }
         }
-        // Merge: disk history + any pending messages not already in history
         const historyIds = new Set(history.map((m) => m.id))
         const missingPending = pendingMessages.filter((m) => !historyIds.has(m.id))
-        return { ...prev, [activeFolder]: [...history, ...missingPending] }
+        return { ...prev, [folder]: [...history, ...missingPending] }
       })
-    })
+    }
+
+    bootstrap()
   }, [activeFolder])
 
   // Load older messages (called when user scrolls to top)
@@ -223,6 +368,32 @@ export function App() {
     while ((m = re.exec(text)) !== null) found.push(m[1])
     return found
   }
+
+  /** Parse <!--NEEDS_PERMISSIONS: fileWrite, bash, network--> from agent output */
+  const parsePermissionRequest = (
+    text: string,
+    agentName: string
+  ): PermissionRequest | undefined => {
+    const re = /<!--NEEDS_PERMISSIONS:\s*([\w\s,]+)-->/
+    const match = re.exec(text)
+    if (!match) return undefined
+    const validKeys = ['fileWrite', 'bash', 'network'] as const
+    const perms = match[1]
+      .split(',')
+      .map((s) => s.trim())
+      .filter((s): s is 'fileWrite' | 'bash' | 'network' =>
+        validKeys.includes(s as any)
+      )
+    if (perms.length === 0) return undefined
+    const agent = octos.find(
+      (o) => o.name.toLowerCase() === agentName.toLowerCase()
+    )
+    return { permissions: perms, agentPath: agent?.path }
+  }
+
+  /** Strip the permission tag from displayed text */
+  const stripPermissionTag = (text: string): string =>
+    text.replace(/<!--NEEDS_PERMISSIONS:\s*[\w\s,]+-->/g, '').trim()
 
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
@@ -443,6 +614,9 @@ export function App() {
     }
     release()
 
+    const rawText = res.ok ? res.output : `Error: ${res.error}`
+    const permReq = res.ok ? parsePermissionRequest(rawText, target.name) : undefined
+
     setMessages((prev) => {
       const list = prev[folderPathAtStart] || []
       return {
@@ -451,10 +625,11 @@ export function App() {
           m.id === pendingId
             ? {
                 ...m,
-                text: res.ok ? res.output : `Error: ${res.error}`,
+                text: permReq ? stripPermissionTag(rawText) : rawText,
                 pending: false,
                 error: !res.ok,
                 activity: undefined,
+                permissionRequest: permReq,
               }
             : m
         ),
@@ -587,6 +762,74 @@ export function App() {
     })
   }
 
+  const grantPermission = async (messageId: string) => {
+    if (!activeFolder) return
+    const folderMsgs = messages[activeFolder] || []
+    const msg = folderMsgs.find((m) => m.id === messageId)
+    if (!msg?.permissionRequest?.agentPath) return
+
+    const { permissions, agentPath } = msg.permissionRequest
+    const permUpdate: OctoPermissions = {}
+    for (const p of permissions) {
+      permUpdate[p] = true
+    }
+    const res = await window.api.updateOcto({ octoPath: agentPath, permissions: permUpdate })
+    if (!res.ok) return
+
+    // Mark as granted in UI
+    setMessages((prev) => {
+      const list = prev[activeFolder] || []
+      return {
+        ...prev,
+        [activeFolder]: list.map((m) =>
+          m.id === messageId && m.permissionRequest
+            ? { ...m, permissionRequest: { ...m.permissionRequest, granted: true } }
+            : m
+        ),
+      }
+    })
+    // Refresh octo list so future calls use updated permissions
+    const updatedOctos = await window.api.listOctos(activeFolder)
+    setOctos(updatedOctos)
+
+    // Auto re-invoke the agent after permission grant
+    // Find the agent that requested permissions
+    const agentName = msg.agentName
+    const targetOcto = updatedOctos.find(
+      (o) => o.name.toLowerCase() === agentName?.toLowerCase()
+    )
+    if (targetOcto) {
+      // Find the last user message before the permission request
+      const msgIndex = folderMsgs.findIndex((m) => m.id === messageId)
+      let lastUserMsg: Message | undefined
+      for (let i = msgIndex - 1; i >= 0; i--) {
+        if (folderMsgs[i].agentName === 'user') {
+          lastUserMsg = folderMsgs[i]
+          break
+        }
+      }
+      if (lastUserMsg) {
+        const retryPrompt = `(이전에 권한이 없어서 작업을 수행하지 못했습니다. 사용자가 권한을 승인했습니다. 이전 요청을 이어서 수행해주세요.)\n\n사용자의 원래 요청: ${lastUserMsg.text}`
+        invokeAgent(targetOcto, retryPrompt, lastUserMsg.ts, 0, new Set())
+      }
+    }
+  }
+
+  const dismissPermission = (messageId: string) => {
+    if (!activeFolder) return
+    setMessages((prev) => {
+      const list = prev[activeFolder] || []
+      return {
+        ...prev,
+        [activeFolder]: list.map((m) =>
+          m.id === messageId && m.permissionRequest
+            ? { ...m, permissionRequest: { ...m.permissionRequest, granted: false } }
+            : m
+        ),
+      }
+    })
+  }
+
   // ── Render ──
 
   return (
@@ -624,9 +867,24 @@ export function App() {
             send={send}
             onApproveHandoff={approveHandoff}
             onDismissHandoff={dismissHandoff}
+            onGrantPermission={grantPermission}
+            onDismissPermission={dismissPermission}
             hasMoreMessages={!!hasMoreMessages[activeFolder || '']}
             loadingMore={loadingMore}
             onLoadMore={loadMoreMessages}
+            hasPendingAgents={folderMessages.some((m) => m.pending)}
+            onStopAll={async () => {
+              await window.api.stopAllAgents()
+              // Clear pending state from all messages in current folder
+              if (activeFolder) {
+                setMessages((prev) => ({
+                  ...prev,
+                  [activeFolder]: (prev[activeFolder] || []).map((m) =>
+                    m.pending ? { ...m, pending: false, text: m.text || '*(stopped)*' } : m,
+                  ),
+                }))
+              }
+            }}
           />
         ) : centerTab === 'activity' ? (
           <ActivityPanel activityLog={folderActivity} octos={octos} />
@@ -680,6 +938,33 @@ export function App() {
             const fresh = await window.api.createWorkspace(name)
             setState(fresh)
             setShowCreateWorkspace(false)
+          }}
+        />
+      )}
+
+      {showWelcome && (
+        <WelcomeModal
+          onPickFolder={async () => {
+            if (!state.activeWorkspaceId) return
+            const p = await window.api.pickFolder(state.activeWorkspaceId)
+            if (!p) return // picker cancelled → keep modal open
+            const fresh = await window.api.loadState()
+            setState(fresh)
+            setActiveFolder(p)
+            setShowWelcome(false)
+          }}
+        />
+      )}
+
+      {!showWelcome && activeWorkspace && activeWorkspace.folders.length === 0 && (
+        <OpenFolderModal
+          onPickFolder={async () => {
+            if (!state.activeWorkspaceId) return
+            const p = await window.api.pickFolder(state.activeWorkspaceId)
+            if (!p) return // picker cancelled → keep modal open
+            const fresh = await window.api.loadState()
+            setState(fresh)
+            setActiveFolder(p)
           }}
         />
       )}

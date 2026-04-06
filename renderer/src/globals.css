@@ -124,6 +124,28 @@ button {
   display: flex;
   align-items: center;
   padding: 0 16px;
+  justify-content: space-between;
+}
+
+.header-add-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
+  -webkit-app-region: no-drag;
+}
+
+.header-add-btn:hover {
+  background: var(--bg-hover);
+  color: var(--text-secondary);
+  border-color: var(--text-muted);
 }
 
 .left-sidebar .sidebar-header {
@@ -253,6 +275,42 @@ button {
 .workspace-add:hover {
   background: var(--bg-hover);
   color: var(--text-heading);
+}
+
+/* ── Welcome mascot ── */
+.welcome-mascot {
+  display: flex;
+  justify-content: center;
+  margin-bottom: 12px;
+}
+
+.welcome-mascot-img {
+  width: 96px;
+  height: 96px;
+  object-fit: contain;
+  animation: mascot-bounce 2s ease-in-out infinite;
+  filter: drop-shadow(0 4px 12px rgba(164, 25, 38, 0.3));
+}
+
+/* 웰컴 모달 전용: 더 큰 캐릭터 */
+.welcome-mascot--lg {
+  margin-bottom: 16px;
+}
+.welcome-mascot-img--lg {
+  width: 120px;
+  height: 120px;
+  animation: mascot-bounce-lg 2s ease-in-out infinite;
+  filter: drop-shadow(0 6px 20px rgba(164, 25, 38, 0.35));
+}
+
+@keyframes mascot-bounce-lg {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes mascot-bounce {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
 }
 
 /* ── Modal shared ── */
@@ -403,19 +461,10 @@ button {
   color: #fff;
 }
 
-.section-label {
-  font-size: var(--font-xs);
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--text-muted);
-  padding: 14px 16px 6px;
-}
-
 /* ── Folders (Projects) ── */
 .project-list {
   flex: 1;
-  padding: 0 8px 8px;
+  padding: 4px 8px 8px;
   overflow-y: auto;
 }
 
@@ -456,23 +505,32 @@ button {
   flex: 1;
 }
 
-.add-btn {
-  width: 100%;
-  margin-top: 8px;
-  padding: 8px 10px;
-  background: transparent;
+.add-folder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: calc(100% - 4px);
+  margin: 2px auto 6px;
+  padding: 6px 0;
   border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  background: transparent;
   color: var(--text-muted);
-  border-radius: 6px;
-  cursor: pointer;
   font-size: var(--font-xs);
-  text-align: left;
-  transition: border-color var(--transition), color var(--transition);
+  cursor: pointer;
+  transition: background var(--transition), color var(--transition), border-color var(--transition);
 }
 
-.add-btn:hover {
-  border-color: var(--border-hover);
+.add-folder-btn:hover:not(:disabled) {
+  background: var(--bg-hover);
   color: var(--text-secondary);
+  border-color: var(--text-muted);
+}
+
+.add-folder-btn:disabled {
+  opacity: 0.3;
+  cursor: not-allowed;
 }
 
 /* ── Agents ── */
@@ -1061,6 +1119,102 @@ button {
   color: var(--text-muted);
 }
 
+.empty-logo {
+  width: 64px;
+  height: 64px;
+  object-fit: contain;
+  margin-bottom: 16px;
+  opacity: 0.8;
+}
+
+.empty-logo--bounce {
+  animation: mascot-bounce-sm 3s ease-in-out infinite;
+  filter: drop-shadow(0 3px 8px rgba(164, 25, 38, 0.2));
+}
+
+@keyframes mascot-bounce-sm {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.empty-hint {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+  margin-top: 4px;
+  opacity: 0.7;
+}
+
+.empty-cta {
+  margin-top: 20px;
+  padding: 10px 24px;
+  font-size: var(--font-base);
+}
+
+/* ── Welcome Modal ── */
+.welcome-modal {
+  text-align: center;
+  width: 420px;
+}
+
+.welcome-title {
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--text-heading);
+  margin-bottom: 8px;
+}
+
+.welcome-desc {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin-bottom: 24px;
+}
+
+.welcome-cta {
+  width: 100%;
+  padding: 12px 32px;
+  height: 44px;
+  font-size: var(--font-base);
+  font-weight: 600;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  transition: all 0.2s ease;
+}
+
+.welcome-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 16px rgba(212, 64, 88, 0.3);
+}
+
+/* Open Folder Modal (simple version - no mascot) */
+.open-folder-modal {
+  text-align: center;
+  width: 380px;
+  padding: 32px 24px;
+}
+
+.open-folder-title {
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text-heading);
+  margin-bottom: 6px;
+}
+
+.open-folder-desc {
+  font-size: var(--font-sm);
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin-bottom: 24px;
+}
+
+.empty-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(212, 64, 88, 0.25);
+}
+
 .message {
   display: flex;
   gap: 10px;
@@ -1384,6 +1538,74 @@ button {
   font-size: var(--font-xs);
   color: var(--text-dim);
   font-style: italic;
+}
+
+/* ── Permission request prompt ── */
+
+.permission-prompt {
+  margin-top: 10px;
+  padding: 10px 12px;
+  background: rgba(234, 179, 8, 0.08);
+  border: 1px solid rgba(234, 179, 8, 0.25);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permission-text {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+}
+
+.permission-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.permission-actions .btn-grant,
+.permission-actions .btn-secondary {
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  border: none;
+  font-size: var(--font-xs);
+  font-weight: 500;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.permission-actions .btn-grant {
+  background: #16a34a;
+  color: #fff;
+}
+
+.permission-actions .btn-grant:hover {
+  background: #15803d;
+}
+
+.permission-actions .btn-secondary {
+  background: transparent;
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+}
+
+.permission-actions .btn-secondary:hover {
+  background: var(--bg-elevated);
+  color: var(--text-heading);
+}
+
+.permission-resolved {
+  margin-top: 8px;
+  font-size: var(--font-xs);
+  font-style: italic;
+}
+
+.permission-resolved.granted {
+  color: #16a34a;
+}
+
+.permission-resolved.dismissed {
+  color: var(--text-dim);
 }
 
 /* ── Center panel tabs ── */
@@ -1712,8 +1934,15 @@ button {
   min-height: 40px;
   max-height: 120px;
   overflow-y: auto;
+  overflow-x: hidden;
   line-height: 1.5;
   transition: border-color var(--transition);
+}
+
+/* 스크롤바가 border-radius 밖으로 넘치지 않도록 숨김 처리 */
+/* max 5줄이라 스크롤바 없어도 스크롤 가능하므로 UX 문제 없음 */
+.composer-textarea::-webkit-scrollbar {
+  display: none;
 }
 
 .composer-textarea:focus {
@@ -1743,6 +1972,16 @@ button {
   box-shadow: 0 0 16px var(--accent-glow),
               0 0 24px var(--accent-glow);
   filter: brightness(1.1);
+}
+
+.stop-btn {
+  background: #e53935 !important;
+}
+
+.stop-btn:hover {
+  background: #c62828 !important;
+  box-shadow: 0 0 16px rgba(229, 57, 53, 0.4),
+              0 0 24px rgba(229, 57, 53, 0.2) !important;
 }
 
 /* ── Attach Button ── */
@@ -1989,6 +2228,12 @@ button {
   align-items: center;
   justify-content: center;
   z-index: 1000;
+}
+
+/* Blocking modal — no close, no ESC, no backdrop click */
+.modal-backdrop--blocking {
+  cursor: default;
+  pointer-events: auto;
 }
 
 .modal {

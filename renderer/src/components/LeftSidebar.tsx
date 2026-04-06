@@ -1,6 +1,6 @@
 import { useRef, useEffect } from 'react'
 import { basename } from '../utils'
-import { FolderOpen, ChevronDown, X, BookOpen, Activity } from 'lucide-react'
+import { Plus, FolderOpen, ChevronDown, X, BookOpen, Activity } from 'lucide-react'
 
 interface LeftSidebarProps {
   activeWorkspace: Workspace | null
@@ -139,8 +139,11 @@ export function LeftSidebar({
           )}
         </button>
       </div>
-      <div className="section-label">Folders</div>
       <div className="project-list">
+        <button className="add-folder-btn" onClick={pickFolder} disabled={!activeWorkspace}>
+          <Plus size={14} />
+          <span>Add Folder</span>
+        </button>
         {folders.map((f) => (
           <button
             key={f}
@@ -156,9 +159,6 @@ export function LeftSidebar({
             <span className="project-name">{basename(f)}</span>
           </button>
         ))}
-        <button className="add-btn" onClick={pickFolder} disabled={!activeWorkspace}>
-          + Open folder
-        </button>
       </div>
     </aside>
   )

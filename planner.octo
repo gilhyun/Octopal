@@ -279,6 +279,138 @@
       "text": "ㅋㅋㅋ 맞아요 사장님 말씀 듣고 보니 오히려 그게 맞네요!\n\n## 🔄 기획 방향 수정: B안 (유니코드 지원) 확정!\n\n### 왜 오히려 좋은지\n\n1. **Octopal은 한국어 앱** — 에이전트 역할이 `기획자`, `디자이너`, `개발자`인데 이름도 한글이 자연스럽죠\n2. **`@기획자` 가 `@planner` 보다 직관적** — 한국 유저한테는 압도적으로 편함\n3. **영문 제한은 개발자 편의**였지 유저 편의가 아니었음 😅\n\n### 📌 정리\n\n| 항목 | 이전 방향 | 수정된 방향 |\n|------|----------|-----------|\n| 에이전트명 | 영문만 허용 (A안) | **한글 포함 유니코드 허용 (B안)** ✅ |\n| 멘션 파싱 | 영문만 | **유니코드 지원** ✅ (이미 수정됨) |\n| 후속 이슈 (영문 제한) | P2 등록 예정 | **취소** 🗑️ |\n\n@developer 방향 바뀌었어요! \n\n- 아까 말한 \"에이전트명 영문 제한\" 후속 이슈는 **없던 걸로** 합니다\n- 유니코드 멘션 지원이 정답이었어요 👍\n- 그대로 **커밋 & 푸시** 진행해주세요! 🐙",
       "ts": 1775460542992,
       "roomTs": 1775460542992
+    },
+    {
+      "role": "user",
+      "text": "아 앱 처음실행했을때나 스페이스 하나도 없으면 자동으로 Personal  스페이스 만들고 폴더 선택하라는 팝업 띄우는게 좋을듯 하다, 이거도 폴더 하나도 없는경우에도 뜨게끔 그리고 스페이스도 없어서 자동으로 생성된경우에만 폴더 만들라는 팝업에 월컴메시지랑 캐릭터 나오게 어때?",
+      "ts": 1775484188677,
+      "roomTs": 1775484188677
+    },
+    {
+      "role": "assistant",
+      "text": "좋아요, 현재 구조 파악 완료! 기획 정리합니다.\n\n---\n\n## 📋 온보딩 플로우 기획서\n\n### 현재 상태 (AS-IS)\n\n| 상황 | 현재 동작 |\n|------|----------|\n| 스페이스 0개 | `CreateWorkspaceModal` 팝업 (이름 직접 입력) |\n| 스페이스 있지만 폴더 0개 | \"Open a folder to start\" 텍스트만 표시 |\n| 첫 실행 | 위와 동일, **별도 웰컴 경험 없음** |\n\n### 변경 목표 (TO-BE)\n\n#### 🔹 Case 1: 스페이스 0개 (첫 실행)\n```\n자동으로 \"Personal\" 스페이스 생성 (이름 입력 스킵)\n       ↓\n웰컴 팝업 표시\n  - Octopal 캐릭터 (문어) 🐙\n  - 환영 메시지: \"Octopal에 오신 걸 환영합니다!\"\n  - 간단한 소개 한 줄\n  - [폴더 선택하기] 버튼 → 시스템 폴더 선택 다이얼로그\n       ↓\n폴더 선택 완료 → 바로 채팅 화면\n```\n\n#### 🔹 Case 2: 스페이스는 있지만 폴더 0개\n```\n폴더 추가 유도 팝업 (웰컴 메시지 없이 심플하게)\n  - \"프로젝트 폴더를 열어주세요\"\n  - [폴더 선택하기] 버튼\n```\n> ※ 이건 스페이스를 새로 만들었거나, 모든 폴더를 제거한 경우\n\n#### 🔹 Case 3: 스페이스 + 폴더 다 있음\n```\n기존과 동일 → 바로 채팅 화면\n```\n\n### 핵심 포인트\n\n| 항목 | 설명 |\n|------|------|\n| **자동 생성 스페이스명** | `\"Personal\"` (고정) |\n| **웰컴 팝업 조건** | 스페이스가 **자동 생성된 경우에만** (= 첫 실행) |\n| **폴더 선택 팝업 조건** | 활성 스페이스에 폴더가 0개인 **모든 경우** |\n| **캐릭터** | 기존 앱 로고 또는 문어 캐릭터 활용 |\n\n### UI 와이어프레임 (웰컴 팝업)\n\n```\n┌─────────────────────────────────┐\n│                                 │\n│          🐙 (캐릭터)             │\n│                                 │\n│   Octopal에 오신 걸 환영합니다!    │\n│                                 │\n│   AI 에이전트들과 함께             │\n│   프로젝트를 시작해보세요           │\n│                                 │\n│      [ 폴더 선택하기 ]            │\n│                                 │\n└─────────────────────────────────┘\n```\n\n### 구현 포인트\n\n1. **App.tsx 초기화 로직 변경**\n   - `workspaces.length === 0` → `CreateWorkspaceModal` 대신 자동으로 \"Personal\" 생성\n   - 자동 생성 후 `isFirstRun = true` 플래그 세팅\n\n2. **WelcomeModal 신규 컴포넌트** (첫 실행 전용)\n   - 캐릭터 + 환영 메시지 + 폴더 선택 버튼\n   - `isFirstRun` 일 때만 표시\n\n3. **빈 폴더 상태 개선** (모든 경우)\n   - ChatPanel의 empty state를 폴더 선택 유도 UI로 교체\n\n---\n\n@designer 웰컴 팝업 디자인 부탁드려요! 위 와이어프레임 참고해서:\n- 다크 테마에 맞는 웰컴 모달\n- 문어 캐릭터 배치 (기존 앱 로고 에셋 활용)\n- \"폴더 선택하기\" CTA 버튼 스타일\n- 첫 실행 웰컴 vs 일반 폴더 선택 유도, 두 가지 버전\n\n@developer 기획 확인되면 구현 순서:\n1. App.tsx 초기화 로직 → 스페이스 0개일 때 \"Personal\" 자동 생성\n2. `WelcomeModal` 컴포넌트 신규 생성\n3. 빈 폴더 상태 empty state UI 개선\n4. 기존 `CreateWorkspaceModal`은 \"스페이스 추가\" 시에만 사용하도록 유지\n\n사장님, 이 방향 맞나요? 수정할 부분 있으면 말씀해주세요! 🐙",
+      "ts": 1775484302723,
+      "roomTs": 1775484302723
+    },
+    {
+      "role": "user",
+      "text": "아 채팅 영억에 넣지말고 모달로 ㅋㅋ 그리고 기본은 영어로, 이후에 언어팩 넣자",
+      "ts": 1775484631168,
+      "roomTs": 1775484631168
+    },
+    {
+      "role": "assistant",
+      "text": "ㅋㅋ 알겠습니다! 기획서 수정합니다.\n\n---\n\n## 📋 온보딩 플로우 기획서 v2\n\n### 변경 사항\n- ~~빈 폴더 시 채팅 영역 empty state~~ → **모달로 통일**\n- 기본 언어: **영어** (i18n은 후속 작업)\n\n### 플로우\n\n#### 🔹 Case 1: 스페이스 0개 (첫 실행)\n```\n\"Personal\" 스페이스 자동 생성\n       ↓\n웰컴 모달 (캐릭터 + 메시지 + CTA)\n       ↓\n폴더 선택 → 채팅 화면\n```\n\n**웰컴 모달:**\n```\n┌──────────────────────────────────┐\n│                                  │\n│           🐙 (캐릭터)             │\n│                                  │\n│    Welcome to Octopal!           │\n│                                  │\n│    Start by opening a project    │\n│    folder to chat with your      │\n│    AI teammates.                 │\n│                                  │\n│       [ Open Folder ]            │\n│                                  │\n└──────────────────────────────────┘\n```\n\n#### 🔹 Case 2: 스페이스 있지만 폴더 0개\n```\n폴더 선택 모달 (웰컴 메시지 없이 심플)\n       ↓\n폴더 선택 → 채팅 화면\n```\n\n**폴더 선택 모달:**\n```\n┌──────────────────────────────────┐\n│                                  │\n│    Open a project folder         │\n│    to get started.               │\n│                                  │\n│       [ Open Folder ]            │\n│                                  │\n└──────────────────────────────────┘\n```\n> ※ 캐릭터 없음, 텍스트만 간결하게\n\n#### 🔹 Case 3: 정상 상태\n```\n기존과 동일\n```\n\n### 모달 공통 규칙\n\n| 항목 | 규칙 |\n|------|------|\n| **닫기(X) 버튼** | 없음 — 반드시 폴더를 선택해야 진행 |\n| **배경 클릭** | 닫히지 않음 |\n| **ESC 키** | 닫히지 않음 |\n| **폴더 선택 취소** | 모달 유지 (다시 선택 유도) |\n\n### 언어 정책\n\n| 항목 | 방향 |\n|------|------|\n| **v1 기본 언어** | 영어 (하드코딩) |\n| **i18n** | 후속 작업으로 분리 (P3) |\n| **에이전트 role/메시지** | 에이전트별 설정이라 온보딩 언어와 무관 |\n\n### 구현 스펙\n\n| 컴포넌트 | 설명 |\n|----------|------|\n| `WelcomeModal` | 첫 실행 전용 (캐릭터 + 메시지 + Open Folder) |\n| `OpenFolderModal` | 폴더 0개일 때 (심플 버전) |\n| 두 모달 공통 | 폴더 선택 다이얼로그 호출 → 성공 시 모달 닫기 |\n\n---\n\n@designer 모달 2종 디자인 부탁드려요!\n- **WelcomeModal**: 캐릭터 + \"Welcome to Octopal!\" + 소개 문구 + `Open Folder` CTA\n- **OpenFolderModal**: 텍스트 + `Open Folder` CTA (심플)\n- 둘 다 닫기 버튼 없는 blocking 모달\n- 다크 테마 기준\n\n@developer 구현 포인트:\n1. 스페이스 0개 → \"Personal\" 자동 생성 + `WelcomeModal` 표시\n2. 폴더 0개 → `OpenFolderModal` 표시\n3. 기존 `CreateWorkspaceModal`은 수동 스페이스 추가 시에만 유지\n4. 모든 UI 텍스트는 영어로 작성\n\n사장님, 이걸로 고고? 🐙",
+      "ts": 1775484663941,
+      "roomTs": 1775484663941
+    },
+    {
+      "role": "user",
+      "text": "앱데이터 한번 더 지워주고 폴더열고 에이전트 하나도 없으면 기본으로 하나 자동생성 시키고 어떤 프로젝트인지 에이전트가 파악해서 말해주거나 빈 폴더면 프로젝트 시작하라 에이전트 추가 할수도 있다 등 시작할수있게끔 가이드 해주면 좋을듯",
+      "ts": 1775486237338,
+      "roomTs": 1775486237338
+    },
+    {
+      "role": "assistant",
+      "text": "✅ 앱 데이터 삭제 완료!\n\n---\n\n@designer 모달 디자인 + 이번에 추가된 \"assistant 에이전트 첫 메시지\" 부분도 참고해주세요. 첫 메시지가 채팅에 뜰 때 가이드 느낌이 나도록 포맷 제안 부탁드려요!\n\n@developer 구현 순서 정리:\n\n1. **앱 데이터 이미 삭제됨** ✅\n2. **스페이스 자동 생성**: `workspaces.length === 0` → \"Personal\" 자동 생성 (기존 `CreateWorkspaceModal` 스킵)\n3. **WelcomeModal**: 첫 실행 시 캐릭터 + 환영 + Open Folder CTA (blocking)\n4. **OpenFolderModal**: 폴더 0개일 때 심플 버전 (blocking)\n5. **기본 에이전트 자동 생성**: 폴더 열었을 때 `.octo` 0개 → `assistant.octo` 생성\n6. **첫 메시지 자동 전송**: assistant가 폴더 스캔 후 프로젝트 가이드 or 빈 폴더 가이드\n\n5~6번이 이번에 새로 추가된 핵심이에요. 기존 에이전트 생성 로직(`octo:create`) 참고해서 자동 트리거하면 될 것 같습니다! 🐙",
+      "ts": 1775486309698,
+      "roomTs": 1775486309698
+    },
+    {
+      "role": "user",
+      "text": "아 자동생성되는 에이전트한테 파일쓰기 권한을 주고 생성해야 할려나 권한 없으면 에이전트 생성 못하자나 아니면 권한을 사용자가 주게끔해서 학습하는게 좋을려나?",
+      "ts": 1775489452962,
+      "roomTs": 1775489452962
+    },
+    {
+      "role": "assistant",
+      "text": "좋은 포인트예요! 이거 온보딩 UX에서 꽤 중요한 갈림길입니다.\n\n## 🔐 자동 에이전트 권한 정책 분석\n\n### 상황 정리\n\n자동 생성된 `assistant` 에이전트가 해야 할 일:\n1. **프로젝트 파일 읽기** → 프로젝트 분석 (Read)\n2. **첫 가이드 메시지 작성** → 채팅 (기본 동작)\n3. **(선택) 추가 에이전트 생성** → `.octo` 파일 쓰기 (Write)\n\n### 옵션 비교\n\n| | A. 자동 권한 부여 | B. 유저 승인 | C. 하이브리드 |\n|---|---|---|---|\n| **방식** | 모든 권한 미리 ON | 첫 실행 시 승인 팝업 | 읽기=자동, 쓰기=승인 |\n| **온보딩 매끄러움** | ⭐⭐⭐ | ⭐⭐ | ⭐⭐⭐ |\n| **권한 학습** | ❌ 모름 | ⭐⭐⭐ 자연스럽게 학습 | ⭐⭐ 부분 학습 |\n| **보안 인식** | ❌ 위험 | ⭐⭐⭐ | ⭐⭐ |\n| **추가 UX 비용** | 없음 | 팝업 1회 | 팝업 1회 |\n\n### 📌 PM 추천: **B안 (유저 승인)** \n\n이유:\n\n1. **첫 실행은 유저 집중도가 가장 높은 순간** — 권한 개념을 여기서 배우면 나중에 안 헤맴\n2. **\"이 에이전트가 파일을 읽고 쓸 수 있게 할까요?\"** 한 번 물어보는 거라 부담 없음\n3. **이후 에이전트 추가할 때도 같은 패턴** — 일관된 경험\n4. **보안 신뢰감** — AI 앱에서 \"알아서 권한 가져감\"은 유저한테 불안감 줌\n\n### 제안 플로우\n\n```\n폴더 오픈\n    ↓\n에이전트 0개 감지 → assistant.octo 자동 생성 (파일 생성 자체는 앱이 하는 거라 OK)\n    ↓\nassistant 첫 invoke 시 권한 팝업:\n┌──────────────────────────────────────┐\n│                                      │\n│  \"assistant\" wants to access         │\n│  this project folder.                │\n│                                      │\n│  ☑ Read files                        │\n│  ☑ Write files                       │\n│  ☑ Run commands                      │\n│                                      │\n│  [ Allow ]          [ Deny ]         │\n│                                      │\n└──────────────────────────────────────┘\n    ↓\nAllow → 에이전트가 프로젝트 스캔 → 가이드 메시지 출력\n```\n\n### 핵심 포인트\n\n- `.octo` **파일 생성 자체는 앱(시스템)이 하는 것** → 권한 불필요\n- 에이전트가 **실행되면서 파일에 접근할 때** → 유저 승인 필요\n- 승인은 **폴더 단위로 1회만** (매번 물어보면 짜증남)\n- 한 번 승인하면 해당 폴더에서는 쭉 유지\n\n---\n\n사장님 이 방향이면 **유저가 자연스럽게 권한 시스템을 배우면서도** 온보딩이 크게 늘어지지 않아요. 어떠세요?",
+      "ts": 1775489500527,
+      "roomTs": 1775489500527
+    },
+    {
+      "role": "user",
+      "text": "오 좋아 ㅋㅋㅋ 아 그러고 보니 모든 에이전트가 기본적으로 이 앱이 뭔지 어떻게 사용하는건지 이런거 숙지하고있게끔 해놓으면 더 유연할거같다 어때? 너무 과한가?",
+      "ts": 1775489960611,
+      "roomTs": 1775489960611
+    },
+    {
+      "role": "assistant",
+      "text": "오 전혀 과하지 않아요! 오히려 **핵심 기능**이 될 수 있는 포인트입니다.\n\n## 🧠 에이전트 기본 지식 (App Context) 기획\n\n### 왜 필요한가?\n\n지금 에이전트들이 겪을 수 있는 문제:\n\n| 상황 | 현재 | App Context 있으면 |\n|------|------|-------------------|\n| 유저: \"에이전트 하나 더 만들어줘\" | ❌ \"저는 에이전트를 만들 수 없습니다\" | ✅ \".octo 파일 만들면 됩니다\" |\n| 유저: \"위키에 정리해놔\" | ❌ \"위키가 뭔가요?\" | ✅ wiki 폴더에 .md 파일 작성 |\n| 유저: \"다른 에이전트한테 물어봐\" | ❌ 멘션 방법 모름 | ✅ \"@이름으로 멘션하면 됩니다\" |\n| 유저: \"이 앱 뭐야?\" | ❌ 엉뚱한 답변 | ✅ Octopal 소개 가능 |\n\n### 📌 제안: System Prompt에 App Context 블록 삽입\n\n모든 에이전트 실행 시 시스템 프롬프트에 자동 주입:\n\n```\n## About Octopal\nYou are an AI agent running inside Octopal, a group-chat messenger \nfor AI agents. Here's what you should know:\n\n- **Agents** are .octo files in a project folder. Each agent has a \n  name, role, and its own conversation context.\n- **Mentioning** other agents with @name lets you collaborate.\n- **Wiki** is a shared knowledge base at [wiki_path]. Write .md files \n  to share notes with the team.\n- **The user** can add/remove agents, change roles, and manage \n  workspaces.\n- **You can help** the user understand and use these features.\n```\n\n### 레벨 나누기\n\n| 레벨 | 내용 | 토큰 비용 |\n|------|------|----------|\n| **L1: 필수** | 앱 이름, 에이전트 구조, 멘션, 위키 | ~150 토큰 |\n| **L2: 도움됨** | 폴더 구조, 권한 시스템, 스페이스 개념 | ~100 토큰 추가 |\n| **L3: 선택** | 앱 사용 팁, 트러블슈팅 | ~150 토큰 추가 |\n\n### PM 추천\n\n**L1 + L2까지만** (총 ~250 토큰)\n\n- 매 요청마다 들어가는 거라 **토큰 비용 관리** 중요\n- 근데 250 토큰이면 무시할 수준이에요\n- 과하지 않으면서 **에이전트가 \"앱을 아는 존재\"**가 됨\n\n### 구현 방식\n\n```\n시스템 프롬프트 구성:\n1. [에이전트 역할/성격]     ← 기존 .octo에서\n2. [App Context]           ← ✨ 새로 추가 (앱 레벨에서 자동 주입)\n3. [프로젝트 컨텍스트]      ← 위키, 파일 등\n4. [대화 히스토리]          ← 기존\n```\n\n- 에이전트별 `.octo`에 넣는 게 아니라 **앱이 런타임에 주입**\n- 앱 업데이트하면 context도 자동 업데이트 → 에이전트가 항상 최신 지식\n\n---\n\n### 결론\n\n> **전혀 과하지 않고, 토큰 비용도 미미하고, 사용자 경험은 확 올라감** 👍\n\n에이전트가 \"나는 Octopal 안에서 동작하는 존재\"라는 걸 아는 것만으로도 유저 질문 대응력이 완전 달라져요. 특히 **첫 실행 때 자동 생성되는 assistant**한테는 필수입니다.\n\n사장님 고고하시면 위키에 정리하고 @developer 한테 넘길게요! 🐙",
+      "ts": 1775490000501,
+      "roomTs": 1775490000501
+    },
+    {
+      "role": "user",
+      "text": "아 스페이스 생성시 자동으로 사용자 가이드도 넣어놓으면 괜찮겠다 에이전트도 보고 사용자도 볼수있으니까 어때? 여기엔 좀더 자세히 써놔도 되겠네",
+      "ts": 1775490231328,
+      "roomTs": 1775490231328
+    },
+    {
+      "role": "assistant",
+      "text": "오 이거 진짜 좋아요! 🔥 앞에서 논의한 시스템 프롬프트 App Context랑 **완벽한 2단 구조**가 되네요.\n\n## 📋 스페이스 자동 가이드 기획\n\n### 2단 지식 구조\n\n```\n┌─────────────────────────────────────────┐\n│  L1: 시스템 프롬프트 (경량 ~250 토큰)      │\n│  → \"나는 Octopal 에이전트다\" 수준          │\n│  → 매 요청마다 자동 주입                    │\n├─────────────────────────────────────────┤\n│  L2: 위키 가이드 (상세)                    │\n│  → 앱 사용법, 기능 목록, 팁 등              │\n│  → 에이전트가 필요할 때 읽음                 │\n│  → 유저도 직접 열어볼 수 있음                │\n└─────────────────────────────────────────┘\n```\n\n### 왜 좋은가?\n\n| 포인트 | 설명 |\n|--------|------|\n| **토큰 효율** | 시스템 프롬프트는 가볍게, 자세한 건 위키에 → 필요할 때만 읽음 |\n| **유저도 활용** | \"이 앱 어떻게 써?\" → 위키 가이드 보면 됨 |\n| **에이전트도 활용** | 유저 질문에 가이드 참조해서 정확하게 답변 |\n| **업데이트 용이** | 앱 업데이트 시 가이드 내용도 자동 갱신 가능 |\n| **온보딩 역할** | 첫 실행 때 \"위키에 가이드 있어요\" 한마디면 자연스러운 학습 |\n\n### 자동 생성 위키 페이지\n\n스페이스 생성 시 위키에 자동으로 들어갈 가이드:\n\n**📄 `getting-started.md`**\n\n```markdown\n# Getting Started with Octopal\n\n## What is Octopal?\nOctopal is a group-chat messenger where AI agents collaborate \nwith you and each other on your projects.\n\n## Core Concepts\n\n### Workspaces\nA workspace is a collection of project folders. Think of it as \na team — all agents and folders inside share the same context.\n\n### Agents\n- Each agent is a `.octo` file inside your project folder\n- Agents have roles (developer, designer, PM, etc.)\n- They can talk to each other using @mentions\n- You can add, remove, or customize agents anytime\n\n### Wiki\n- Shared notes that both you and agents can read/write\n- Great for project decisions, specs, meeting notes\n- Located in the wiki panel (sidebar)\n\n## Quick Start\n\n1. **Open a folder** — point to any project directory\n2. **Chat** — talk to agents in the group chat\n3. **@mention** — direct a message to a specific agent\n4. **Add agents** — create specialized agents for your needs\n\n## What Can Agents Do?\n- 📖 **Read** your project files to understand the codebase\n- ✏️ **Write** code, docs, configs (with your permission)\n- 🔧 **Run** commands like build, test, lint\n- 🤝 **Collaborate** with other agents via @mentions\n- 📝 **Update wiki** to share knowledge with the team\n\n## Tips\n- Agents remember conversation history across sessions\n- Use wiki to store decisions so all agents stay aligned\n- Each agent can have different permissions per folder\n- You can customize agent roles and personalities\n```\n\n### 시스템 프롬프트에 위키 연결 힌트\n\n기존 시스템 프롬프트 App Context에 한 줄 추가:\n\n```\n- **Getting Started Guide** is available in the wiki. \n  Refer users there for detailed app usage instructions.\n```\n\n→ 에이전트가 \"이 앱 뭐야?\" 물어보면 위키 가이드 참조해서 답변 가능\n\n### 생성 타이밍\n\n| 이벤트 | 동작 |\n|--------|------|\n| **스페이스 최초 생성** | `getting-started.md` 자동 생성 |\n| **이미 존재하면** | 덮어쓰지 않음 (유저가 수정했을 수 있으니) |\n| **앱 업데이트 시** | 버전 비교 후 새 내용 있으면 업데이트 여부 물어보기 (P2) |\n\n### 자동 생성 assistant의 첫 메시지에 활용\n\n```\nassistant: Welcome! I've scanned your project — it looks like \na React + TypeScript app. \n\nHere's what I can help with:\n- Explain the codebase structure\n- Write or review code\n- Add more specialized agents\n\n💡 Check the wiki for a full guide on using Octopal!\n```\n\n→ 자연스럽게 위키 가이드로 유도\n\n---\n\n### 전체 온보딩 플로우 최종 정리\n\n```\n첫 실행\n  ↓\n\"Personal\" 스페이스 자동 생성\n  ↓\n위키에 getting-started.md 자동 생성  ← ✨ NEW\n  ↓\nWelcomeModal (캐릭터 + Open Folder)\n  ↓\n폴더 선택 → 권한 승인 팝업\n  ↓\nassistant.octo 자동 생성\n  ↓\nassistant가 프로젝트 스캔 → 가이드 첫 메시지\n  (위키 가이드 참조 힌트 포함)\n  ↓\n🎉 온보딩 완료!\n```\n\n사장님, 이러면 **시스템 프롬프트(경량) + 위키 가이드(상세) + 첫 메시지(유도)** 3단 구조로 에이전트도 유저도 앱을 잘 이해하는 환경이 됩니다.\n\n위키에 전체 온보딩 기획 정리해놓을까요? 🐙",
+      "ts": 1775490285134,
+      "roomTs": 1775490285134
+    },
+    {
+      "role": "user",
+      "text": "아 위키에",
+      "ts": 1775490248512,
+      "roomTs": 1775490248512
+    },
+    {
+      "role": "assistant",
+      "text": "✅ 위키에 **onboarding-plan.md** 정리 완료!\n\n포함된 내용:\n- 전체 온보딩 플로우 (첫 실행 → 완료까지)\n- 모달 3종 스펙 (Welcome / OpenFolder / Permission)\n- 2단 에이전트 지식 구조 (시스템 프롬프트 + 위키 가이드)\n- 자동 생성 assistant 첫 메시지 (프로젝트 있을 때 / 빈 폴더)\n- 컴포넌트 목록 & 우선순위\n\n이제 @designer, @developer 모두 위키 보면서 작업할 수 있어요. 다음 뭐 갈까요? 🐙",
+      "ts": 1775490341419,
+      "roomTs": 1775490341419
+    },
+    {
+      "role": "user",
+      "text": "ㅇㅇ",
+      "ts": 1775490323280,
+      "roomTs": 1775490323280
+    },
+    {
+      "role": "assistant",
+      "text": "넵 👍 다음 뭐 진행할까요? 온보딩 구현 시작할지, 아니면 다른 기능 먼저 볼지 사장님 방향 알려주세요! 🐙",
+      "ts": 1775490352160,
+      "roomTs": 1775490352160
+    },
+    {
+      "role": "user",
+      "text": "스페이스 생성시 들어가는거지? ㅇㅋ 아 그리고 에이전트가 뭔가 작업중이거나 생각중일때 취소도 가능하게 하면 좋겠는데 메시지 박스에 마우스 올리면 취소 버튼 나오면 어떨까?",
+      "ts": 1775490386340,
+      "roomTs": 1775490386340
+    },
+    {
+      "role": "assistant",
+      "text": "네 맞아요, 스페이스 생성 시 위키에 `getting-started.md` 자동 삽입!\n\n그리고 취소 기능 — 좋은 포인트에요. 정리해볼게요.\n\n## ⏹️ 에이전트 작업 취소 기능\n\n### 유저 니즈\n> AI가 엉뚱한 방향으로 달리고 있을 때 빠르게 멈추고 싶다\n\n### 제안 UX\n\n```\n에이전트가 응답 중일 때:\n\n┌──────────────────────────────────────┐\n│ 🤖 developer                         │\n│ ████████░░ 생각 중...                  │\n│                                      │\n│                          [ ⏹ 취소 ]  │  ← 호버 시 나타남\n└──────────────────────────────────────┘\n```\n\n### 인터랙션 디테일\n\n| 상태 | 동작 |\n|------|------|\n| **에이전트 응답 중** | 메시지 버블에 호버 → 취소 버튼 표시 |\n| **취소 클릭** | 즉시 중단, 생성된 부분까지만 표시 |\n| **취소 후 메시지** | `\"⏹ 사용자가 취소했습니다\"` 표시 (작은 회색 텍스트) |\n| **응답 완료 후** | 호버해도 취소 버튼 안 나옴 (이미 끝남) |\n\n### 고려사항\n\n| 포인트 | 판단 |\n|--------|------|\n| **호버 vs 항상 표시** | 호버가 깔끔 (완료된 메시지에선 불필요하니까) |\n| **모바일 대응** | 터치 환경에선 롱프레스? → 일단 데스크탑 우선 |\n| **부분 응답 보존** | ✅ 취소 시점까지 생성된 텍스트는 남겨둠 |\n| **파일 쓰기 중 취소** | ⚠️ 중간에 멈추면 반쪽짜리 파일 → 취소 시 되돌리기 필요 |\n\n### ⚠️ 파일 작업 중 취소 — 중요\n\n```\n취소 시나리오:\n1. 단순 텍스트 응답 중 → 바로 중단, 문제 없음\n2. 파일 쓰기 중 → 중단 + 변경사항 롤백\n3. 커맨드 실행 중 → 프로세스 kill + 상태 표시\n```\n\n이 부분은 구현 난이도가 좀 있어서 **P1은 텍스트 응답 취소**, **P2에서 파일/커맨드 취소 + 롤백** 순서가 좋을 것 같아요.\n\n### 키보드 단축키도?\n\n`Esc` 키로도 취소 가능하면 파워유저한테 편할 듯:\n\n| 단축키 | 동작 |\n|--------|------|\n| `Esc` | 현재 응답 중인 에이전트 취소 |\n| 버블 호버 + 클릭 | 특정 에이전트만 취소 (여러 에이전트 동시 응답 시) |\n\n---\n\n위키에 이것도 추가해놓을까요? 아니면 다른 기능 더 논의할 거 있으면 먼저 하고 한방에 정리할게요! 🐙",
+      "ts": 1775490424719,
+      "roomTs": 1775490424719
+    },
+    {
+      "role": "user",
+      "text": "아니면 클로드처럼 전송버튼에 정지 버튼을 두는게 나을까? 그리고 진행중이지만 유저가 타이핑 하면 전송버튼으로 바꿔주고 둘중 뭐가 좋을까 지금 우리앱 특성상 에이전트별로 정지 기능 두는게 맞는걸까 고민되는데 이거",
+      "ts": 1775490508050,
+      "roomTs": 1775490508050
+    },
+    {
+      "role": "assistant",
+      "text": "오 좋은 고민이에요. 이거 우리 앱 특성상 **일반 AI 챗과 근본적으로 다른 부분**이라 잘 짚어야 합니다.\n\n## 🔑 핵심 차이: 1:1 vs 그룹챗\n\n| | Claude (1:1) | Octopal (그룹챗) |\n|--|--|--|\n| 응답 중인 AI | 항상 1개 | **동시에 여러 에이전트 가능** |\n| 전송 버튼 정지 | ✅ 명확 (1개만 멈추면 됨) | ⚠️ 누구를 멈추는 건지? |\n| 유저 타이핑 | AI 응답 중에도 가능 | 마찬가지 |\n\n## 제 생각: **하이브리드**\n\n### 전송 버튼 영역 — 전체 정지\n\n```\n[ 메시지 입력...                    ]  [⏹]\n                                       ↑ 응답 중일 때 전송→정지로 변경\n                                         누르면 \"모든 에이전트\" 중단\n```\n\n- **타이핑 시작하면** → 다시 전송 버튼으로 전환 (클로드랑 동일)\n- 이건 \"일단 다 멈춰!\" 용도 → **90% 상황에서 이거면 충분**\n\n### 메시지 버블 — 개별 정지 (P2)\n\n```\n에이전트 3개가 동시에 응답 중일 때:\n\n┌─ 🤖 developer ──────────────┐\n│ 코드 작성 중...     [ ⏹ ]    │  ← 이것만 멈추고 싶을 때\n└─────────────────────────────┘\n┌─ 🎨 designer ───────────────┐\n│ 컴포넌트 설계 중...           │\n└─────────────────────────────┘\n┌─ 📋 planner ────────────────┐\n│ 스펙 정리 중...               │\n└─────────────────────────────┘\n```\n\n- 근데 솔직히 **여러 에이전트 동시 응답 상황 자체가 자주는 아닐 거예요**\n- 그래서 이건 P2로 미뤄도 됨\n\n## 우선순위 정리\n\n| 단계 | 기능 | 이유 |\n|------|------|------|\n| **P1** | 전송 버튼 → 정지 버튼 전환 | 가장 직관적, 구현 쉬움, 90% 커버 |\n| **P1** | 타이핑 시 → 전송 버튼 복귀 | 자연스러운 UX |\n| **P1** | `Esc` 키 = 전체 정지 | 파워유저용 |\n| **P2** | 버블 호버 시 개별 정지 | 멀티 에이전트 동시 응답 시 필요 |\n\n## 결론\n\n> **전송 버튼 자리에 정지 = 메인**, 버블 개별 정지 = 나중에\n\n이유:\n1. 유저 멘탈 모델이 이미 클로드/ChatGPT에서 학습되어 있음\n2. 에이전트 1개 응답이 대부분이라 전체 정지 = 개별 정지나 마찬가지\n3. 구현도 훨씬 단순\n\n에이전트별 개별 정지는 **실제로 멀티 에이전트 동시 응답을 써보면서** \"아 이거 개별로 멈추고 싶다\" 느낌이 올 때 추가해도 늦지 않아요.\n\n위키에 정리해놓을까요? 아니면 @designer 한테 버튼 전환 UX 디테일 잡아달라고 할까요? 🐙",
+      "ts": 1775490547875,
+      "roomTs": 1775490547875
+    },
+    {
+      "role": "user",
+      "text": "다 된거야?",
+      "ts": 1775491336828,
+      "roomTs": 1775491336828
+    },
+    {
+      "role": "assistant",
+      "text": "✅ 위키에 **정지 버튼 기능** 추가 완료!\n\n정리하면:\n- **P1**: 전송 버튼 ↔ 정지 버튼 전환 + `Esc` 단축키\n- **P2**: 버블 개별 정지 + 파일/커맨드 롤백\n\n이제 논의한 내용 다 위키에 들어있어요. 다음 뭐 할까요? 🐙",
+      "ts": 1775491385520,
+      "roomTs": 1775491385520
     }
   ],
   "permissions": {

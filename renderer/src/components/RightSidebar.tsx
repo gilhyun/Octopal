@@ -1,5 +1,5 @@
 import { colorForName } from '../utils'
-import { Zap, MoreHorizontal } from 'lucide-react'
+import { Zap, MoreHorizontal, Plus } from 'lucide-react'
 import type { ActivityLogEntry } from '../types'
 import { AgentAvatar } from './AgentAvatar'
 
@@ -24,6 +24,15 @@ export function RightSidebar({
     <aside className="right-sidebar">
       <div className="sidebar-header drag">
         <span className="section-title">Agents</span>
+        {activeFolder && (
+          <button
+            className="header-add-btn"
+            onClick={() => setShowCreateAgent(true)}
+            title="Add agent"
+          >
+            <Plus size={14} />
+          </button>
+        )}
       </div>
       <div className="agent-list">
         {octos.length === 0 && (
@@ -79,11 +88,6 @@ export function RightSidebar({
             </div>
           )
         })}
-        {activeFolder && (
-          <button className="add-btn" onClick={() => setShowCreateAgent(true)}>
-            + New agent
-          </button>
-        )}
       </div>
     </aside>
   )

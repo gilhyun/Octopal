@@ -3,11 +3,14 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
-import { spawn } from 'child_process'
+import { spawn, ChildProcess } from 'child_process'
 
 // OCTOPAL_PROD=1 forces the built renderer bundle even when running unpackaged,
 // so `npm start` after `npm run build` behaves like a production app.
 const IS_DEV = !app.isPackaged && process.env.OCTOPAL_PROD !== '1'
+
+// Track running agent child processes so we can stop them
+const runningAgents = new Map<string, ChildProcess>()
 
 // Use a separate state file and userData dir in dev so you can run dev + prod
 // side-by-side without them stomping on each other's workspaces.
@@ -177,6 +180,43 @@ ipcMain.handle('workspace:create', (_event, name: string) => {
   state.workspaces.push({ id, name: name.trim() || 'Untitled', folders: [] })
   state.activeWorkspaceId = id
   saveState(state)
+
+  // Auto-create onboarding wiki page for new workspace
+  try {
+    const wikiDir = getWikiDir(id)
+    fs.mkdirSync(wikiDir, { recursive: true })
+    const onboardingPath = path.join(wikiDir, 'getting-started.md')
+    if (!fs.existsSync(onboardingPath)) {
+      fs.writeFileSync(
+        onboardingPath,
+        `# Welcome to ${name.trim() || 'Untitled'} 🐙
+
+## Quick Start
+
+### 💬 Talking to Agents
+- Type a message in the chat — an AI agent will respond.
+- Use **@name** to talk to a specific agent (e.g. \`@assistant\`).
+- Use **@all** to broadcast to every agent in the folder.
+
+### 🤖 Hiring Teammates
+- Click the **+ agent** button in the right sidebar to add a specialist (developer, designer, planner, etc.).
+- Each agent has its own role, memory, and conversation history.
+
+### 🔐 Permissions
+- By default, agents can only read files and respond with text.
+- To let an agent write files, run commands, or access the web, enable permissions in the agent's **settings panel** (click the agent card → gear icon).
+
+### 📝 Wiki
+- This wiki is shared across all folders in this workspace.
+- Use it to record decisions, specs, and notes that all agents (and you) can reference.
+
+### 👀 Activity Log
+- Check the **Activity** tab to see a real-time log of everything agents do (file edits, shell commands, etc.).
+`,
+      )
+    }
+  } catch {}
+
   return state
 })
 
@@ -823,6 +863,21 @@ How your world works:
 - You are not Claude Code itself. You are a specific agent persona running on top of Claude Code. Stay in character based on your role below.`
     )
 
+    // ── App Context (L1 + L2) ──
+    // Inject shared knowledge about Octopal so every agent understands the
+    // app it lives in. This costs ~250 tokens and dramatically improves the
+    // agent's ability to guide users.
+    systemParts.push(
+      `\nAbout Octopal — things you should know:
+- **Creating agents**: Anyone can create a new AI teammate by adding a .octo file to the project folder (or asking you to do it). Each .octo file = one agent with its own name, role, and memory.
+- **Mentioning**: Use @name to talk to another agent. The mentioned agent will see the message and respond. The user can also @mention agents directly.
+- **Wiki**: A shared knowledge base for the team. Write .md files to the wiki directory to share notes, decisions, and context across all agents and sessions.
+- **Permissions**: Each agent's capabilities (file write, shell commands, network access) are configured independently. The user controls these in the agent's settings panel.
+- **Workspaces & Folders**: A workspace groups related project folders. Each folder can have its own set of agents. The wiki is shared across all folders in the same workspace.
+- **Activity log**: The user can see a real-time log of everything agents do (tool calls, file edits, etc.) in the sidebar — full transparency.
+- **Hiring teammates**: The user can add specialized agents (developers, designers, planners, reviewers, etc.) to collaborate. Agents can also suggest bringing in a teammate when the task calls for it.`
+    )
+
     if (octoContent.role) systemParts.push(`\nYour role: ${octoContent.role}`)
     systemParts.push(`Your name: ${octoContent.name || 'assistant'}`)
     if (octoContent.memory && octoContent.memory.length > 0) {
@@ -940,7 +995,15 @@ How to collaborate (very important):
       const capLine =
         capabilities.length > 0
           ? `\n\nYou have permission to: ${capabilities.join(', ')}. Use these tools when the user or a peer asks you to do something concrete.`
-          : `\n\nYou do NOT have permission to write files, run shell commands, or access the network. Answer with text only. If the user asks you to do something that requires these tools, explain that they need to grant the corresponding permission in your agent profile.`
+          : [
+              `\n\nYou do NOT have permission to write files, run shell commands, or access the network. Answer with text only.`,
+              `If the user asks you to do something that requires these tools, briefly explain what you need and then output a permission request tag at the END of your message in this exact format:`,
+              `<!--NEEDS_PERMISSIONS: fileWrite, bash, network-->`,
+              `Only include the specific permissions you actually need (fileWrite for writing/editing files, bash for running shell commands, network for web access). The app will show the user a button to grant these permissions directly.`,
+              `Example: if the user asks you to create a file, say you need file write permission and end with <!--NEEDS_PERMISSIONS: fileWrite-->`,
+              `Example: if the user asks you to run a build, you need bash permission: <!--NEEDS_PERMISSIONS: bash-->`,
+              `Example: if you need multiple permissions: <!--NEEDS_PERMISSIONS: fileWrite, bash-->`,
+            ].join('\n')
       claudeArgs.push(
         '--system-prompt',
         systemParts.join('\n') + capLine + `\n\nWorking folder: ${folderPath}`
@@ -973,6 +1036,10 @@ How to collaborate (very important):
         stdio: ['ignore', 'pipe', 'pipe'],
         env: { ...process.env },
       })
+
+      // Track this child process for stop functionality
+      runningAgents.set(runId, child)
+      child.on('exit', () => { runningAgents.delete(runId) })
 
       let finalResult = ''
       let buffer = ''
@@ -1051,6 +1118,18 @@ How to collaborate (very important):
   } catch (e: any) {
     return { ok: false, error: e.message || String(e) }
   }
+})
+
+// ── Stop all running agents ──────────────────────
+ipcMain.handle('agent:stopAll', () => {
+  const count = runningAgents.size
+  for (const [runId, child] of runningAgents) {
+    try {
+      child.kill('SIGTERM')
+    } catch {}
+    runningAgents.delete(runId)
+  }
+  return { ok: true, stopped: count }
 })
 
 // ── File upload handlers ──────────────────────

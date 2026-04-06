@@ -13,6 +13,7 @@
     "prod": "npm run build && unset ELECTRON_RUN_AS_NODE && OCTOPAL_PROD=1 electron ."
   },
   "devDependencies": {
+    "@types/canvas-confetti": "^1.9.0",
     "@types/node": "^20.0.0",
     "@types/react": "^18.3.0",
     "@types/react-dom": "^18.3.0",
@@ -23,6 +24,7 @@
     "vite": "^5.4.0"
   },
   "dependencies": {
+    "canvas-confetti": "^1.9.4",
     "lucide-react": "^1.7.0",
     "react": "^18.3.0",
     "react-dom": "^18.3.0",

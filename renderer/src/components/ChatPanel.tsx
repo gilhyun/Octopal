@@ -3,7 +3,7 @@ import { basename } from '../utils'
 import { MentionPopup } from './MentionPopup'
 import { AgentAvatar } from './AgentAvatar'
 import type { Attachment, Message } from '../types'
-import { Paperclip, Download, FileText, X, Send, ImageOff, ArrowDown } from 'lucide-react'
+import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown } from 'lucide-react'
 import { MarkdownRenderer } from './MarkdownRenderer'
 
 /** Pending attachment before send — holds local preview data */
@@ -37,9 +37,13 @@ interface ChatPanelProps {
   send: (attachments?: Attachment[]) => void
   onApproveHandoff: (messageId: string) => void
   onDismissHandoff: (messageId: string) => void
+  onGrantPermission: (messageId: string) => void
+  onDismissPermission: (messageId: string) => void
   hasMoreMessages: boolean
   loadingMore: boolean
   onLoadMore: () => Promise<void>
+  hasPendingAgents: boolean
+  onStopAll: () => void
 }
 
 export function ChatPanel({
@@ -56,9 +60,13 @@ export function ChatPanel({
   send,
   onApproveHandoff,
   onDismissHandoff,
+  onGrantPermission,
+  onDismissPermission,
   hasMoreMessages,
   loadingMore,
   onLoadMore,
+  hasPendingAgents,
+  onStopAll,
 }: ChatPanelProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
@@ -78,7 +86,10 @@ export function ChatPanel({
     const el = textareaRef.current
     if (!el) return
     el.style.height = 'auto'
-    el.style.height = Math.min(el.scrollHeight, 120) + 'px' // max ~5줄
+    const newHeight = Math.min(el.scrollHeight, 120)
+    el.style.height = newHeight + 'px' // max ~5줄
+    // 내용이 max-height 이내면 스크롤 불필요
+    el.style.overflowY = el.scrollHeight > 120 ? 'auto' : 'hidden'
   }, [])
 
   // ── File handling helpers ──
@@ -369,7 +380,9 @@ export function ChatPanel({
           <div className="empty">
             <div className="empty-title">Octopal</div>
             <div className="empty-sub">
-              Use @name to talk to an agent. @all to talk to everyone.
+              {activeFolder
+                ? 'Use @name to talk to an agent. @all to talk to everyone.'
+                : 'Open a folder to get started.'}
             </div>
           </div>
         )}
@@ -429,6 +442,36 @@ export function ChatPanel({
                 )}
                 {m.handoff && m.handoff.approved === true && (
                   <div className="handoff-resolved">Handoff approved</div>
+                )}
+                {/* Permission request approval */}
+                {m.permissionRequest && m.permissionRequest.granted === undefined && (
+                  <div className="permission-prompt">
+                    <div className="permission-text">
+                      🔐 Grant {m.permissionRequest.permissions.map((p) =>
+                        p === 'fileWrite' ? 'file write' : p === 'bash' ? 'shell' : 'network'
+                      ).join(', ')} permission?
+                    </div>
+                    <div className="permission-actions">
+                      <button
+                        className="btn-grant"
+                        onClick={() => onGrantPermission(m.id)}
+                      >
+                        Grant
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => onDismissPermission(m.id)}
+                      >
+                        Dismiss
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {m.permissionRequest && m.permissionRequest.granted === true && (
+                  <div className="permission-resolved granted">✅ Permission granted</div>
+                )}
+                {m.permissionRequest && m.permissionRequest.granted === false && (
+                  <div className="permission-resolved dismissed">Permission dismissed</div>
                 )}
                 {/* Inline attachments */}
                 {m.attachments && m.attachments.length > 0 && (
@@ -544,9 +587,15 @@ export function ChatPanel({
             disabled={!activeFolder}
             rows={1}
           />
-          <button className="send" onClick={handleSend} disabled={!activeFolder}>
-            <Send size={16} />
-          </button>
+          {hasPendingAgents && !input.trim() ? (
+            <button className="send stop-btn" onClick={onStopAll} title="Stop all agents">
+              <Square size={14} fill="currentColor" />
+            </button>
+          ) : (
+            <button className="send" onClick={handleSend} disabled={!activeFolder}>
+              <Send size={16} />
+            </button>
+          )}
         </div>
       </footer>
     </main>

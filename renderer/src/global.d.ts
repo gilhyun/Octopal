@@ -129,6 +129,7 @@ interface Window {
     wikiDelete: (params: { workspaceId: string; name: string }) => Promise<
       { ok: true } | { ok: false; error: string }
     >
+    stopAllAgents: () => Promise<{ ok: true; stopped: number }>
   }
 }
 
