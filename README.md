@@ -1,7 +1,7 @@
 # Octopal
 
 <p align="center">
-  <img src="assets/logo.svg" alt="Octopal Logo" width="180" />
+  <img src="assets/logo.png" alt="Octopal Logo" width="180" />
 </p>
 
 <p align="center">

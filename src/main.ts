@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, dialog, protocol, net } from 'electron'
+import { app, BrowserWindow, ipcMain, dialog, protocol, net, nativeImage } from 'electron'
 import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
@@ -53,6 +53,7 @@ function unwatchAll() {
 function createWindow() {
   const iconPath = path.join(__dirname, '..', 'assets', 'icon-512.png')
   const win = new BrowserWindow({
+    title: 'Octopal',
     width: 1200,
     height: 800,
     minWidth: 800,
@@ -84,6 +85,9 @@ protocol.registerSchemesAsPrivileged([
   { scheme: 'local-file', privileges: { bypassCSP: true, stream: true, supportFetchAPI: true } },
 ])
 
+// Set the app name for macOS menu bar & about panel
+app.setName('Octopal')
+
 app.whenReady().then(() => {
   // Handle local-file:// protocol — maps absolute paths to file responses
   protocol.handle('local-file', (request) => {
@@ -91,6 +95,15 @@ app.whenReady().then(() => {
     const filePath = decodeURIComponent(new URL(request.url).pathname)
     return net.fetch(`file://${filePath}`)
   })
+
+  // Set macOS dock icon to our custom character
+  if (process.platform === 'darwin') {
+    const dockIconPath = path.join(__dirname, '..', 'assets', 'icon-512.png')
+    if (fs.existsSync(dockIconPath)) {
+      const dockIcon = nativeImage.createFromPath(dockIconPath)
+      app.dock.setIcon(dockIcon)
+    }
+  }
 
   createWindow()
 
