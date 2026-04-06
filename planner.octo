@@ -219,6 +219,30 @@
       "text": "네 맞아요! 정리하면:\n\n## 🐙 사장님이 하실 일 (Phase 3)\n\n### 1. 로컬 폴더명 변경\n```\nRuneChat/ → Octopal/\n```\n\n### 2. GitHub 저장소명 변경\n- GitHub → Settings → Repository name → `Octopal` 으로 변경\n\n### 3. 리모트 URL 업데이트\n폴더명 바꾸고 나서:\n```bash\ncd ~/dev/studio-h/Octopal\ngit remote set-url origin https://github.com/studio-h/Octopal.git\n```\n(정확한 org/repo명은 사장님 GitHub 구조에 맞게!)\n\n### 4. 바꾸고 나서 알려주시면\n- 빌드 테스트 돌려서 확인\n- @designer 한테 **Phase 2 (브랜드 컬러 #a41926 + 문어 캐릭터)** 바로 시작시킬게요\n\n---\n\n그 전에 **지금 변경된 코드 커밋**은 해둘까요? 커밋 안 한 상태에서 폴더명 바꿔도 되긴 하지만, 깔끔하게 커밋 먼저 하고 → 폴더/깃 변경이 안전해요! 🐙",
       "ts": 1775456146319,
       "roomTs": 1775456146319
+    },
+    {
+      "role": "user",
+      "text": "오케이 폴더명은 내가 바꾸면 되나?",
+      "ts": 1775456415255,
+      "roomTs": 1775456415255
+    },
+    {
+      "role": "assistant",
+      "text": "네 맞아요! 사장님이 직접 하실 건 딱 이것만:\n\n## 📁 사장님 할 일\n\n### 1. 폴더명 변경\n```bash\nmv ~/dev/studio-h/RuneChat ~/dev/studio-h/Octopal\n```\n\n### 2. GitHub 저장소명 변경\nGitHub 웹 → 해당 repo → **Settings** → **Repository name** → `Octopal`로 변경\n\n### 3. 리모트 URL 업데이트\n```bash\ncd ~/dev/studio-h/Octopal\ngit remote set-url origin <새 repo URL>\n```\n\n---\n\n다 하시면 알려주세요! 그러면 제가:\n1. ✅ 빌드 테스트 확인\n2. 🎨 @designer 한테 Phase 2 (컬러 `#a41926` + 문어 캐릭터) 바로 킥오프\n\n시킬게요! 🐙",
+      "ts": 1775456430912,
+      "roomTs": 1775456430912
+    },
+    {
+      "role": "user",
+      "text": "폴더 이사 완료!",
+      "ts": 1775456576592,
+      "roomTs": 1775456576592
+    },
+    {
+      "role": "assistant",
+      "text": "폴더명 + GitHub 리모트 다 깔끔하게 바뀌었네요! ✅\n\n근데 하나 발견했어요:\n\n### ⚠️ 남은 찌꺼기\n- **`.runechat/` 폴더**가 아직 남아있어요 → `.octopal/`로 바꿔야 합니다\n\n이거 @developer 한테 처리 시키고, 이제 **Phase 2 디자인** 바로 시작할까요?\n\n@designer **Phase 2 시작해주세요!** \n1. 브랜드 컬러 **`#a41926`** 기반 다크 테마 팔레트 설계\n2. **토스페이스 문어 이모지** 참조해서 귀여운 Octopal 캐릭터 컨셉\n3. 앱 아이콘으로도 쓸 수 있는 형태\n\n토스페이스 파일은 프로젝트 어딘가에 깔려있다고 하셨어요. 먼저 찾아서 참고해주세요!\n\n@developer `.runechat/` → `.octopal/` 폴더명 변경 + 코드 내 해당 경로 참조도 한번 더 점검해주세요. 그리고 전체 빌드 테스트도 돌려서 깨진 데 없는지 확인 부탁합니다! 🐙",
+      "ts": 1775456600961,
+      "roomTs": 1775456600961
     }
   ],
   "permissions": {
