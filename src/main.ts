@@ -339,6 +339,34 @@ function findWorkspaceByFolder(folderPath: string): Workspace | null {
 
 // ── IPC handlers ──────────────────────────────
 
+// Check if Claude CLI is installed and logged in
+ipcMain.handle('claude:checkLogin', async () => {
+  return new Promise<{ installed: boolean; loggedIn: boolean }>((resolve) => {
+    const child = spawn('claude', ['auth', 'status'], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env },
+    })
+    let stdout = ''
+    child.stdout.on('data', (d) => { stdout += d.toString() })
+    child.on('error', () => {
+      // claude not found in PATH
+      resolve({ installed: false, loggedIn: false })
+    })
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolve({ installed: true, loggedIn: false })
+        return
+      }
+      try {
+        const parsed = JSON.parse(stdout.trim())
+        resolve({ installed: true, loggedIn: !!parsed.loggedIn })
+      } catch {
+        resolve({ installed: true, loggedIn: false })
+      }
+    })
+  })
+})
+
 ipcMain.handle('state:load', () => loadState())
 
 ipcMain.handle('workspace:create', (_event, name: string) => {

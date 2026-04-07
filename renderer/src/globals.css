@@ -1562,6 +1562,63 @@ button {
   width: 420px;
 }
 
+.claude-login-modal {
+  text-align: center;
+  width: 460px;
+}
+
+.claude-login-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: var(--radius-md, 10px);
+  background: var(--warning-bg);
+  color: var(--warning-text);
+}
+
+.claude-login-desc {
+  text-align: left;
+  max-width: 400px;
+}
+
+.claude-login-code {
+  background: var(--bg-tertiary, #1a1a2e);
+  border: 1px solid var(--border-primary, #2a2a3e);
+  border-radius: var(--radius-sm, 6px);
+  padding: 10px 14px;
+  margin: 10px 0;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 13px;
+  color: var(--text-heading);
+  user-select: all;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.claude-login-code:hover {
+  border-color: var(--accent);
+  background: var(--bg-hover);
+}
+
+.claude-login-hint {
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.claude-login-step-label {
+  margin-top: 8px;
+}
+
+.claude-login-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
 .welcome-title {
   font-size: 22px;
   font-weight: 700;

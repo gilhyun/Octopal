@@ -61,6 +61,20 @@ Octopal은 클로드 코드 위에서 작동하는 멀티 에이전트 채팅앱
 - 멀티 폴더 관리 (폴더 추가/제거)
 - `.octo` 파일 변경 감지 (파일 시스템 워치)
 
+## 사전 준비
+
+Octopal을 사용하려면 **Claude CLI**가 설치되어 있고 로그인되어 있어야 합니다.
+
+```bash
+# 1. Claude CLI 설치
+npm install -g @anthropic-ai/claude-code
+
+# 2. 로그인
+claude login
+```
+
+> Claude CLI가 없으면 Octopal은 에이전트와 통신할 수 없습니다. Claude CLI가 감지되지 않거나 로그인되지 않은 경우 앱 시작 시 안내 팝업이 표시됩니다.
+
 ## Download
 
 | 플랫폼 | 링크 |

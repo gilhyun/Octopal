@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
 contextBridge.exposeInMainWorld('api', {
+  checkClaudeCli: () => ipcRenderer.invoke('claude:checkLogin') as Promise<{ installed: boolean; loggedIn: boolean }>,
   loadState: () => ipcRenderer.invoke('state:load'),
   createWorkspace: (name: string) => ipcRenderer.invoke('workspace:create', name),
   renameWorkspace: (id: string, name: string) =>

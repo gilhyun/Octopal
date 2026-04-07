@@ -12,6 +12,7 @@ import { CreateWorkspaceModal } from './components/modals/CreateWorkspaceModal'
 import { WelcomeModal } from './components/modals/WelcomeModal'
 import { OpenFolderModal } from './components/modals/OpenFolderModal'
 import { EditAgentModal } from './components/modals/EditAgentModal'
+import { ClaudeLoginModal } from './components/modals/ClaudeLoginModal'
 import { SettingsPanel } from './components/SettingsPanel'
 
 export function App() {
@@ -31,6 +32,7 @@ export function App() {
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
   const [showWelcome, setShowWelcome] = useState(false)
   const [editingAgent, setEditingAgent] = useState<OctoFile | null>(null)
+  const [claudeCliStatus, setClaudeCliStatus] = useState<{ installed: boolean; loggedIn: boolean } | null>(null)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
@@ -63,6 +65,11 @@ export function App() {
   // Load state on mount + apply saved language
   useEffect(() => {
     window.api.getPlatform().then((p) => setPlatform(p))
+    window.api.checkClaudeCli().then((status) => {
+      if (!status.installed || !status.loggedIn) {
+        setClaudeCliStatus(status)
+      }
+    })
     window.api.loadSettings().then((settings) => {
       if (settings.general.language && settings.general.language !== i18n.language) {
         i18n.changeLanguage(settings.general.language)
@@ -1042,6 +1049,13 @@ export function App() {
             setState(fresh)
             setActiveFolder(p)
           }}
+        />
+      )}
+
+      {claudeCliStatus && (!claudeCliStatus.installed || !claudeCliStatus.loggedIn) && (
+        <ClaudeLoginModal
+          installed={claudeCliStatus.installed}
+          onDismiss={() => setClaudeCliStatus(null)}
         />
       )}
     </div>

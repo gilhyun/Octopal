@@ -61,6 +61,20 @@ All agent data is stored as `.octo` files in your project folder — everything 
 - Multi-folder management (add/remove folders)
 - `.octo` file change detection (file system watch)
 
+## Prerequisites
+
+Octopal requires **Claude CLI** to be installed and logged in on your machine.
+
+```bash
+# 1. Install Claude CLI
+npm install -g @anthropic-ai/claude-code
+
+# 2. Log in
+claude login
+```
+
+> Without Claude CLI, Octopal cannot communicate with agents. The app will show a login prompt on startup if Claude CLI is not detected or not logged in.
+
 ## Download
 
 | Platform | Link |

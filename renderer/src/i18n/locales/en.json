@@ -161,6 +161,14 @@
     "openFolder": {
       "desc": "Open a project folder to get started.",
       "openFolder": "Open Folder"
+    },
+    "claudeLogin": {
+      "titleNotInstalled": "Claude CLI not found",
+      "titleNotLoggedIn": "Claude CLI login required",
+      "descNotInstalled": "Octopal requires the Claude CLI to communicate with agents. Please install it first:",
+      "descNotLoggedIn": "You need to log in to Claude CLI before using Octopal. Open a terminal and run:",
+      "thenLogin": "Then log in:",
+      "hint": "After logging in, restart Octopal or dismiss this dialog."
     }
   },
   "activity": {

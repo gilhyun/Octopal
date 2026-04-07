@@ -1,7 +1,7 @@
 {
   "name": "octopal",
   "productName": "Octopal",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Chat with your .octo agents. Load a folder, talk to agents in a group room.",
   "main": "dist/main.js",
   "scripts": {
@@ -48,7 +48,9 @@
       "target": [
         {
           "target": "dmg",
-          "arch": ["universal"]
+          "arch": [
+            "universal"
+          ]
         }
       ]
     },
@@ -57,7 +59,10 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64", "arm64"]
+          "arch": [
+            "x64",
+            "arm64"
+          ]
         }
       ]
     },
@@ -70,7 +75,10 @@
     },
     "linux": {
       "icon": "assets/icon-512.png",
-      "target": ["AppImage", "deb"],
+      "target": [
+        "AppImage",
+        "deb"
+      ],
       "category": "Development"
     }
   },
