@@ -22,6 +22,10 @@
   <strong>English</strong> | <a href="README.ko.md">한국어</a>
 </p>
 
+<p align="center">
+  <img src="screenshot.png" alt="Octopal Screenshot" width="800" />
+</p>
+
 ---
 
 ## What is Octopal?
