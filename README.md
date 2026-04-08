@@ -19,6 +19,7 @@
 </p>
 
 <p align="center">
+  🌐 <a href="https://octopal.app"><strong>octopal.app</strong></a> &nbsp;|&nbsp;
   <strong>English</strong> | <a href="README.ko.md">한국어</a>
 </p>
 

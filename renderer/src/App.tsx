@@ -538,39 +538,45 @@ export function App() {
         leader = mentionedAgents[0]
         collaborators = mentionedAgents.slice(1)
       }
-    } else if (octos.length > 0) {
-      const dispatcherMsgId = `d-${userTs}`
-      setMessages((prev) => ({
-        ...prev,
-        [folderPath]: [
-          ...(prev[folderPath] || []),
-          {
-            id: dispatcherMsgId,
-            agentName: '__dispatcher__',
-            text: t('chat.routing'),
-            ts: Date.now(),
-            pending: true,
-          },
-        ],
-      }))
-      const recent = (messages[folderPath] || [])
-        .filter((m) => m.agentName !== '__dispatcher__' && !m.pending)
-        .slice(-6)
-        .map((m) => ({ agentName: m.agentName, text: m.text }))
-      const res = await window.api.dispatch({
-        message: combinedText,
-        agents: octos.map((r) => ({ name: r.name, role: r.role })),
-        recentHistory: recent,
-      })
-      setMessages((prev) => ({
-        ...prev,
-        [folderPath]: (prev[folderPath] || []).filter((m) => m.id !== dispatcherMsgId),
-      }))
-      if (res.ok) {
-        const leaderMatch = octos.find((r) => r.name === res.leader)
-        if (leaderMatch) {
-          leader = leaderMatch
-          collaborators = octos.filter((r) => res.collaborators.includes(r.name))
+    } else {
+      const visibleAgents = octos.filter((r) => !r.hidden)
+      if (visibleAgents.length === 1) {
+        // Only one visible agent — skip dispatcher, route directly
+        leader = visibleAgents[0]
+      } else if (visibleAgents.length > 1) {
+        const dispatcherMsgId = `d-${userTs}`
+        setMessages((prev) => ({
+          ...prev,
+          [folderPath]: [
+            ...(prev[folderPath] || []),
+            {
+              id: dispatcherMsgId,
+              agentName: '__dispatcher__',
+              text: t('chat.routing'),
+              ts: Date.now(),
+              pending: true,
+            },
+          ],
+        }))
+        const recent = (messages[folderPath] || [])
+          .filter((m) => m.agentName !== '__dispatcher__' && !m.pending)
+          .slice(-6)
+          .map((m) => ({ agentName: m.agentName, text: m.text }))
+        const res = await window.api.dispatch({
+          message: combinedText,
+          agents: visibleAgents.map((r) => ({ name: r.name, role: r.role })),
+          recentHistory: recent,
+        })
+        setMessages((prev) => ({
+          ...prev,
+          [folderPath]: (prev[folderPath] || []).filter((m) => m.id !== dispatcherMsgId),
+        }))
+        if (res.ok) {
+          const leaderMatch = octos.find((r) => r.name === res.leader)
+          if (leaderMatch) {
+            leader = leaderMatch
+            collaborators = octos.filter((r) => res.collaborators.includes(r.name))
+          }
         }
       }
     }
