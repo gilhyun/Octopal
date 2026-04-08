@@ -1,3 +1,12 @@
+/* ── Outfit English Font (variable, local) ── */
+@font-face {
+  font-family: 'Outfit';
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+  src: url('/fonts/outfit/Outfit-VariableFont_wght.woff2') format('woff2-variations');
+}
+
 /* ── Pretendard Korean Font (variable, local) ── */
 @font-face {
   font-family: 'Pretendard Variable';
@@ -251,10 +260,17 @@ html,
 body,
 #root {
   height: 100%;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Tossface';
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Tossface';
   font-size: var(--font-base);
   color: var(--text-primary);
   background: var(--bg-base);
+}
+
+button,
+input,
+textarea,
+select {
+  font-family: 'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif, 'Tossface';
 }
 
 /* Korean locale: use Pretendard as primary font */
