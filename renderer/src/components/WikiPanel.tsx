@@ -20,12 +20,15 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
   const refreshPages = () => {
     window.api.wikiList(workspaceId).then((list) => {
       setPages(list)
-      if (list.length > 0 && !selected) {
-        setSelected(list[0].name)
-      } else if (list.length === 0) {
-        setSelected(null)
-        setContent('')
-      }
+      // Use functional setState to avoid stale closure — always gets latest value
+      setSelected((prev) => {
+        if (list.length === 0) return null
+        if (!prev) return list[0].name
+        // If current selection was deleted externally, fall back to first page
+        if (!list.some((p) => p.name === prev)) return list[0].name
+        return prev
+      })
+      if (list.length === 0) setContent('')
     })
   }
 
