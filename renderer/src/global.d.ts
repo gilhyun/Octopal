@@ -152,6 +152,23 @@ interface Window {
     stopAllAgents: () => Promise<{ ok: true; stopped: number }>
     getPlatform: () => Promise<string>
 
+    // File Access Approval
+    onFileAccessRequest: (
+      cb: (data: {
+        requestId: string
+        agentName: string
+        targetPath: string
+        reason?: string
+        blocked?: boolean
+      }) => void,
+    ) => () => void
+    respondFileAccess: (params: {
+      requestId: string
+      decision: 'allow_once' | 'allow_always' | 'deny'
+      targetPath?: string
+      projectFolder?: string
+    }) => Promise<void>
+
     // Settings
     loadSettings: () => Promise<AppSettings>
     saveSettings: (settings: AppSettings) => Promise<{ ok: true }>

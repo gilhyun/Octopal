@@ -3408,3 +3408,90 @@ button {
   opacity: 0.6;
   cursor: default;
 }
+
+/* ================================================================
+   File Access Approval Modal  (security)
+   ================================================================ */
+
+.file-access-modal {
+  text-align: center;
+  width: 420px;
+  padding: 28px 24px 24px;
+}
+
+.file-access-modal__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 50%;
+  background: var(--warning-glow);
+  color: var(--warning);
+}
+
+.file-access-modal__icon--blocked {
+  background: var(--danger-glow);
+  color: var(--danger);
+}
+
+.file-access-modal__desc {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 16px;
+}
+
+.file-access-modal__path {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 12px;
+  text-align: left;
+}
+
+.file-access-modal__path code {
+  font-size: var(--font-xs);
+  color: var(--text-primary);
+  word-break: break-all;
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', monospace);
+}
+
+.file-access-modal__path--blocked {
+  border-color: var(--danger);
+  background: var(--danger-bg);
+}
+
+.file-access-modal__path--blocked code {
+  color: var(--danger-text);
+}
+
+.file-access-modal__reason {
+  font-size: var(--font-xs);
+  color: var(--text-secondary);
+  line-height: 1.4;
+  margin-bottom: 16px;
+  text-align: left;
+}
+
+.file-access-modal__reason-label {
+  font-weight: 600;
+  color: var(--text-dim);
+  margin-right: 6px;
+}
+
+.file-access-modal__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 20px;
+}
+
+.file-access-modal--blocked .modal-title {
+  color: var(--danger-text);
+}

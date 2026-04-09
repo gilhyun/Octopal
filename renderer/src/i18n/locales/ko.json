@@ -210,5 +210,15 @@
   "label": {
     "name": "이름",
     "role": "역할"
+  },
+  "security": {
+    "accessRequest": "파일 접근 요청",
+    "accessRequestDesc": "에이전트 \"{{agent}}\"가 프로젝트 외부 파일에 접근하려고 합니다.",
+    "blocked": "접근 차단됨",
+    "blockedDesc": "보안 정책에 의해 이 경로는 접근할 수 없습니다.",
+    "reason": "요청 사유:",
+    "allowOnce": "이번만 허용",
+    "allowAlways": "항상 허용",
+    "deny": "거부"
   }
 }

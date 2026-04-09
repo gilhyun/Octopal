@@ -13,6 +13,7 @@ import { WelcomeModal } from './components/modals/WelcomeModal'
 import { OpenFolderModal } from './components/modals/OpenFolderModal'
 import { EditAgentModal } from './components/modals/EditAgentModal'
 import { ClaudeLoginModal } from './components/modals/ClaudeLoginModal'
+import { FileAccessApprovalModal, type FileAccessDecision } from './components/modals/FileAccessApprovalModal'
 import { SettingsPanel } from './components/SettingsPanel'
 
 export function App() {
@@ -40,6 +41,15 @@ export function App() {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [platform, setPlatform] = useState<string>('darwin')
+
+  // File access approval modal state
+  const [fileAccessRequest, setFileAccessRequest] = useState<{
+    requestId: string
+    agentName: string
+    targetPath: string
+    reason?: string
+    blocked?: boolean
+  } | null>(null)
 
   // runId -> { folderPath, messageId } so activity events can find the right bubble
   const runMapRef = useRef<Map<string, { folderPath: string; messageId: string }>>(new Map())
@@ -391,6 +401,14 @@ export function App() {
         }].slice(-200) // cap at 200 entries per folder
         return { ...prev, [entry.folderPath]: next }
       })
+    })
+    return unsubscribe
+  }, [])
+
+  // Listen for file access approval requests from main process
+  useEffect(() => {
+    const unsubscribe = window.api.onFileAccessRequest((data) => {
+      setFileAccessRequest(data)
     })
     return unsubscribe
   }, [])
@@ -1011,6 +1029,7 @@ export function App() {
       {editingAgent && activeFolder && (
         <EditAgentModal
           agent={editingAgent}
+          folderPath={activeFolder}
           onClose={() => setEditingAgent(null)}
           onSaved={() => {
             setEditingAgent(null)
@@ -1026,7 +1045,10 @@ export function App() {
       {showCreateAgent && activeFolder && (
         <CreateAgentModal
           folderPath={activeFolder}
-          onClose={() => setShowCreateAgent(false)}
+          onClose={() => {
+            setShowCreateAgent(false)
+            if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
+          }}
           onCreated={() => {
             setShowCreateAgent(false)
             if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
@@ -1077,6 +1099,25 @@ export function App() {
         <ClaudeLoginModal
           installed={claudeCliStatus.installed}
           onDismiss={() => setClaudeCliStatus(null)}
+        />
+      )}
+
+      {fileAccessRequest && (
+        <FileAccessApprovalModal
+          agentName={fileAccessRequest.agentName}
+          targetPath={fileAccessRequest.targetPath}
+          reason={fileAccessRequest.reason}
+          blocked={fileAccessRequest.blocked}
+          onDecision={(decision: FileAccessDecision) => {
+            window.api.respondFileAccess({
+              requestId: fileAccessRequest.requestId,
+              decision,
+              targetPath: fileAccessRequest.targetPath,
+              projectFolder: activeFolder || undefined,
+            })
+            setFileAccessRequest(null)
+          }}
+          onClose={() => setFileAccessRequest(null)}
         />
       )}
     </div>

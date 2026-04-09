@@ -210,5 +210,15 @@
   "label": {
     "name": "Name",
     "role": "Role"
+  },
+  "security": {
+    "accessRequest": "File Access Request",
+    "accessRequestDesc": "Agent \"{{agent}}\" is trying to access a file outside the project.",
+    "blocked": "Access Blocked",
+    "blockedDesc": "This path is restricted by the security policy.",
+    "reason": "Reason:",
+    "allowOnce": "Allow Once",
+    "allowAlways": "Always Allow",
+    "deny": "Deny"
   }
 }

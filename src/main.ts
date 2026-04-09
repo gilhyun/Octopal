@@ -3,7 +3,8 @@ import path from 'path'
 import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
-import { spawn, ChildProcess } from 'child_process'
+import { spawn, execFile, ChildProcess } from 'child_process'
+import { isSensitivePath, validateOctoPath, validatePathContainment, sanitizedEnv, sanitizeError, acquireFileLock, classifyPathAccess, type PathAccessClass } from './security'
 
 // OCTOPAL_PROD=1 forces the built renderer bundle even when running unpackaged,
 // so `npm start` after `npm run build` behaves like a production app.
@@ -31,6 +32,62 @@ if (IS_DEV) {
 
 // Folder watchers — notify renderer when .octo files change
 const watchers = new Map<string, { watcher: fs.FSWatcher; debounce: ReturnType<typeof setTimeout> | null }>()
+
+// ── File Access Approval System (P1) ───────────────────
+type FileAccessDecision = 'allow_once' | 'allow_always' | 'deny'
+
+// Persistent "allow_always" grants — keyed by `${projectFolder}::${resolvedPath}`
+const permanentGrants = new Set<string>()
+
+// Pending approval requests — keyed by requestId
+const pendingApprovals = new Map<string, {
+  resolve: (decision: FileAccessDecision) => void
+  timer: ReturnType<typeof setTimeout>
+}>()
+
+/**
+ * Request user approval for file access outside the project folder.
+ * Returns the user's decision, or 'deny' on timeout (30s).
+ */
+async function requestFileAccessApproval(
+  resolvedPath: string,
+  projectFolder: string,
+  agentName?: string,
+  reason?: string,
+): Promise<FileAccessDecision> {
+  const grantKey = `${projectFolder}::${resolvedPath}`
+
+  // Check permanent grants first
+  if (permanentGrants.has(grantKey)) {
+    return 'allow_once' // already allowed permanently
+  }
+
+  const classification = classifyPathAccess(resolvedPath, projectFolder)
+
+  if (classification === 'internal') return 'allow_once'
+  if (classification === 'blocked') return 'deny'
+
+  // External — ask the user
+  const requestId = crypto.randomUUID()
+
+  return new Promise<FileAccessDecision>((resolve) => {
+    const timer = setTimeout(() => {
+      pendingApprovals.delete(requestId)
+      resolve('deny') // timeout → deny
+    }, 30_000)
+
+    pendingApprovals.set(requestId, { resolve, timer })
+
+    // Send to renderer for modal display
+    broadcastToWindows('fileAccess:request', {
+      requestId,
+      agentName: agentName || 'unknown',
+      targetPath: resolvedPath,
+      reason,
+      blocked: false,
+    })
+  })
+}
 
 // ── Multi-window management ─────────────────────
 const MAX_WINDOWS = 5
@@ -162,10 +219,22 @@ if (!gotTheLock) {
 
 app.whenReady().then(() => {
   // Handle local-file:// protocol — maps absolute paths to file responses
-  protocol.handle('local-file', (request) => {
+  protocol.handle('local-file', async (request) => {
     // URL format: local-file:///absolute/path/to/file
     const filePath = decodeURIComponent(new URL(request.url).pathname)
-    return net.fetch(`file://${filePath}`)
+    const resolved = path.resolve(filePath)
+
+    // P0: Block access to sensitive paths (always deny)
+    if (isSensitivePath(resolved)) {
+      return new Response('Forbidden: access to sensitive path denied', { status: 403 })
+    }
+
+    // Note: local-file:// doesn't carry project folder context,
+    // so external path approval is handled at the IPC level (file:readBase64,
+    // file:getAbsolutePath) before URLs are constructed.
+    // This handler retains P0 sensitive path blocking as a defense-in-depth layer.
+
+    return net.fetch(`file://${resolved}`)
   })
 
   // Set macOS dock icon to our custom character
@@ -344,7 +413,7 @@ ipcMain.handle('claude:checkLogin', async () => {
   return new Promise<{ installed: boolean; loggedIn: boolean }>((resolve) => {
     const child = spawn('claude', ['auth', 'status'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
+      env: sanitizedEnv(),
     })
     let stdout = ''
     child.stdout.on('data', (d) => { stdout += d.toString() })
@@ -516,7 +585,7 @@ ipcMain.handle('wiki:read', (_event, params: { workspaceId: string; name: string
     if (!fs.existsSync(filePath)) return { ok: false, error: 'Not found' }
     return { ok: true, content: fs.readFileSync(filePath, 'utf-8') }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -529,7 +598,7 @@ ipcMain.handle('wiki:write', (_event, params: { workspaceId: string; name: strin
     fs.writeFileSync(path.join(dir, safe), params.content)
     return { ok: true, name: safe }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -541,7 +610,7 @@ ipcMain.handle('wiki:delete', (_event, params: { workspaceId: string; name: stri
     if (fs.existsSync(filePath)) fs.unlinkSync(filePath)
     return { ok: true }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -715,7 +784,7 @@ function buildPermissionArgs(permissions?: OctoPermissions): string[] {
   return args
 }
 
-ipcMain.handle('octo:update', (_event, params: {
+ipcMain.handle('octo:update', async (_event, params: {
   octoPath: string
   name?: string
   role?: string
@@ -723,12 +792,19 @@ ipcMain.handle('octo:update', (_event, params: {
   color?: string
   permissions?: OctoPermissions
 }) => {
+  // P0: Validate path is a .octo file
+  const check = validateOctoPath(params.octoPath)
+  if (!check.ok) return { ok: false, error: check.error }
+  const safePath = check.resolved
+
+  // #6: Acquire file lock to prevent race conditions
+  const release = await acquireFileLock(safePath)
   try {
-    if (!fs.existsSync(params.octoPath)) {
+    if (!fs.existsSync(safePath)) {
       return { ok: false, error: 'File not found' }
     }
-    const content = JSON.parse(fs.readFileSync(params.octoPath, 'utf-8'))
-    let finalPath = params.octoPath
+    const content = JSON.parse(fs.readFileSync(safePath, 'utf-8'))
+    let finalPath = safePath
     if (params.name !== undefined) content.name = params.name.trim() || content.name
     if (params.role !== undefined) content.role = params.role
     if (params.icon !== undefined) content.icon = params.icon
@@ -737,36 +813,55 @@ ipcMain.handle('octo:update', (_event, params: {
 
     // Rename file if name changed
     if (params.name && params.name.trim()) {
-      const dir = path.dirname(params.octoPath)
-      const newFileName = params.name.trim().endsWith('.octo')
-        ? params.name.trim()
-        : `${params.name.trim()}.octo`
+      const dir = path.dirname(safePath)
+      // Sanitize name: reject path separators and leading dots
+      const trimmedName = params.name.trim()
+      if (trimmedName.includes('/') || trimmedName.includes('\\') || trimmedName.startsWith('.')) {
+        return { ok: false, error: 'Invalid agent name' }
+      }
+      const newFileName = trimmedName.endsWith('.octo')
+        ? trimmedName
+        : `${trimmedName}.octo`
       const newPath = path.join(dir, newFileName)
-      if (newPath !== params.octoPath) {
-        if (fs.existsSync(newPath)) {
+      // Validate the new path also stays in the same directory
+      const newCheck = validateOctoPath(newPath, dir)
+      if (!newCheck.ok) return { ok: false, error: newCheck.error }
+
+      if (newCheck.resolved !== safePath) {
+        if (fs.existsSync(newCheck.resolved)) {
           return { ok: false, error: 'An agent with that name already exists' }
         }
-        fs.writeFileSync(params.octoPath, JSON.stringify(content, null, 2))
-        fs.renameSync(params.octoPath, newPath)
-        finalPath = newPath
+        fs.writeFileSync(safePath, JSON.stringify(content, null, 2))
+        fs.renameSync(safePath, newCheck.resolved)
+        finalPath = newCheck.resolved
       } else {
-        fs.writeFileSync(params.octoPath, JSON.stringify(content, null, 2))
+        fs.writeFileSync(safePath, JSON.stringify(content, null, 2))
       }
     } else {
-      fs.writeFileSync(params.octoPath, JSON.stringify(content, null, 2))
+      fs.writeFileSync(safePath, JSON.stringify(content, null, 2))
     }
     return { ok: true, path: finalPath }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
+  } finally {
+    release()
   }
 })
 
-ipcMain.handle('octo:delete', (_event, octoPath: string) => {
+ipcMain.handle('octo:delete', async (_event, octoPath: string) => {
+  // P0: Validate path is a .octo file before deleting
+  const check = validateOctoPath(octoPath)
+  if (!check.ok) return { ok: false, error: check.error }
+
+  // #6: Acquire file lock
+  const release = await acquireFileLock(check.resolved)
   try {
-    if (fs.existsSync(octoPath)) fs.unlinkSync(octoPath)
+    if (fs.existsSync(check.resolved)) fs.unlinkSync(check.resolved)
     return { ok: true }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
+  } finally {
+    release()
   }
 })
 
@@ -774,6 +869,11 @@ ipcMain.handle('octo:create', (_event, params: { folderPath: string; name: strin
   const { folderPath, name, role, icon, color, permissions } = params
   const safeName = name.trim()
   if (!safeName) return { ok: false, error: 'Name is required' }
+
+  // P0: Reject path separators and leading dots in agent names
+  if (safeName.includes('/') || safeName.includes('\\') || safeName.startsWith('.')) {
+    return { ok: false, error: 'Invalid agent name' }
+  }
 
   // Enforce max 10 visible (non-hidden) agents per folder
   const MAX_VISIBLE_AGENTS = 10
@@ -810,7 +910,7 @@ ipcMain.handle('octo:create', (_event, params: { folderPath: string; name: strin
     fs.writeFileSync(filePath, JSON.stringify(octoData, null, 2))
     return { ok: true, path: filePath }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -885,7 +985,7 @@ When in doubt between handoff and approval, prefer "approval" — the human can 
       const child = spawn('claude', claudeArgs, {
         cwd: os.tmpdir(),
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: sanitizedEnv(),
       })
       let stdout = ''
       let stderr = ''
@@ -909,7 +1009,7 @@ When in doubt between handoff and approval, prefer "approval" — the human can 
     // Fallback: safest default is to ask the user.
     return { ok: true, decision: 'approval' }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -969,7 +1069,7 @@ Never include agents not in the list. The leader field is required.`
       const child = spawn('claude', claudeArgs, {
         cwd: os.tmpdir(),
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: sanitizedEnv(),
       })
       let stdout = ''
       let stderr = ''
@@ -1023,7 +1123,7 @@ Never include agents not in the list. The leader field is required.`
     } catch {}
     return { ok: true, leader: agents[0].name, collaborators: [] }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -1052,6 +1152,17 @@ ipcMain.handle('octo:sendMessage', async (_event, params: {
     ts: number
   }) => {
     broadcastToWindows('activity:log', { folderPath, ...entry })
+  }
+
+  // P1: Validate folderPath is an existing directory
+  const resolvedFolder = path.resolve(folderPath)
+  if (!fs.existsSync(resolvedFolder) || !fs.statSync(resolvedFolder).isDirectory()) {
+    return { error: 'Invalid folder path' }
+  }
+
+  // Validate octoPath
+  if (!validateOctoPath(octoPath)) {
+    return { error: 'Invalid agent path' }
   }
 
   try {
@@ -1252,7 +1363,7 @@ How to collaborate (very important):
       const child = spawn('claude', claudeArgs, {
         cwd: folderPath,
         stdio: ['ignore', 'pipe', 'pipe'],
-        env: { ...process.env },
+        env: sanitizedEnv(),
       })
 
       // Track this child process for stop functionality
@@ -1326,15 +1437,22 @@ How to collaborate (very important):
       })
     })
 
-    // Update octo history with roomTs for cross-agent merging
-    octoContent.history = octoContent.history || []
-    octoContent.history.push({ role: 'user', text: prompt, ts: userTs, roomTs: userTs })
-    octoContent.history.push({ role: 'assistant', text: output, ts: Date.now(), roomTs: Date.now() })
-    fs.writeFileSync(octoPath, JSON.stringify(octoContent, null, 2))
+    // #6: Update octo history with file lock to prevent race conditions
+    const release = await acquireFileLock(octoPath)
+    try {
+      // Re-read to merge any concurrent changes (e.g. another agent's response)
+      const freshContent = JSON.parse(fs.readFileSync(octoPath, 'utf-8'))
+      freshContent.history = freshContent.history || []
+      freshContent.history.push({ role: 'user', text: prompt, ts: userTs, roomTs: userTs })
+      freshContent.history.push({ role: 'assistant', text: output, ts: Date.now(), roomTs: Date.now() })
+      fs.writeFileSync(octoPath, JSON.stringify(freshContent, null, 2))
+    } finally {
+      release()
+    }
 
     return { ok: true, output }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
@@ -1399,29 +1517,103 @@ ipcMain.handle('file:save', async (_event, params: {
       },
     }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
 ipcMain.handle('file:readBase64', async (_event, params: {
   folderPath: string
   relativePath: string
+  agentName?: string
 }) => {
   try {
-    const fullPath = path.join(params.folderPath, params.relativePath)
-    if (!fs.existsSync(fullPath)) return { ok: false, error: 'File not found' }
-    const buffer = fs.readFileSync(fullPath)
+    const resolved = path.resolve(params.folderPath, params.relativePath)
+    const classification = classifyPathAccess(resolved, params.folderPath)
+
+    if (classification === 'blocked') {
+      return { ok: false, error: 'Access to sensitive path is denied' }
+    }
+
+    if (classification === 'external') {
+      // P1: Request user approval for external path access
+      const decision = await requestFileAccessApproval(
+        resolved,
+        params.folderPath,
+        params.agentName,
+        'Read file content',
+      )
+      if (decision === 'deny') {
+        return { ok: false, error: 'Access denied by user' }
+      }
+    }
+
+    if (!fs.existsSync(resolved)) return { ok: false, error: 'File not found' }
+    const buffer = fs.readFileSync(resolved)
     return { ok: true, data: buffer.toString('base64') }
   } catch (e: any) {
-    return { ok: false, error: e.message || String(e) }
+    return { ok: false, error: sanitizeError(e, IS_DEV) }
   }
 })
 
-ipcMain.handle('file:getAbsolutePath', (_event, params: {
+ipcMain.handle('file:getAbsolutePath', async (_event, params: {
   folderPath: string
   relativePath: string
+  agentName?: string
 }) => {
-  return path.join(params.folderPath, params.relativePath)
+  const resolved = path.resolve(params.folderPath, params.relativePath)
+  const classification = classifyPathAccess(resolved, params.folderPath)
+
+  if (classification === 'blocked') return null
+
+  if (classification === 'external') {
+    // P1: Request user approval for external path access
+    const decision = await requestFileAccessApproval(
+      resolved,
+      params.folderPath,
+      params.agentName,
+      'Resolve file path',
+    )
+    if (decision === 'deny') return null
+  }
+
+  return resolved
+})
+
+// ── File Access Approval IPC ─────────────────────
+
+/** Renderer responds with the user's decision */
+ipcMain.handle('fileAccess:respond', (_event, params: {
+  requestId: string
+  decision: FileAccessDecision
+  targetPath?: string
+  projectFolder?: string
+}) => {
+  const pending = pendingApprovals.get(params.requestId)
+  if (!pending) return // already timed out or not found
+
+  clearTimeout(pending.timer)
+  pendingApprovals.delete(params.requestId)
+
+  // Persist "allow_always" grants
+  if (params.decision === 'allow_always' && params.targetPath && params.projectFolder) {
+    const grantKey = `${params.projectFolder}::${params.targetPath}`
+    permanentGrants.add(grantKey)
+  }
+
+  pending.resolve(params.decision)
+})
+
+/** Notify renderer about a blocked path (for the blocked alert UI) */
+ipcMain.handle('fileAccess:notifyBlocked', (_event, params: {
+  agentName: string
+  targetPath: string
+}) => {
+  broadcastToWindows('fileAccess:request', {
+    requestId: '', // no response expected
+    agentName: params.agentName,
+    targetPath: params.targetPath,
+    blocked: true,
+  })
 })
 
 // ── Settings persistence ─────────────────────

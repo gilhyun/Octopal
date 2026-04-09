@@ -4,12 +4,13 @@ import { EmojiPicker } from '../EmojiPicker'
 
 interface EditAgentModalProps {
   agent: OctoFile
+  folderPath: string
   onClose: () => void
   onSaved: () => void
   onDeleted: () => void
 }
 
-export function EditAgentModal({ agent, onClose, onSaved, onDeleted }: EditAgentModalProps) {
+export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted }: EditAgentModalProps) {
   const { t } = useTranslation()
   const [name, setName] = useState(agent.name)
   const [role, setRole] = useState(agent.role)

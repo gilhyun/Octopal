@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { useTranslation } from 'react-i18next'
+import { useTranslation, Trans } from 'react-i18next'
 import { EmojiPicker } from '../EmojiPicker'
 import { AlertTriangle } from 'lucide-react'
 
@@ -67,8 +67,13 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
             <div className="modal-title" style={{ marginBottom: 0 }}>{t('agents.limit')}</div>
             <p
               style={{ color: 'var(--text-secondary)', textAlign: 'center', margin: 0, fontSize: 13, lineHeight: 1.5 }}
-              dangerouslySetInnerHTML={{ __html: t('agents.limitMsg', { max: limitReached }) }}
-            />
+            >
+              <Trans
+                i18nKey="agents.limitMsg"
+                values={{ max: limitReached }}
+                components={{ strong: <strong />, br: <br /> }}
+              />
+            </p>
           </div>
           <div className="modal-actions">
             <button className="btn-primary" onClick={onClose}>{t('common.ok')}</button>

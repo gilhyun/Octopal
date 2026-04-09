@@ -105,6 +105,27 @@ contextBridge.exposeInMainWorld('api', {
   stopAllAgents: () => ipcRenderer.invoke('agent:stopAll'),
   getPlatform: () => ipcRenderer.invoke('app:getPlatform'),
 
+  // ── File Access Approval ──
+  onFileAccessRequest: (
+    cb: (data: {
+      requestId: string
+      agentName: string
+      targetPath: string
+      reason?: string
+      blocked?: boolean
+    }) => void,
+  ) => {
+    const handler = (_event: any, data: any) => cb(data)
+    ipcRenderer.on('fileAccess:request', handler)
+    return () => ipcRenderer.removeListener('fileAccess:request', handler)
+  },
+  respondFileAccess: (params: {
+    requestId: string
+    decision: 'allow_once' | 'allow_always' | 'deny'
+    targetPath?: string
+    projectFolder?: string
+  }) => ipcRenderer.invoke('fileAccess:respond', params),
+
   // ── Settings ──
   loadSettings: () => ipcRenderer.invoke('settings:load'),
   saveSettings: (settings: any) => ipcRenderer.invoke('settings:save', settings),
