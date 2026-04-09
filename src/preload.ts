@@ -19,7 +19,7 @@ contextBridge.exposeInMainWorld('api', {
     folderPath: string
     message: { id: string; ts: number; text: string; attachments?: any[] }
   }) => ipcRenderer.invoke('room:appendUser', params),
-  createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: any }) =>
+  createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: any; mcpServers?: any }) =>
     ipcRenderer.invoke('octo:create', params),
   updateOcto: (params: {
     octoPath: string
@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('api', {
       allowPaths?: string[]
       denyPaths?: string[]
     }
+    mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | null
   }) => ipcRenderer.invoke('octo:update', params),
   deleteOcto: (octoPath: string) => ipcRenderer.invoke('octo:delete', octoPath),
   sendMessage: (params: {

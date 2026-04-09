@@ -10,6 +10,11 @@ interface EditAgentModalProps {
   onDeleted: () => void
 }
 
+function formatMcpJson(mcpServers: McpServersConfig | null | undefined): string {
+  if (!mcpServers || Object.keys(mcpServers).length === 0) return ''
+  return JSON.stringify(mcpServers, null, 2)
+}
+
 export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted }: EditAgentModalProps) {
   const { t } = useTranslation()
   const [name, setName] = useState(agent.name)
@@ -21,10 +26,25 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [network, setNetwork] = useState(agent.permissions?.network === true)
   const [allowPaths, setAllowPaths] = useState((agent.permissions?.allowPaths || []).join(', '))
   const [denyPaths, setDenyPaths] = useState((agent.permissions?.denyPaths || []).join(', '))
+  const [mcpJson, setMcpJson] = useState(formatMcpJson(agent.mcpServers))
+  const [mcpError, setMcpError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
 
   const save = async () => {
     setError(null)
+    setMcpError(null)
+
+    // Parse & validate MCP config
+    let mcpServers: McpServersConfig | null = null
+    if (mcpJson.trim()) {
+      try {
+        mcpServers = JSON.parse(mcpJson.trim())
+      } catch {
+        setMcpError(t('mcp.jsonError'))
+        return
+      }
+    }
+
     const permissions: OctoPermissions = {
       fileWrite,
       bash,
@@ -45,6 +65,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
       icon,
       color,
       permissions,
+      mcpServers,
     })
     if (res.ok) onSaved()
     else setError(res.error)
@@ -130,6 +151,20 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
           value={denyPaths}
           onChange={(e) => setDenyPaths(e.target.value)}
         />
+
+        <label className="modal-label">{t('mcp.title')}</label>
+        <div className="modal-hint" style={{ marginTop: 0 }}>
+          {t('mcp.hint')}
+        </div>
+        <textarea
+          className="modal-textarea"
+          placeholder={t('mcp.placeholder')}
+          value={mcpJson}
+          onChange={(e) => { setMcpJson(e.target.value); setMcpError(null) }}
+          rows={6}
+          style={{ fontFamily: 'monospace', fontSize: 12 }}
+        />
+        {mcpError && <div className="modal-error">{mcpError}</div>}
 
         {error && <div className="modal-error">{error}</div>}
 

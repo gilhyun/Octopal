@@ -190,6 +190,86 @@ export async function acquireFileLock(filePath: string): Promise<() => void> {
   return releaseFn
 }
 
+// ── MCP Config Validation ─────────────────────────────────────────────────
+
+/** Allowed commands for MCP server spawning. Rejects suspicious binaries. */
+const MCP_ALLOWED_COMMANDS = new Set([
+  'npx', 'node', 'python', 'python3', 'uvx', 'uv', 'deno', 'bun',
+  'docker', 'podman',
+])
+
+/**
+ * Validate an MCP servers config object.
+ * - Each server must have a `command` string from the allow-list (or an absolute path).
+ * - `args` must be a string array (if present).
+ * - `env` must be a flat string→string object (if present).
+ * - Server names must be safe (no path separators or shell metacharacters).
+ */
+export function validateMcpConfig(
+  mcpServers: unknown,
+): { ok: true; sanitized: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> } | { ok: false; error: string } {
+  if (!mcpServers || typeof mcpServers !== 'object' || Array.isArray(mcpServers)) {
+    return { ok: false, error: 'MCP config must be a JSON object' }
+  }
+
+  const sanitized: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> = {}
+
+  for (const [name, config] of Object.entries(mcpServers as Record<string, any>)) {
+    // Validate server name — no shell metacharacters or path separators
+    if (!name || /[\/\\;|&`${}()<>!]/.test(name)) {
+      return { ok: false, error: `Invalid MCP server name: "${name}"` }
+    }
+    if (name.length > 64) {
+      return { ok: false, error: `MCP server name too long: "${name}"` }
+    }
+
+    if (!config || typeof config !== 'object') {
+      return { ok: false, error: `MCP server "${name}": config must be an object` }
+    }
+
+    // Validate command
+    const cmd = config.command
+    if (typeof cmd !== 'string' || !cmd.trim()) {
+      return { ok: false, error: `MCP server "${name}": command is required` }
+    }
+    const cmdBase = path.basename(cmd)
+    const isAbsolutePath = path.isAbsolute(cmd)
+    if (!isAbsolutePath && !MCP_ALLOWED_COMMANDS.has(cmdBase)) {
+      return { ok: false, error: `MCP server "${name}": command "${cmd}" is not in the allow-list. Allowed: ${[...MCP_ALLOWED_COMMANDS].join(', ')} (or use an absolute path)` }
+    }
+
+    // Validate args
+    if (config.args !== undefined) {
+      if (!Array.isArray(config.args) || !config.args.every((a: any) => typeof a === 'string')) {
+        return { ok: false, error: `MCP server "${name}": args must be a string array` }
+      }
+    }
+
+    // Validate env — must be flat string→string, no sensitive key leaking
+    let env: Record<string, string> | undefined
+    if (config.env !== undefined) {
+      if (typeof config.env !== 'object' || Array.isArray(config.env)) {
+        return { ok: false, error: `MCP server "${name}": env must be a { key: value } object` }
+      }
+      env = {}
+      for (const [k, v] of Object.entries(config.env as Record<string, any>)) {
+        if (typeof v !== 'string') {
+          return { ok: false, error: `MCP server "${name}": env value for "${k}" must be a string` }
+        }
+        env[k] = v
+      }
+    }
+
+    sanitized[name] = {
+      command: cmd.trim(),
+      ...(config.args ? { args: config.args } : {}),
+      ...(env ? { env } : {}),
+    }
+  }
+
+  return { ok: true, sanitized }
+}
+
 export function sanitizedEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env }
   for (const key of Object.keys(env)) {

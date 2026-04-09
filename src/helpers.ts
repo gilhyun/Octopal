@@ -42,6 +42,16 @@ export interface OctoPermissions {
   denyPaths?: string[]
 }
 
+export interface McpServerConfig {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+}
+
+export interface McpServersConfig {
+  [serverName: string]: McpServerConfig
+}
+
 /**
  * Build Claude CLI permission arguments from an OctoPermissions object.
  */
@@ -298,6 +308,7 @@ export interface ParsedOcto {
   icon: string
   hidden: boolean
   permissions: OctoPermissions | null
+  mcpServers: McpServersConfig | null
 }
 
 /**
@@ -315,6 +326,7 @@ export function parseOctoFile(
     icon: content.icon || 'bot',
     hidden: content.hidden || false,
     permissions: content.permissions || null,
+    mcpServers: content.mcpServers || null,
   }
 }
 

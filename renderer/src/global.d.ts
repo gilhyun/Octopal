@@ -6,6 +6,16 @@ interface OctoPermissions {
   denyPaths?: string[]
 }
 
+interface McpServerConfig {
+  command: string
+  args?: string[]
+  env?: Record<string, string>
+}
+
+interface McpServersConfig {
+  [serverName: string]: McpServerConfig
+}
+
 interface OctoFile {
   path: string
   name: string
@@ -14,6 +24,7 @@ interface OctoFile {
   color?: string
   hidden?: boolean
   permissions?: OctoPermissions | null
+  mcpServers?: McpServersConfig | null
 }
 
 interface Workspace {
@@ -69,7 +80,7 @@ interface Window {
       folderPath: string
       message: { id: string; ts: number; text: string; attachments?: any[] }
     }) => Promise<{ ok: true }>
-    createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: OctoPermissions }) =>
+    createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: OctoPermissions; mcpServers?: McpServersConfig }) =>
       Promise<{ ok: true; path: string } | { ok: false; error: string }>
     updateOcto: (params: {
       octoPath: string
@@ -78,6 +89,7 @@ interface Window {
       icon?: string
       color?: string
       permissions?: OctoPermissions
+      mcpServers?: McpServersConfig | null
     }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
     deleteOcto: (octoPath: string) =>
       Promise<{ ok: true } | { ok: false; error: string }>

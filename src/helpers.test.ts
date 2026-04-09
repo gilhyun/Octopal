@@ -705,6 +705,7 @@ describe('parseOctoFile', () => {
       icon: '🖥',
       hidden: false,
       permissions: { fileWrite: true, bash: true, network: false },
+      mcpServers: null,
     })
   })
 
@@ -725,9 +726,9 @@ describe('parseOctoFile', () => {
 describe('countVisibleAgents', () => {
   it('counts only non-hidden agents', () => {
     const agents: ParsedOcto[] = [
-      { path: '/a.octo', name: 'a', role: '', icon: 'bot', hidden: false, permissions: null },
-      { path: '/b.octo', name: 'b', role: '', icon: 'bot', hidden: true, permissions: null },
-      { path: '/c.octo', name: 'c', role: '', icon: 'bot', hidden: false, permissions: null },
+      { path: '/a.octo', name: 'a', role: '', icon: 'bot', hidden: false, permissions: null, mcpServers: null },
+      { path: '/b.octo', name: 'b', role: '', icon: 'bot', hidden: true, permissions: null, mcpServers: null },
+      { path: '/c.octo', name: 'c', role: '', icon: 'bot', hidden: false, permissions: null, mcpServers: null },
     ]
     expect(countVisibleAgents(agents)).toBe(2)
   })
@@ -738,7 +739,7 @@ describe('countVisibleAgents', () => {
 
   it('returns 0 when all agents are hidden', () => {
     const agents: ParsedOcto[] = [
-      { path: '/a.octo', name: 'a', role: '', icon: 'bot', hidden: true, permissions: null },
+      { path: '/a.octo', name: 'a', role: '', icon: 'bot', hidden: true, permissions: null, mcpServers: null },
     ]
     expect(countVisibleAgents(agents)).toBe(0)
   })

@@ -8,6 +8,7 @@ import {
   sanitizeError,
   acquireFileLock,
   classifyPathAccess,
+  validateMcpConfig,
   SENSITIVE_PATH_PATTERNS,
   SENSITIVE_ENV_KEYS,
 } from './security'
@@ -628,5 +629,97 @@ describe('classifyPathAccess', () => {
     it('blocked takes priority over external', () => {
       expect(classifyPathAccess('/home/user/.gnupg/key.gpg', projectFolder)).toBe('blocked')
     })
+  })
+})
+
+// ── validateMcpConfig ─────────────────────────────────────────────────────────
+
+describe('validateMcpConfig', () => {
+  it('accepts valid MCP config with allowed command', () => {
+    const result = validateMcpConfig({
+      figma: {
+        command: 'npx',
+        args: ['-y', '@anthropic/mcp-figma'],
+        env: { FIGMA_TOKEN: 'test-token' },
+      },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.sanitized.figma.command).toBe('npx')
+      expect(result.sanitized.figma.args).toEqual(['-y', '@anthropic/mcp-figma'])
+    }
+  })
+
+  it('accepts absolute path commands', () => {
+    const result = validateMcpConfig({
+      custom: { command: '/usr/local/bin/my-mcp-server' },
+    })
+    expect(result.ok).toBe(true)
+  })
+
+  it('rejects non-allowlisted relative commands', () => {
+    const result = validateMcpConfig({
+      bad: { command: 'rm' },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('not in the allow-list')
+  })
+
+  it('rejects non-object input', () => {
+    expect(validateMcpConfig(null).ok).toBe(false)
+    expect(validateMcpConfig('string').ok).toBe(false)
+    expect(validateMcpConfig([]).ok).toBe(false)
+  })
+
+  it('rejects server names with shell metacharacters', () => {
+    const result = validateMcpConfig({
+      'bad;rm -rf /': { command: 'npx' },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('Invalid MCP server name')
+  })
+
+  it('rejects missing command', () => {
+    const result = validateMcpConfig({
+      server: { args: ['--flag'] },
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it('rejects non-string args', () => {
+    const result = validateMcpConfig({
+      server: { command: 'npx', args: [123] },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('string array')
+  })
+
+  it('rejects non-string env values', () => {
+    const result = validateMcpConfig({
+      server: { command: 'npx', env: { KEY: 123 } },
+    })
+    expect(result.ok).toBe(false)
+    if (!result.ok) expect(result.error).toContain('must be a string')
+  })
+
+  it('accepts multiple servers', () => {
+    const result = validateMcpConfig({
+      figma: { command: 'npx', args: ['-y', '@mcp/figma'] },
+      github: { command: 'node', args: ['./mcp-github.js'] },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(Object.keys(result.sanitized)).toHaveLength(2)
+    }
+  })
+
+  it('strips unnecessary fields from output', () => {
+    const result = validateMcpConfig({
+      server: { command: 'npx', args: ['test'], extraField: 'ignored' },
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.sanitized.server).not.toHaveProperty('extraField')
+    }
   })
 })

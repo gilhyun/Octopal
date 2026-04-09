@@ -20,11 +20,14 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
   const [network, setNetwork] = useState(false)
   const [allowPaths, setAllowPaths] = useState('')
   const [denyPaths, setDenyPaths] = useState('')
+  const [mcpJson, setMcpJson] = useState('')
+  const [mcpError, setMcpError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [limitReached, setLimitReached] = useState<number | null>(null)
 
   const create = async () => {
     setError(null)
+    setMcpError(null)
     setLimitReached(null)
     const permissions: OctoPermissions = {
       fileWrite,
@@ -39,6 +42,18 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
         .map((s) => s.trim())
         .filter(Boolean),
     }
+
+    // Parse MCP config
+    let mcpServers: McpServersConfig | undefined
+    if (mcpJson.trim()) {
+      try {
+        mcpServers = JSON.parse(mcpJson.trim())
+      } catch {
+        setMcpError(t('mcp.jsonError'))
+        return
+      }
+    }
+
     const res = await window.api.createOcto({
       folderPath,
       name,
@@ -46,6 +61,7 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
       icon: icon || undefined,
       color: color || undefined,
       permissions,
+      mcpServers,
     })
     if (res.ok) {
       onCreated()
@@ -159,6 +175,20 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
           value={denyPaths}
           onChange={(e) => setDenyPaths(e.target.value)}
         />
+
+        <label className="modal-label">{t('mcp.title')}</label>
+        <div className="modal-hint" style={{ marginTop: 0 }}>
+          {t('mcp.hint')}
+        </div>
+        <textarea
+          className="modal-textarea"
+          placeholder={t('mcp.placeholder')}
+          value={mcpJson}
+          onChange={(e) => { setMcpJson(e.target.value); setMcpError(null) }}
+          rows={6}
+          style={{ fontFamily: 'monospace', fontSize: 12 }}
+        />
+        {mcpError && <div className="modal-error">{mcpError}</div>}
 
         {error && <div className="modal-error">{error}</div>}
 

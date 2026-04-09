@@ -119,10 +119,7 @@ claude login
 
 ## Download
 
-| 플랫폼 | 링크 |
-|--------|------|
-| macOS (Universal) | [Octopal-0.1.0-universal.dmg](https://github.com/gilhyun/Octopal/releases/latest/download/Octopal-0.1.0-universal.dmg) |
-| Windows (x64 + ARM64) | [Octopal Setup 0.1.0.exe](https://github.com/gilhyun/Octopal/releases/latest/download/Octopal.Setup.0.1.0.exe) |
+👉 **[최신 버전 다운로드](https://github.com/gilhyun/Octopal/releases)** (macOS / Windows)
 
 > **⚠️ 코드 서명 안내**
 >

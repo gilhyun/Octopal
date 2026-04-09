@@ -4,7 +4,7 @@ import fs from 'fs'
 import crypto from 'crypto'
 import os from 'os'
 import { spawn, execFile, ChildProcess } from 'child_process'
-import { isSensitivePath, validateOctoPath, validatePathContainment, sanitizedEnv, sanitizeError, acquireFileLock, classifyPathAccess, type PathAccessClass } from './security'
+import { isSensitivePath, validateOctoPath, validatePathContainment, sanitizedEnv, sanitizeError, acquireFileLock, classifyPathAccess, validateMcpConfig, type PathAccessClass } from './security'
 
 // OCTOPAL_PROD=1 forces the built renderer bundle even when running unpackaged,
 // so `npm start` after `npm run build` behaves like a production app.
@@ -791,6 +791,7 @@ ipcMain.handle('octo:update', async (_event, params: {
   icon?: string
   color?: string
   permissions?: OctoPermissions
+  mcpServers?: Record<string, { command: string; args?: string[]; env?: Record<string, string> }> | null
 }) => {
   // P0: Validate path is a .octo file
   const check = validateOctoPath(params.octoPath)
@@ -810,6 +811,15 @@ ipcMain.handle('octo:update', async (_event, params: {
     if (params.icon !== undefined) content.icon = params.icon
     if (params.color !== undefined) content.color = params.color
     if (params.permissions !== undefined) content.permissions = params.permissions
+    if (params.mcpServers !== undefined) {
+      if (params.mcpServers === null || Object.keys(params.mcpServers).length === 0) {
+        delete content.mcpServers
+      } else {
+        const mcpCheck = validateMcpConfig(params.mcpServers)
+        if (!mcpCheck.ok) return { ok: false, error: mcpCheck.error }
+        content.mcpServers = mcpCheck.sanitized
+      }
+    }
 
     // Rename file if name changed
     if (params.name && params.name.trim()) {
@@ -865,8 +875,8 @@ ipcMain.handle('octo:delete', async (_event, octoPath: string) => {
   }
 })
 
-ipcMain.handle('octo:create', (_event, params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: any }) => {
-  const { folderPath, name, role, icon, color, permissions } = params
+ipcMain.handle('octo:create', (_event, params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: any; mcpServers?: any }) => {
+  const { folderPath, name, role, icon, color, permissions, mcpServers } = params
   const safeName = name.trim()
   if (!safeName) return { ok: false, error: 'Name is required' }
 
@@ -906,6 +916,11 @@ ipcMain.handle('octo:create', (_event, params: { folderPath: string; name: strin
   if (permissions) {
     octoData.permissions = permissions
   }
+  if (mcpServers && typeof mcpServers === 'object' && Object.keys(mcpServers).length > 0) {
+    const mcpCheck = validateMcpConfig(mcpServers)
+    if (!mcpCheck.ok) return { ok: false, error: mcpCheck.error }
+    octoData.mcpServers = mcpCheck.sanitized
+  }
   try {
     fs.writeFileSync(filePath, JSON.stringify(octoData, null, 2))
     return { ok: true, path: filePath }
@@ -929,8 +944,10 @@ ipcMain.handle('folder:listOctos', (_event, folderPath: string) => {
             name: content.name || f.replace('.octo', ''),
             role: content.role || '',
             icon: content.icon || 'bot',
+            color: content.color || undefined,
             hidden: content.hidden || false,
             permissions: content.permissions || null,
+            mcpServers: content.mcpServers || null,
           }
         } catch {
           return null
@@ -1286,9 +1303,20 @@ How to collaborate (very important):
         perms.bash === true ||
         perms.network === true)
 
+    // Build MCP config — merge agent-specific MCP servers if defined
+    const agentMcpServers = octoContent.mcpServers
+    let mcpConfigStr = '{"mcpServers":{}}'
+    if (agentMcpServers && typeof agentMcpServers === 'object' && Object.keys(agentMcpServers).length > 0) {
+      const mcpCheck = validateMcpConfig(agentMcpServers)
+      if (mcpCheck.ok) {
+        mcpConfigStr = JSON.stringify({ mcpServers: mcpCheck.sanitized })
+      }
+      // If validation fails, fall back to empty config (agent still works, just no MCP)
+    }
+
     const claudeArgs = [
       '-p', '--print',
-      '--mcp-config', '{"mcpServers":{}}',
+      '--mcp-config', mcpConfigStr,
       '--strict-mcp-config',
       '--verbose',
       '--output-format', 'stream-json',
