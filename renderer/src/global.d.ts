@@ -115,6 +115,20 @@ interface Window {
         ts: number
       }) => void,
     ) => () => void
+    onUsageReport: (
+      cb: (data: {
+        runId: string
+        usage: {
+          inputTokens: number
+          outputTokens: number
+          cacheReadTokens?: number
+          cacheCreationTokens?: number
+          costUsd?: number
+          durationMs?: number
+          model?: string
+        }
+      }) => void,
+    ) => () => void
     dispatch: (params: {
       message: string
       agents: Array<{ name: string; role: string }>

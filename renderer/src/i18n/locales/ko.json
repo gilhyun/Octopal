@@ -184,7 +184,11 @@
     "secondsAgo": "{{n}}초 전",
     "minutesAgo": "{{n}}분 전",
     "hoursAgo": "{{n}}시간 전",
-    "daysAgo": "{{n}}일 전"
+    "daysAgo": "{{n}}일 전",
+    "usageTitle": "토큰 사용량",
+    "totalTokens": "토큰",
+    "totalCost": "비용",
+    "responses": "응답"
   },
   "wiki": {
     "title": "위키",

@@ -1096,6 +1096,92 @@ button {
   font-size: var(--font-sm);
 }
 
+/* ── Usage Summary in Activity Panel ── */
+.usage-summary {
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.usage-summary-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  color: var(--text-secondary);
+  font-size: var(--font-sm);
+  font-weight: 600;
+}
+
+.usage-summary-header svg {
+  color: var(--accent);
+}
+
+.usage-summary-stats {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.usage-summary-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.usage-stat-value {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-stat-cost {
+  color: var(--accent);
+}
+
+.usage-stat-label {
+  font-size: 10px;
+  color: var(--text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.usage-by-agent {
+  margin-top: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.usage-agent-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.usage-agent-name {
+  color: var(--text-secondary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.usage-agent-tokens {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usage-agent-cost {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 500;
+  min-width: 48px;
+  text-align: right;
+}
+
 .activity-panel-entry {
   display: flex;
   align-items: flex-start;
@@ -2723,6 +2809,95 @@ button {
 
 .message-file-name {
   max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Token Usage Badge ── */
+.token-usage-badge {
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  user-select: none;
+}
+
+.token-usage-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 2px 0;
+  opacity: 0.65;
+  transition: opacity 0.15s;
+}
+
+.token-usage-summary:hover {
+  opacity: 1;
+}
+
+.token-usage-summary svg {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.token-usage-total {
+  font-variant-numeric: tabular-nums;
+}
+
+.token-usage-cost {
+  color: var(--accent);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+
+.token-usage-duration {
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.token-usage-cost::before,
+.token-usage-duration::before {
+  content: "·";
+  margin-right: 6px;
+  color: var(--text-tertiary);
+  opacity: 0.5;
+}
+
+.token-usage-detail {
+  margin-top: 4px;
+  padding: 6px 8px;
+  background: var(--bg-base);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 240px;
+}
+
+.token-usage-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.token-usage-label {
+  color: var(--text-tertiary);
+}
+
+.token-usage-value {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+  font-weight: 500;
+}
+
+.token-usage-model {
+  font-size: 10px;
+  opacity: 0.7;
+  font-weight: 400;
+  max-width: 150px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

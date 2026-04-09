@@ -3,8 +3,8 @@ import { useTranslation } from 'react-i18next'
 import { basename } from '../utils'
 import { MentionPopup } from './MentionPopup'
 import { AgentAvatar } from './AgentAvatar'
-import type { Attachment, Message } from '../types'
-import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown, PanelLeftOpen, PanelRightOpen, PanelRightClose, Code, ChevronDown, ChevronRight } from 'lucide-react'
+import type { Attachment, Message, TokenUsage } from '../types'
+import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown, PanelLeftOpen, PanelRightOpen, PanelRightClose, Code, ChevronDown, ChevronRight, Zap } from 'lucide-react'
 import { MarkdownRenderer } from './MarkdownRenderer'
 
 /** Pending attachment before send — holds local preview data */
@@ -75,6 +75,74 @@ function CollapsibleLongText({ text }: { text: string }) {
       <button className="collapsible-toggle" onClick={() => setExpanded(e => !e)}>
         {expanded ? t('chat.showLess') : t('chat.showMore')}
       </button>
+    </div>
+  )
+}
+
+function formatTokenCount(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`
+  return `${n}`
+}
+
+function formatCost(usd: number): string {
+  if (usd < 0.001) return `$${usd.toFixed(4)}`
+  if (usd < 0.01) return `$${usd.toFixed(3)}`
+  return `$${usd.toFixed(2)}`
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  return `${(ms / 1000).toFixed(1)}s`
+}
+
+/** Inline token usage badge shown below agent messages */
+function TokenUsageBadge({ usage }: { usage: TokenUsage }) {
+  const [expanded, setExpanded] = useState(false)
+  const totalTokens = usage.inputTokens + usage.outputTokens
+
+  return (
+    <div className="token-usage-badge">
+      <div className="token-usage-summary" onClick={() => setExpanded(e => !e)}>
+        <Zap size={12} />
+        <span className="token-usage-total">{formatTokenCount(totalTokens)} tokens</span>
+        {usage.costUsd != null && (
+          <span className="token-usage-cost">{formatCost(usage.costUsd)}</span>
+        )}
+        {usage.durationMs != null && (
+          <span className="token-usage-duration">{formatDuration(usage.durationMs)}</span>
+        )}
+      </div>
+      {expanded && (
+        <div className="token-usage-detail">
+          <div className="token-usage-row">
+            <span className="token-usage-label">Input</span>
+            <span className="token-usage-value">{formatTokenCount(usage.inputTokens)}</span>
+          </div>
+          <div className="token-usage-row">
+            <span className="token-usage-label">Output</span>
+            <span className="token-usage-value">{formatTokenCount(usage.outputTokens)}</span>
+          </div>
+          {usage.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
+            <div className="token-usage-row">
+              <span className="token-usage-label">Cache read</span>
+              <span className="token-usage-value">{formatTokenCount(usage.cacheReadTokens)}</span>
+            </div>
+          )}
+          {usage.cacheCreationTokens != null && usage.cacheCreationTokens > 0 && (
+            <div className="token-usage-row">
+              <span className="token-usage-label">Cache write</span>
+              <span className="token-usage-value">{formatTokenCount(usage.cacheCreationTokens)}</span>
+            </div>
+          )}
+          {usage.model && (
+            <div className="token-usage-row">
+              <span className="token-usage-label">Model</span>
+              <span className="token-usage-value token-usage-model">{usage.model}</span>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 }
@@ -650,6 +718,9 @@ export function ChatPanel({
                       )
                     )}
                   </div>
+                )}
+                {!isUser && !m.pending && m.usage && (
+                  <TokenUsageBadge usage={m.usage} />
                 )}
               </div>
             </div>

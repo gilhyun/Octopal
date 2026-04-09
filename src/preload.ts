@@ -67,6 +67,24 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('activity:log', handler)
     return () => ipcRenderer.removeListener('activity:log', handler)
   },
+  onUsageReport: (
+    cb: (data: {
+      runId: string
+      usage: {
+        inputTokens: number
+        outputTokens: number
+        cacheReadTokens?: number
+        cacheCreationTokens?: number
+        costUsd?: number
+        durationMs?: number
+        model?: string
+      }
+    }) => void,
+  ) => {
+    const handler = (_event: any, data: any) => cb(data)
+    ipcRenderer.on('octo:usage', handler)
+    return () => ipcRenderer.removeListener('octo:usage', handler)
+  },
   dispatch: (params: {
     message: string
     agents: Array<{ name: string; role: string }>

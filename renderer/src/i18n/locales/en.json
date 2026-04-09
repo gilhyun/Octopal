@@ -184,7 +184,11 @@
     "secondsAgo": "{{n}}s ago",
     "minutesAgo": "{{n}}m ago",
     "hoursAgo": "{{n}}h ago",
-    "daysAgo": "{{n}}d ago"
+    "daysAgo": "{{n}}d ago",
+    "usageTitle": "Token Usage",
+    "totalTokens": "tokens",
+    "totalCost": "cost",
+    "responses": "responses"
   },
   "wiki": {
     "title": "Wiki",

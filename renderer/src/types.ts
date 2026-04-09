@@ -20,6 +20,16 @@ export interface PermissionRequest {
   agentPath?: string         // path to the .octo file to update
 }
 
+export interface TokenUsage {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheCreationTokens?: number
+  costUsd?: number
+  durationMs?: number
+  model?: string
+}
+
 export interface Message {
   id: string
   agentName: string | 'user'
@@ -31,6 +41,7 @@ export interface Message {
   attachments?: Attachment[]
   handoff?: PendingHandoff    // set when this agent's message proposes calling others
   permissionRequest?: PermissionRequest  // set when agent needs permissions to fulfill user's request
+  usage?: TokenUsage          // token usage for this agent response
 }
 
 export interface ActivityLogEntry {

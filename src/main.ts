@@ -1545,6 +1545,15 @@ How to collaborate (very important):
       let finalResult = ''
       let buffer = ''
       let stderr = ''
+      let usageReport: {
+        inputTokens: number
+        outputTokens: number
+        cacheReadTokens?: number
+        cacheCreationTokens?: number
+        costUsd?: number
+        durationMs?: number
+        model?: string
+      } | null = null
 
       child.stdout.on('data', (data) => {
         buffer += data.toString()
@@ -1598,6 +1607,27 @@ How to collaborate (very important):
             }
             if (event.type === 'result') {
               finalResult = event.result || ''
+              // Extract token usage from result event
+              const u = event.usage
+              if (u) {
+                usageReport = {
+                  inputTokens: u.input_tokens || 0,
+                  outputTokens: u.output_tokens || 0,
+                  cacheReadTokens: u.cache_read_input_tokens || undefined,
+                  cacheCreationTokens: u.cache_creation_input_tokens || undefined,
+                  costUsd: typeof event.total_cost_usd === 'number' ? event.total_cost_usd : undefined,
+                  durationMs: typeof event.duration_ms === 'number' ? event.duration_ms : undefined,
+                }
+                // Extract model name from modelUsage if available
+                if (event.modelUsage) {
+                  const models = Object.keys(event.modelUsage)
+                  if (models.length > 0) {
+                    usageReport.model = models[0]
+                  }
+                }
+                // Broadcast usage to renderer
+                broadcastToWindows('octo:usage', { runId, usage: usageReport })
+              }
             }
           } catch {}
         }

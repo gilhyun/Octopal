@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
-import type { ActivityLogEntry, Attachment, Message, PermissionRequest } from './types'
+import type { ActivityLogEntry, Attachment, Message, PermissionRequest, TokenUsage } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { WikiPanel } from './components/WikiPanel'
@@ -432,6 +432,24 @@ export function App() {
           ts: entry.ts,
         }].slice(-200) // cap at 200 entries per folder
         return { ...prev, [entry.folderPath]: next }
+      })
+    })
+    return unsubscribe
+  }, [])
+
+  // Token usage: attach usage reports to the corresponding message bubbles
+  useEffect(() => {
+    const unsubscribe = window.api.onUsageReport(({ runId, usage }) => {
+      const mapping = runMapRef.current.get(runId)
+      if (!mapping) return
+      setMessages((prev) => {
+        const list = prev[mapping.folderPath] || []
+        return {
+          ...prev,
+          [mapping.folderPath]: list.map((m) =>
+            m.id === mapping.messageId ? { ...m, usage } : m
+          ),
+        }
       })
     })
     return unsubscribe
@@ -1120,7 +1138,7 @@ export function App() {
             }}
           />
         ) : centerTab === 'activity' ? (
-          <ActivityPanel activityLog={folderActivity} octos={octos} />
+          <ActivityPanel activityLog={folderActivity} octos={octos} folderMessages={folderMessages} />
         ) : centerTab === 'settings' ? (
           <SettingsPanel />
         ) : state.activeWorkspaceId ? (
