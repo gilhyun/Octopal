@@ -37,6 +37,15 @@ Create a new workspace, import your project folders, easily add agents, and enjo
 
 All agent data is stored as `.octo` files in your project folder — everything lives inside the file. As long as you have the `.octo` file, you can pick up the conversation from anywhere.
 
+## Philosophy
+
+> **My PC is my Company.**
+
+Octopal's uniquely simple structure instantly turns your PC into your own company.
+Folders are teams, files are agents, and folders come together to form a workspace.
+
+No cloud, no accounts — just your computer and your AI company.
+
 ## Features
 
 ### Chat
