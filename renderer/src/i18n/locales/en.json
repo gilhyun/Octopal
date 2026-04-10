@@ -273,7 +273,7 @@
   "mcp": {
     "title": "MCP Servers",
     "hint": "Connect external tools (Figma, GitHub, Slack, etc.) via Model Context Protocol. Paste a JSON config or leave empty.",
-    "placeholder": "{\n  \"figma\": {\n    \"command\": \"npx\",\n    \"args\": [\"-y\", \"@anthropic/mcp-figma\"],\n    \"env\": { \"FIGMA_TOKEN\": \"your-token\" }\n  }\n}",
+    "placeholder": "{\n  \"figma\": {\n    \"command\": \"npx\",\n    \"args\": [\"-y\", \"figma-developer-mcp\"],\n    \"env\": { \"FIGMA_TOKEN\": \"your-token\" }\n  }\n}",
     "jsonError": "Invalid JSON. Please check the format.",
     "connectedCount": "{{count}} server connected",
     "connectedCount_other": "{{count}} servers connected"

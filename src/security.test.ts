@@ -646,14 +646,14 @@ describe('validateMcpConfig', () => {
     const result = validateMcpConfig({
       figma: {
         command: 'npx',
-        args: ['-y', '@anthropic/mcp-figma'],
+        args: ['-y', 'figma-developer-mcp'],
         env: { FIGMA_TOKEN: 'test-token' },
       },
     })
     expect(result.ok).toBe(true)
     if (result.ok) {
       expect(result.sanitized.figma.command).toBe('npx')
-      expect(result.sanitized.figma.args).toEqual(['-y', '@anthropic/mcp-figma'])
+      expect(result.sanitized.figma.args).toEqual(['-y', 'figma-developer-mcp'])
     }
   })
 

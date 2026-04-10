@@ -273,7 +273,7 @@
   "mcp": {
     "title": "MCP 서버",
     "hint": "Model Context Protocol로 외부 도구 (Figma, GitHub, Slack 등)를 연결합니다. JSON 설정을 붙여넣거나 비워두세요.",
-    "placeholder": "{\n  \"figma\": {\n    \"command\": \"npx\",\n    \"args\": [\"-y\", \"@anthropic/mcp-figma\"],\n    \"env\": { \"FIGMA_TOKEN\": \"your-token\" }\n  }\n}",
+    "placeholder": "{\n  \"figma\": {\n    \"command\": \"npx\",\n    \"args\": [\"-y\", \"figma-developer-mcp\"],\n    \"env\": { \"FIGMA_TOKEN\": \"your-token\" }\n  }\n}",
     "jsonError": "잘못된 JSON 형식입니다. 형식을 확인해주세요.",
     "connectedCount": "서버 {{count}}개 연결됨",
     "connectedCount_other": "서버 {{count}}개 연결됨"

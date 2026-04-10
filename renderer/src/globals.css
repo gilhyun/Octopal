@@ -4286,15 +4286,15 @@ button {
 
 .mcp-validation-hint {
   font-size: var(--font-xs);
-  color: var(--text-tertiary);
+  color: var(--text-muted);
   margin-top: 4px;
   line-height: 1.4;
 }
 
 .mcp-validation-raw-error {
   font-size: 11px;
-  color: var(--text-tertiary);
-  background: var(--bg-secondary);
+  color: var(--text-muted);
+  background: var(--bg-elevated);
   padding: 6px 8px;
   border-radius: var(--radius-sm);
   margin-top: 6px;

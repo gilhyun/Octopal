@@ -121,7 +121,8 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
       // Detect auth/token errors
       if (lowerError.includes('unauthorized') || lowerError.includes('invalid token') ||
           lowerError.includes('401') || lowerError.includes('403') || lowerError.includes('auth') ||
-          lowerError.includes('token') || lowerError.includes('forbidden')) {
+          lowerError.includes('token') || lowerError.includes('forbidden') ||
+          lowerError.includes('api_key') || lowerError.includes('api key')) {
         return (
           <div className="mcp-validation-detail mcp-validation-detail--error">
             <div>{t('mcpValidation.authError', { server: serverName })}</div>
@@ -167,7 +168,7 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
   }
 
   return (
-    <div className="modal-backdrop" onClick={onClose}>
+    <div className="modal-backdrop" onClick={isWorking ? undefined : onClose}>
       <div className="modal modal-wide" onClick={(e) => e.stopPropagation()}>
         <div className="modal-title">{t('mcpValidation.title')}</div>
 
