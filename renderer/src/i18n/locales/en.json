@@ -28,7 +28,9 @@
       "restoreWorkspace": "Restore last workspace on startup",
       "restoreWorkspaceDesc": "Automatically open the last active workspace when the app starts",
       "launchAtLogin": "Launch at login",
-      "launchAtLoginDesc": "Start Octopal automatically when you log in"
+      "launchAtLoginDesc": "Start Octopal automatically when you log in",
+      "autoVersionHistory": "Auto version history",
+      "autoVersionHistoryDesc": "Automatically save a snapshot after each agent action, so you can track and undo changes"
     },
     "language": {
       "title": "Language",
@@ -153,6 +155,7 @@
   "sidebar": {
     "wiki": "Wiki",
     "activity": "Activity",
+    "timeline": "History",
     "settings": "Settings",
     "addFolder": "Add Folder",
     "newWorkspace": "+ New workspace",
@@ -170,6 +173,10 @@
     "noAgents": "No .octo files in this folder",
     "openFolderFirst": "Open a folder first",
     "canUseTools": "Can use tools",
+    "mcpConnected": "MCP connected",
+    "mcpError": "MCP connection failed",
+    "mcpChecking": "Checking MCP connection...",
+    "mcpConfigured": "MCP configured",
     "clickToMention": "Click to mention, right-click to edit",
     "limit": "Agent limit",
     "limitMsg": "You can create up to <strong>{{max}}</strong> agents per folder.<br />Delete an existing agent and try again."
@@ -239,6 +246,33 @@
     "totalTokens": "tokens",
     "totalCost": "cost",
     "responses": "responses"
+  },
+  "timeline": {
+    "title": "Change History",
+    "empty": "No changes recorded yet",
+    "emptyDesc": "Changes will appear here after agents complete their work",
+    "revert": "Undo",
+    "revertConfirm": "This will undo {{count}} change(s) after this point. Continue?",
+    "revertSingle": "Undo this change?",
+    "reverted": "Change undone",
+    "revertFailed": "Failed to undo",
+    "revertConflict": "Conflict detected. Please resolve manually.",
+    "additions": "+{{n}}",
+    "deletions": "-{{n}}",
+    "files": "{{count}} file(s)",
+    "showDiff": "Show changes",
+    "hideDiff": "Hide changes",
+    "push": "Push to remote",
+    "pushSuccess": "Push complete",
+    "pushFailed": "Push failed",
+    "pushNoRemote": "No remote configured",
+    "autoPush": "Auto Push",
+    "autoPushDesc": "Automatically push to remote after changes",
+    "pushLabel": "Push",
+    "noChanges": "No changes",
+    "loadMore": "Load more",
+    "rollbackNotice": "Previous work undone, restarting with new instructions",
+    "nearCompletion": "Almost done, will deliver additional instructions after completion"
   },
   "wiki": {
     "title": "Wiki",

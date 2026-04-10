@@ -28,7 +28,9 @@
       "restoreWorkspace": "시작 시 마지막 워크스페이스 복원",
       "restoreWorkspaceDesc": "앱 시작 시 마지막으로 사용한 워크스페이스를 자동으로 엽니다",
       "launchAtLogin": "로그인 시 자동 실행",
-      "launchAtLoginDesc": "로그인할 때 Octopal을 자동으로 시작합니다"
+      "launchAtLoginDesc": "로그인할 때 Octopal을 자동으로 시작합니다",
+      "autoVersionHistory": "자동 버전 기록",
+      "autoVersionHistoryDesc": "에이전트 작업 후 자동으로 스냅샷을 저장합니다. 변경 내역을 추적하고 되돌릴 수 있어요"
     },
     "language": {
       "title": "언어",
@@ -153,6 +155,7 @@
   "sidebar": {
     "wiki": "위키",
     "activity": "활동",
+    "timeline": "변경 기록",
     "settings": "설정",
     "addFolder": "폴더 추가",
     "newWorkspace": "+ 새 워크스페이스",
@@ -170,6 +173,10 @@
     "noAgents": "이 폴더에 .octo 파일이 없습니다",
     "openFolderFirst": "먼저 폴더를 여세요",
     "canUseTools": "도구 사용 가능",
+    "mcpConnected": "MCP 연결됨",
+    "mcpError": "MCP 연결 실패",
+    "mcpChecking": "MCP 연결 확인 중...",
+    "mcpConfigured": "MCP 설정됨",
     "clickToMention": "클릭하여 멘션, 우클릭하여 편집",
     "limit": "에이전트 제한",
     "limitMsg": "폴더당 최대 <strong>{{max}}명</strong>의 에이전트만 생성할 수 있습니다.<br />기존 에이전트를 삭제한 후 다시 시도해주세요."
@@ -239,6 +246,33 @@
     "totalTokens": "토큰",
     "totalCost": "비용",
     "responses": "응답"
+  },
+  "timeline": {
+    "title": "변경 기록",
+    "empty": "아직 변경 기록이 없습니다",
+    "emptyDesc": "에이전트가 작업을 완료하면 여기에 기록이 나타납니다",
+    "revert": "되돌리기",
+    "revertConfirm": "이 작업 이후의 변경 {{count}}개를 되돌립니다. 계속할까요?",
+    "revertSingle": "이 변경을 되돌릴까요?",
+    "reverted": "되돌리기 완료",
+    "revertFailed": "되돌리기 실패",
+    "revertConflict": "충돌이 발생했습니다. 수동으로 해결해주세요.",
+    "additions": "+{{n}}",
+    "deletions": "-{{n}}",
+    "files": "파일 {{count}}개",
+    "showDiff": "변경 내용 보기",
+    "hideDiff": "변경 내용 숨기기",
+    "push": "리모트에 올리기",
+    "pushSuccess": "Push 완료",
+    "pushFailed": "Push 실패",
+    "pushNoRemote": "리모트가 설정되지 않았습니다",
+    "autoPush": "자동 Push",
+    "autoPushDesc": "변경 기록 후 자동으로 리모트에 올립니다",
+    "pushLabel": "올리기",
+    "noChanges": "변경 없음",
+    "loadMore": "더 보기",
+    "rollbackNotice": "이전 작업을 되돌리고 새 지시로 다시 시작합니다",
+    "nearCompletion": "작업이 거의 완료되어 마무리 후 추가 지시를 전달합니다"
   },
   "wiki": {
     "title": "위키",

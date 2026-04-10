@@ -16,6 +16,8 @@ interface McpServersConfig {
   [serverName: string]: McpServerConfig
 }
 
+type McpStatus = 'ok' | 'error' | 'checking'
+
 interface OctoFile {
   path: string
   name: string
@@ -86,6 +88,9 @@ interface AppSettings {
     observerModel: 'sonnet' | 'opus'
     defaultAgentModel: 'sonnet' | 'opus'
     autoModelSelection: boolean
+  }
+  versionControl: {
+    autoCommit: boolean
   }
 }
 
@@ -293,6 +298,74 @@ interface Window {
       Promise<{ ok: boolean; error?: string }>
     onMcpTokenExpiry: (
       cb: (data: { agentName: string; serverName: string; message: string }) => void,
+    ) => () => void
+
+    // Git Phase 3: History, Diff, Revert, Push
+    gitGetHistory: (params: {
+      folderPath: string
+      page?: number
+      perPage?: number
+    }) => Promise<{
+      ok: boolean
+      commits: Array<{
+        hash: string
+        shortHash: string
+        author: string
+        email: string
+        date: string
+        message: string
+        body: string
+      }>
+      total: number
+      error?: string
+    }>
+    gitGetDiff: (params: {
+      folderPath: string
+      hash: string
+    }) => Promise<{
+      ok: boolean
+      entries: Array<{
+        file: string
+        status: string
+        additions: number
+        deletions: number
+        patch: string
+      }>
+      error?: string
+    }>
+    gitRevert: (params: {
+      folderPath: string
+      hash: string
+      toHash?: string
+    }) => Promise<{
+      ok: boolean
+      reverted?: boolean | number
+      conflict?: boolean
+      error?: string
+    }>
+    gitPush: (params: { folderPath: string }) => Promise<{
+      ok: boolean
+      pushed?: boolean
+      error?: string
+    }>
+    gitHasRemote: (params: { folderPath: string }) => Promise<{
+      ok: boolean
+      hasRemote: boolean
+    }>
+
+    // Git Merge Conflict
+    onGitMergeConflict: (
+      cb: (data: {
+        agentName: string
+        agentBranch: string
+        baseBranch: string
+        folderPath: string
+      }) => void,
+    ) => () => void
+
+    // Git Interrupt Rollback
+    onGitInterruptRollback: (
+      cb: (data: { agentName: string; folderPath: string }) => void,
     ) => () => void
 
     // File Access Approval

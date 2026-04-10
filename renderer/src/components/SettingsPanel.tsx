@@ -14,6 +14,7 @@ import {
   Zap,
   Wrench,
   Activity,
+  History,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'agents' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
@@ -247,6 +248,26 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                 checked={settings.general.launchAtLogin}
                 onChange={(e) =>
                   update('general', { launchAtLogin: e.target.checked })
+                }
+              />
+              <span className="toggle-slider" />
+            </label>
+
+            <label className="settings-toggle">
+              <span className="settings-toggle-info">
+                <span className="settings-label">
+                  <History size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
+                  {t('settings.general.autoVersionHistory')}
+                </span>
+                <span className="settings-desc">
+                  {t('settings.general.autoVersionHistoryDesc')}
+                </span>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.versionControl?.autoCommit !== false}
+                onChange={(e) =>
+                  update('versionControl', { autoCommit: e.target.checked })
                 }
               />
               <span className="toggle-slider" />

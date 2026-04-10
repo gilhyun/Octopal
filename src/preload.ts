@@ -170,6 +170,41 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('mcp:tokenExpiry', handler)
   },
 
+  // ── Git Phase 3: History, Diff, Revert, Push ──
+  gitGetHistory: (params: { folderPath: string; page?: number; perPage?: number }) =>
+    ipcRenderer.invoke('git:getHistory', params),
+  gitGetDiff: (params: { folderPath: string; hash: string }) =>
+    ipcRenderer.invoke('git:getDiff', params),
+  gitRevert: (params: { folderPath: string; hash: string; toHash?: string }) =>
+    ipcRenderer.invoke('git:revert', params),
+  gitPush: (params: { folderPath: string }) =>
+    ipcRenderer.invoke('git:push', params),
+  gitHasRemote: (params: { folderPath: string }) =>
+    ipcRenderer.invoke('git:hasRemote', params),
+
+  // ── Git Merge Conflict ──
+  onGitMergeConflict: (
+    cb: (data: {
+      agentName: string
+      agentBranch: string
+      baseBranch: string
+      folderPath: string
+    }) => void,
+  ) => {
+    const handler = (_event: any, data: any) => cb(data)
+    ipcRenderer.on('git:mergeConflict', handler)
+    return () => ipcRenderer.removeListener('git:mergeConflict', handler)
+  },
+
+  // ── Git Interrupt Rollback ──
+  onGitInterruptRollback: (
+    cb: (data: { agentName: string; folderPath: string }) => void,
+  ) => {
+    const handler = (_event: any, data: any) => cb(data)
+    ipcRenderer.on('git:interruptRollback', handler)
+    return () => ipcRenderer.removeListener('git:interruptRollback', handler)
+  },
+
   // ── File Access Approval ──
   onFileAccessRequest: (
     cb: (data: {

@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 import { colorForName } from '../utils'
-import { Zap, MoreHorizontal, Plus } from 'lucide-react'
+import { Zap, MoreHorizontal, Plus, Plug } from 'lucide-react'
 import type { ActivityLogEntry } from '../types'
 import { AgentAvatar } from './AgentAvatar'
 
@@ -8,6 +8,7 @@ interface RightSidebarProps {
   octos: OctoFile[]
   activeFolder: string | null
   activityLog: ActivityLogEntry[]
+  mcpStatuses: Record<string, McpStatus>
   setInput: (fn: (prev: string) => string) => void
   setEditingAgent: (agent: OctoFile) => void
   setShowCreateAgent: (v: boolean) => void
@@ -17,6 +18,7 @@ export function RightSidebar({
   octos,
   activeFolder,
   activityLog,
+  mcpStatuses,
   setInput,
   setEditingAgent,
   setShowCreateAgent,
@@ -49,6 +51,8 @@ export function RightSidebar({
             (r.permissions.fileWrite === true ||
               r.permissions.bash === true ||
               r.permissions.network === true)
+          const hasMcp = r.mcpServers && Object.keys(r.mcpServers).length > 0
+          const agentMcpStatus = mcpStatuses[r.path]
           return (
             <div
               key={r.path}
@@ -70,11 +74,24 @@ export function RightSidebar({
               }}
               title={t('agents.clickToMention')}
             >
-              <AgentAvatar name={r.name} icon={r.icon} showOnlineDot />
+              <AgentAvatar name={r.name} icon={r.icon} showOnlineDot mcpStatus={agentMcpStatus} />
               <div className="agent-info">
                 <div className="agent-name">
                   {r.name}
                   {hasPerms && <span className="agent-badge" title={t('agents.canUseTools')}><Zap size={12} /></span>}
+                  {hasMcp && (
+                    <span
+                      className={`agent-badge agent-mcp-badge ${agentMcpStatus ? `agent-mcp-badge--${agentMcpStatus}` : ''}`}
+                      title={
+                        agentMcpStatus === 'ok' ? t('agents.mcpConnected')
+                        : agentMcpStatus === 'error' ? t('agents.mcpError')
+                        : agentMcpStatus === 'checking' ? t('agents.mcpChecking')
+                        : t('agents.mcpConfigured')
+                      }
+                    >
+                      <Plug size={11} />
+                    </span>
+                  )}
                 </div>
                 <div className="agent-role">{r.role || 'agent'}</div>
               </div>

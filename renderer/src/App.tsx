@@ -7,6 +7,7 @@ import { ChatPanel } from './components/ChatPanel'
 import { WikiPanel } from './components/WikiPanel'
 import { RightSidebar } from './components/RightSidebar'
 import { ActivityPanel } from './components/ActivityPanel'
+import { TimelinePanel } from './components/TimelinePanel'
 import { CreateAgentModal } from './components/modals/CreateAgentModal'
 import { CreateWorkspaceModal } from './components/modals/CreateWorkspaceModal'
 import { WelcomeModal } from './components/modals/WelcomeModal'
@@ -48,7 +49,7 @@ export function App() {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
-  const [centerTab, setCenterTab] = useState<'chat' | 'wiki' | 'activity' | 'settings'>('chat')
+  const [centerTab, setCenterTab] = useState<'chat' | 'wiki' | 'activity' | 'timeline' | 'settings'>('chat')
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [platform, setPlatform] = useState<string>('darwin')
@@ -79,6 +80,9 @@ export function App() {
     userTs: number
   }>>(new Map())
 
+  // MCP status per agent (keyed by agent path)
+  const [mcpStatuses, setMcpStatuses] = useState<Record<string, McpStatus>>({})
+
   // Text shortcuts for token-saving expansions (loaded from settings)
   const shortcutsRef = useRef<TextShortcut[]>([])
 
@@ -91,6 +95,38 @@ export function App() {
   } | null>(null)
 
   const activeWorkspace = state.workspaces.find((w) => w.id === state.activeWorkspaceId) || null
+
+  // ── MCP Health Check ──
+
+  // Check MCP health for all agents that have MCP servers configured
+  const checkMcpHealth = async (agents: OctoFile[]) => {
+    const mcpAgents = agents.filter((a) => a.mcpServers && Object.keys(a.mcpServers).length > 0)
+    if (mcpAgents.length === 0) return
+
+    // Mark all as checking
+    setMcpStatuses((prev) => {
+      const next = { ...prev }
+      for (const a of mcpAgents) next[a.path] = 'checking'
+      return next
+    })
+
+    // Run health checks in parallel
+    await Promise.allSettled(
+      mcpAgents.map(async (agent) => {
+        try {
+          const result = await window.api.mcpHealthCheck({ mcpServers: agent.mcpServers! })
+          if (!result.ok) {
+            setMcpStatuses((prev) => ({ ...prev, [agent.path]: 'error' }))
+            return
+          }
+          const allOk = Object.values(result.results).every((r) => r.status === 'ok')
+          setMcpStatuses((prev) => ({ ...prev, [agent.path]: allOk ? 'ok' : 'error' }))
+        } catch {
+          setMcpStatuses((prev) => ({ ...prev, [agent.path]: 'error' }))
+        }
+      })
+    )
+  }
 
   // ── Lifecycle ──
 
@@ -125,6 +161,10 @@ export function App() {
   // Listen for MCP token expiry notifications from main process
   useEffect(() => {
     return window.api.onMcpTokenExpiry((data) => {
+      // Mark agent MCP status as error
+      const agent = octos.find((o) => o.name === data.agentName)
+      if (agent) setMcpStatuses((prev) => ({ ...prev, [agent.path]: 'error' }))
+
       showToast({
         type: 'warning',
         title: t('mcpValidation.tokenExpiry'),
@@ -136,14 +176,51 @@ export function App() {
         action: {
           label: t('mcpValidation.updateToken'),
           onClick: () => {
-            // Find and open edit modal for this agent
-            const agent = octos.find((o) => o.name === data.agentName)
             if (agent) setEditingAgent(agent)
           },
         },
       })
     })
   }, [t, octos])
+
+  // Listen for Git merge conflict notifications from main process
+  useEffect(() => {
+    return window.api.onGitMergeConflict((data) => {
+      // Add system message to the chat
+      setMessages((prev) => ({
+        ...prev,
+        [data.folderPath]: [
+          ...(prev[data.folderPath] || []),
+          {
+            id: `git-conflict-${Date.now()}`,
+            agentName: '__system__',
+            text: `⚠️ ${data.agentName}의 변경사항이 충돌합니다. 수동 확인이 필요합니다. (branch: ${data.agentBranch})`,
+            ts: Date.now(),
+            pending: false,
+          },
+        ],
+      }))
+    })
+  }, [])
+
+  // Listen for Git interrupt rollback notifications
+  useEffect(() => {
+    return window.api.onGitInterruptRollback((data) => {
+      setMessages((prev) => ({
+        ...prev,
+        [data.folderPath]: [
+          ...(prev[data.folderPath] || []),
+          {
+            id: `git-rollback-${Date.now()}`,
+            agentName: '__system__',
+            text: t('timeline.rollbackNotice'),
+            ts: Date.now(),
+            pending: false,
+          },
+        ],
+      }))
+    })
+  }, [t])
 
   // Compact mode: below this threshold sidebars open as overlays
   const COMPACT_BREAKPOINT = 700
@@ -413,6 +490,11 @@ export function App() {
     })
     return unsubscribe
   }, [activeFolder])
+
+  // Run MCP health checks when agents change
+  useEffect(() => {
+    if (octos.length > 0) checkMcpHealth(octos)
+  }, [octos.map((o) => `${o.path}:${JSON.stringify(o.mcpServers)}`).join(',')])
 
   // Listen for agent activity (tool calls) and update the pending bubble
   useEffect(() => {
@@ -1188,7 +1270,7 @@ export function App() {
         />
       )}
 
-      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'settings' ? 'center-panel--wide' : ''}`}>
+      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'timeline' || centerTab === 'settings' ? 'center-panel--wide' : ''}`}>
         {centerTab === 'chat' ? (
           <ChatPanel
             activeFolder={activeFolder}
@@ -1235,6 +1317,8 @@ export function App() {
           />
         ) : centerTab === 'activity' ? (
           <ActivityPanel activityLog={folderActivity} octos={octos} folderMessages={folderMessages} />
+        ) : centerTab === 'timeline' ? (
+          <TimelinePanel activeFolder={activeFolder} octos={octos} />
         ) : centerTab === 'settings' ? (
           <SettingsPanel onSettingsSaved={(s) => {
             shortcutsRef.current = s.shortcuts?.textExpansions || []
@@ -1252,6 +1336,7 @@ export function App() {
           setInput={setInput}
           setEditingAgent={setEditingAgent}
           setShowCreateAgent={setShowCreateAgent}
+          mcpStatuses={mcpStatuses}
         />
       )}
 

@@ -5,6 +5,7 @@ import crypto from 'crypto'
 import os from 'os'
 import { spawn, execFile, ChildProcess } from 'child_process'
 import { isSensitivePath, validateOctoPath, validatePathContainment, sanitizedEnv, sanitizeError, acquireFileLock, classifyPathAccess, validateMcpConfig, type PathAccessClass } from './security'
+import { takeSnapshot, autoCommit, extractCommitSummary, isGitAvailable, createAgentBranch, mergeAgentBranch, cleanupAgentBranch, getCommitHistory, getCommitDiff, revertCommit, revertRange, pushToRemote, hasRemote, discardAgentBranch } from './git-service'
 import { observer } from './observer'
 import { ruleRouter, CONFIDENCE_THRESHOLD } from './rule-router'
 import { smartObserver } from './smart-observer'
@@ -27,6 +28,14 @@ const runningAgents = new Map<string, ChildProcess>()
 
 // Track interrupted runs — these resolve with '[interrupted]' instead of rejecting
 const interruptedRuns = new Set<string>()
+
+// Track agent branch info per runId (for interrupt rollback — Phase 2 bundling)
+const runBranchInfo = new Map<string, {
+  folderPath: string
+  agentName: string
+  baseBranch: string
+  agentBranch: string
+}>()
 
 // Use a separate state file and userData dir in dev so you can run dev + prod
 // side-by-side without them stomping on each other's workspaces.
@@ -1671,6 +1680,28 @@ How to collaborate (very important):
 
     claudeArgs.push(finalPrompt)
 
+    // ── Auto version control: pre-execution setup ──
+    const vcEnabled = currentSettings.versionControl?.autoCommit !== false && isGitAvailable()
+    let branchInfo: { baseBranch: string; agentBranch: string; created: boolean } | null = null
+    if (vcEnabled) {
+      try {
+        branchInfo = await createAgentBranch(folderPath, agentName)
+        if (branchInfo.created) {
+          console.log(`[git-service] Created branch ${branchInfo.agentBranch} from ${branchInfo.baseBranch}`)
+          // Track for interrupt rollback
+          runBranchInfo.set(runId, {
+            folderPath,
+            agentName,
+            baseBranch: branchInfo.baseBranch,
+            agentBranch: branchInfo.agentBranch,
+          })
+        }
+      } catch (e) {
+        console.warn('[git-service] createAgentBranch failed:', e)
+      }
+    }
+    const preSnapshot = vcEnabled ? await takeSnapshot(folderPath) : new Set<string>()
+
     sendActivity('Thinking…')
 
     const output = await new Promise<string>((resolve, reject) => {
@@ -1820,6 +1851,68 @@ How to collaborate (very important):
       release()
     }
 
+    // ── Auto version control: commit agent changes + merge branch ──
+    // Clean up branch tracking (normal completion)
+    runBranchInfo.delete(runId)
+    if (vcEnabled) {
+      try {
+        const summary = extractCommitSummary(output)
+        const result = await autoCommit(folderPath, agentName, summary, preSnapshot)
+        if (result.committed) {
+          sendLogEntry({
+            agentName,
+            tool: 'GitCommit',
+            target: `${result.files?.length ?? 0} files`,
+            ts: Date.now(),
+          })
+        }
+        if (result.error) {
+          console.warn(`[git-service] autoCommit warning: ${result.error}`)
+        }
+
+        // Phase 2: Merge agent branch back to base
+        if (branchInfo?.created) {
+          const mergeResult = await mergeAgentBranch(folderPath, agentName, branchInfo.baseBranch)
+          if (mergeResult.merged) {
+            // Success — clean up agent branch silently
+            await cleanupAgentBranch(folderPath, agentName)
+            sendLogEntry({
+              agentName,
+              tool: 'GitMerge',
+              target: `${mergeResult.agentBranch} → ${branchInfo.baseBranch}`,
+              ts: Date.now(),
+            })
+          } else if (mergeResult.conflict) {
+            // Conflict — notify user via system message
+            console.warn(`[git-service] Merge conflict: ${mergeResult.agentBranch} cannot fast-forward into ${branchInfo.baseBranch}`)
+            broadcastToWindows('git:mergeConflict', {
+              agentName,
+              agentBranch: mergeResult.agentBranch,
+              baseBranch: branchInfo.baseBranch,
+              folderPath,
+            })
+          } else if (mergeResult.error) {
+            console.warn(`[git-service] mergeAgentBranch error: ${mergeResult.error}`)
+          }
+        }
+      } catch (gitErr) {
+        // Never let git errors break the main flow
+        console.warn('[git-service] autoCommit/merge failed:', gitErr)
+        // If we created a branch but something went wrong, try to get back to base
+        if (branchInfo?.created) {
+          try {
+            const { getCurrentBranch } = require('./git-service')
+            const current = await getCurrentBranch(folderPath)
+            if (current !== branchInfo.baseBranch) {
+              const { execFile } = require('child_process')
+              // Best-effort checkout back to base
+              await mergeAgentBranch(folderPath, agentName, branchInfo.baseBranch)
+            }
+          } catch { /* last resort — stay on whatever branch */ }
+        }
+      }
+    }
+
     return { ok: true, output }
   } catch (e: any) {
     return { ok: false, error: sanitizeError(e, IS_DEV) }
@@ -1827,12 +1920,31 @@ How to collaborate (very important):
 })
 
 // ── Stop a single running agent ──────────────────
-ipcMain.handle('agent:stop', (_event, runId: string) => {
+ipcMain.handle('agent:stop', async (_event, runId: string) => {
   const child = runningAgents.get(runId)
   if (child) {
     interruptedRuns.add(runId)
     try { child.kill('SIGTERM') } catch {}
     runningAgents.delete(runId)
+
+    // Phase 2 bundling: rollback agent branch on interrupt
+    const bi = runBranchInfo.get(runId)
+    if (bi) {
+      runBranchInfo.delete(runId)
+      try {
+        const result = await discardAgentBranch(bi.folderPath, bi.agentName, bi.baseBranch)
+        if (result.discarded) {
+          console.log(`[git-service] Interrupt rollback: discarded branch agent/${bi.agentName}`)
+          broadcastToWindows('git:interruptRollback', {
+            agentName: bi.agentName,
+            folderPath: bi.folderPath,
+          })
+        }
+      } catch (e) {
+        console.warn('[git-service] Interrupt rollback failed:', e)
+      }
+    }
+
     return { ok: true }
   }
   return { ok: false, error: 'not found' }
@@ -1849,6 +1961,86 @@ ipcMain.handle('agent:stopAll', () => {
     runningAgents.delete(runId)
   }
   return { ok: true, stopped: count }
+})
+
+// ── Git Phase 3: History, Diff, Revert, Push ─────
+ipcMain.handle('git:getHistory', async (_event, params: {
+  folderPath: string
+  page?: number
+  perPage?: number
+}) => {
+  try {
+    const { folderPath, page = 1, perPage = 30 } = params
+    return { ok: true, ...(await getCommitHistory(folderPath, page, perPage)) }
+  } catch (e: any) {
+    return { ok: false, error: e.message, commits: [], total: 0 }
+  }
+})
+
+ipcMain.handle('git:getDiff', async (_event, params: {
+  folderPath: string
+  hash: string
+}) => {
+  try {
+    const { folderPath, hash } = params
+    const entries = await getCommitDiff(folderPath, hash)
+    return { ok: true, entries }
+  } catch (e: any) {
+    return { ok: false, error: e.message, entries: [] }
+  }
+})
+
+ipcMain.handle('git:revert', async (_event, params: {
+  folderPath: string
+  hash: string
+  toHash?: string
+}) => {
+  try {
+    const { folderPath, hash, toHash } = params
+    if (toHash) {
+      // Range revert
+      const result = await revertRange(folderPath, hash, toHash)
+      if (result.conflict) {
+        broadcastToWindows('git:mergeConflict', {
+          agentName: 'Octopal',
+          agentBranch: '',
+          baseBranch: '',
+          folderPath,
+        })
+      }
+      return { ok: !result.conflict && result.reverted > 0, ...result }
+    } else {
+      // Single revert
+      const result = await revertCommit(folderPath, hash)
+      if (result.conflict) {
+        broadcastToWindows('git:mergeConflict', {
+          agentName: 'Octopal',
+          agentBranch: '',
+          baseBranch: '',
+          folderPath,
+        })
+      }
+      return { ok: result.reverted, ...result }
+    }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('git:push', async (_event, params: { folderPath: string }) => {
+  try {
+    return { ok: true, ...(await pushToRemote(params.folderPath)) }
+  } catch (e: any) {
+    return { ok: false, error: e.message }
+  }
+})
+
+ipcMain.handle('git:hasRemote', async (_event, params: { folderPath: string }) => {
+  try {
+    return { ok: true, hasRemote: await hasRemote(params.folderPath) }
+  } catch {
+    return { ok: true, hasRemote: false }
+  }
 })
 
 // ── Context check for message bundling ───────────
@@ -2128,6 +2320,9 @@ interface AppSettings {
     defaultAgentModel: 'haiku' | 'sonnet' | 'opus'
     autoModelSelection: boolean
   }
+  versionControl: {
+    autoCommit: boolean
+  }
 }
 
 const SETTINGS_FILE = path.join(STATE_DIR, 'settings.json')
@@ -2156,6 +2351,9 @@ const DEFAULT_SETTINGS: AppSettings = {
     defaultAgentModel: 'opus',
     autoModelSelection: false,
   },
+  versionControl: {
+    autoCommit: true,
+  },
 }
 
 function loadSettings(): AppSettings {
@@ -2177,6 +2375,7 @@ function loadSettings(): AppSettings {
           textExpansions: raw.shortcuts?.textExpansions || [],
         },
         advanced: { ...DEFAULT_SETTINGS.advanced, ...raw.advanced },
+        versionControl: { ...DEFAULT_SETTINGS.versionControl, ...raw.versionControl },
       }
     }
   } catch {}

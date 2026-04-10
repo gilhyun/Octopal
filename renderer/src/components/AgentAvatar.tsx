@@ -6,6 +6,7 @@ interface AgentAvatarProps {
   color?: string
   size?: 'xs' | 'sm' | 'md'
   showOnlineDot?: boolean
+  mcpStatus?: McpStatus
 }
 
 /** Returns true if the string starts with an emoji (non-ASCII grapheme) */
@@ -14,9 +15,14 @@ function isEmoji(str: string): boolean {
   return /^[\p{Emoji_Presentation}\p{Extended_Pictographic}]/u.test(str)
 }
 
-export function AgentAvatar({ name, icon, color, size = 'md', showOnlineDot = false }: AgentAvatarProps) {
+export function AgentAvatar({ name, icon, color, size = 'md', showOnlineDot = false, mcpStatus }: AgentAvatarProps) {
   const bgColor = color || colorForName(name)
   const hasEmoji = icon && isEmoji(icon)
+
+  // Determine dot CSS class based on MCP status
+  const dotClass = mcpStatus
+    ? `online-dot online-dot--${mcpStatus}`
+    : 'online-dot'
 
   return (
     <div
@@ -28,7 +34,7 @@ export function AgentAvatar({ name, icon, color, size = 'md', showOnlineDot = fa
       ) : (
         name[0].toUpperCase()
       )}
-      {showOnlineDot && <span className="online-dot" />}
+      {showOnlineDot && <span className={dotClass} />}
     </div>
   )
 }

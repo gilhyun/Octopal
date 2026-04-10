@@ -226,6 +226,17 @@
   --info-bg: #142030;
   --info-glow: rgba(90, 142, 200, 0.15);
 
+  /* Timeline / Piping — NLE style (Ocean Teal) */
+  --tl-piping: #4AADAB;
+  --tl-piping-text: #6CC7C5;
+  --tl-piping-bg: rgba(74, 173, 171, 0.06);
+  --tl-piping-bg-hover: rgba(74, 173, 171, 0.12);
+  --tl-piping-glow: rgba(74, 173, 171, 0.15);
+  --tl-lane-main: rgba(255, 255, 255, 0.035);
+  --tl-lane-main-border: rgba(255, 255, 255, 0.06);
+  --tl-lane-piping: rgba(74, 173, 171, 0.07);
+  --tl-lane-piping-border: rgba(74, 173, 171, 0.12);
+
   /* Shadows — crimson-tinted for cohesion */
   --shadow-md: 0 12px 32px rgba(14, 6, 8, 0.7);
   --shadow-lg: 0 20px 60px rgba(14, 6, 8, 0.6);
@@ -779,6 +790,39 @@ button {
   color: var(--warning);
 }
 
+/* MCP status badge next to agent name */
+.agent-mcp-badge {
+  color: var(--text-muted);
+  transition: color 0.2s;
+}
+.agent-mcp-badge--ok {
+  color: var(--success);
+}
+.agent-mcp-badge--error {
+  color: var(--danger);
+}
+.agent-mcp-badge--checking {
+  color: var(--warning);
+  animation: mcp-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mcp-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* Avatar online-dot MCP status variants */
+.online-dot--ok {
+  background: var(--success);
+}
+.online-dot--error {
+  background: var(--danger);
+}
+.online-dot--checking {
+  background: var(--warning);
+  animation: mcp-pulse 1.2s ease-in-out infinite;
+}
+
 .agent-edit-btn {
   background: transparent;
   border: none;
@@ -1324,6 +1368,445 @@ button {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* ── Timeline Panel (Phase 3) ────────────────────────────────── */
+
+.timeline-panel {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.timeline-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px 12px;
+  flex-shrink: 0;
+}
+
+.timeline-panel-header-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-panel-count {
+  font-size: var(--font-xs);
+  background: var(--bg-elevated);
+  color: var(--text-muted);
+  padding: 1px 7px;
+  border-radius: 10px;
+}
+
+.timeline-push-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.timeline-push-btn:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.timeline-push-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.timeline-toast {
+  margin: 0 20px 8px;
+  padding: 6px 12px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  animation: fadeIn 0.2s ease;
+}
+
+.timeline-toast--ok {
+  background: color-mix(in srgb, var(--success) 12%, transparent);
+  color: var(--success);
+}
+
+.timeline-toast--err {
+  background: color-mix(in srgb, var(--danger) 12%, transparent);
+  color: var(--danger);
+}
+
+.timeline-panel-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 20px 20px;
+}
+
+.timeline-panel-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  color: var(--text-muted);
+  text-align: center;
+  gap: 8px;
+}
+
+.timeline-empty-icon {
+  opacity: 0.3;
+  margin-bottom: 4px;
+}
+
+.timeline-empty-sub {
+  font-size: var(--font-xs);
+  opacity: 0.6;
+}
+
+/* Timeline Node */
+
+.timeline-node {
+  display: flex;
+  gap: 12px;
+}
+
+.timeline-connector {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex-shrink: 0;
+  width: 16px;
+  padding-top: 6px;
+}
+
+.timeline-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--tl-piping);
+  flex-shrink: 0;
+  box-shadow: 0 0 0 3px var(--bg-surface), 0 0 6px var(--tl-piping-glow);
+}
+
+.timeline-line {
+  width: 2px;
+  flex: 1;
+  background: var(--tl-lane-piping-border);
+  margin-top: 4px;
+}
+
+.timeline-content {
+  flex: 1;
+  min-width: 0;
+  padding-bottom: 16px;
+}
+
+.timeline-commit-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.timeline-commit-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.timeline-commit-author {
+  font-weight: 600;
+  font-size: var(--font-sm);
+  color: var(--text-primary);
+}
+
+.timeline-commit-time {
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.timeline-revert-btn {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-xs);
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid transparent;
+  cursor: pointer;
+  opacity: 0;
+  transition: all var(--transition);
+}
+
+.timeline-node:hover .timeline-revert-btn {
+  opacity: 1;
+}
+
+.timeline-revert-btn:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 30%, transparent);
+}
+
+.timeline-revert-btn:focus-visible {
+  opacity: 1;
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.timeline-revert-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.timeline-commit-message {
+  margin-top: 4px;
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: 1.4;
+}
+
+.timeline-diff-toggle {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 6px;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: var(--font-xs);
+  cursor: pointer;
+  transition: color var(--transition);
+}
+
+.timeline-diff-toggle:hover {
+  color: var(--accent);
+}
+
+.timeline-commit-hash {
+  font-family: var(--font-mono, monospace);
+  opacity: 0.5;
+  margin-left: 4px;
+}
+
+/* Diff Viewer */
+
+.timeline-diff-viewer {
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+}
+
+.timeline-diff-loading,
+.timeline-diff-empty {
+  padding: 12px 14px;
+  font-size: var(--font-xs);
+  color: var(--text-muted);
+}
+
+.timeline-diff-file {
+  border-bottom: 1px solid var(--border);
+}
+
+.timeline-diff-file:last-child {
+  border-bottom: none;
+}
+
+.timeline-diff-file-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  background: var(--bg-elevated);
+  font-size: var(--font-xs);
+}
+
+.diff-status-icon {
+  flex-shrink: 0;
+}
+
+.diff-status-added { color: var(--success); }
+.diff-status-deleted { color: var(--danger); }
+.diff-status-modified { color: var(--info); }
+
+.timeline-diff-filename {
+  font-family: var(--font-mono, monospace);
+  color: var(--text-primary);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.timeline-diff-stat-label {
+  font-size: 10px;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+
+.timeline-diff-stat-label.deleted {
+  color: var(--danger);
+}
+
+.timeline-diff-stat {
+  font-family: var(--font-mono, monospace);
+  font-size: var(--font-xs);
+  font-weight: 600;
+}
+
+.timeline-diff-add { color: var(--success); }
+.timeline-diff-del { color: var(--danger); }
+
+.timeline-diff-patch {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--font-mono, monospace);
+  font-size: 11px;
+  line-height: 1.5;
+  overflow-x: auto;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  white-space: pre;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.timeline-load-more {
+  display: block;
+  width: 100%;
+  padding: 10px;
+  margin-top: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text-secondary);
+  font-size: var(--font-xs);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.timeline-load-more:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.timeline-load-more:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Diff patch line-level coloring */
+.timeline-diff-patch .diff-add { color: var(--success); }
+.timeline-diff-patch .diff-del { color: var(--danger); }
+
+/* ── Confirm Modal ────────────────────────────────────────────── */
+
+@keyframes confirmFadeIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.confirm-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1100;
+}
+
+.confirm-modal {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  width: 320px;
+  max-width: 90vw;
+  box-shadow: var(--shadow-lg);
+  animation: confirmFadeIn 0.15s ease;
+}
+
+.confirm-modal-title {
+  font-size: var(--font-base);
+  font-weight: 600;
+  color: var(--text-heading);
+  margin: 0 0 8px;
+}
+
+.confirm-modal-message {
+  font-size: var(--font-sm);
+  color: var(--text-secondary);
+  line-height: 1.5;
+  margin: 0 0 20px;
+}
+
+.confirm-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.confirm-modal-cancel {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.confirm-modal-cancel:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.confirm-modal-confirm {
+  padding: 6px 14px;
+  border-radius: var(--radius-md);
+  font-size: var(--font-sm);
+  background: var(--accent);
+  color: #fff;
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: all var(--transition);
+}
+
+.confirm-modal-confirm:hover {
+  background: var(--accent-hover);
+}
+
+.confirm-modal-confirm--danger {
+  background: var(--danger);
+}
+
+.confirm-modal-confirm--danger:hover {
+  background: var(--danger-hover);
 }
 
 .agent-item {
@@ -2552,6 +3035,15 @@ button {
   color: var(--text-primary);
   background: var(--bg-hover);
   border-color: var(--accent);
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spin {
+  animation: spin 1s linear infinite;
 }
 
 @keyframes fadeInUp {
