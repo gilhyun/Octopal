@@ -303,6 +303,65 @@ export function installApiAdapter() {
   if ('__TAURI__' in window || '__TAURI_INTERNALS__' in window) {
     console.log('[Octopal] Running in Tauri — installing Tauri API adapter')
     ;(window as any).api = createTauriApi()
+
+    // Set up window drag for elements with `.drag` class
+    // Tauri v2 on macOS needs explicit startDragging() call
+    setupTauriDragRegions()
   }
   // Otherwise, Electron's preload.ts already set up window.api
+}
+
+/**
+ * Attach mousedown listeners to `.drag` elements so Tauri can drag the window.
+ * Uses MutationObserver to handle dynamically added elements.
+ */
+function setupTauriDragRegions() {
+  const attachDrag = (el: Element) => {
+    if ((el as any).__tauriDrag) return
+    ;(el as any).__tauriDrag = true
+    el.addEventListener('mousedown', async (e: Event) => {
+      const me = e as MouseEvent
+      // Don't drag if clicking on interactive elements
+      const target = me.target as HTMLElement
+      if (
+        target.closest('button, input, select, textarea, a, [role="button"]') ||
+        target.closest('[style*="no-drag"]') ||
+        getComputedStyle(target).getPropertyValue('-webkit-app-region') === 'no-drag'
+      ) {
+        return
+      }
+      // Only left mouse button
+      if (me.button !== 0) return
+      try {
+        const { getCurrentWindow } = await import('@tauri-apps/api/window')
+        await getCurrentWindow().startDragging()
+      } catch {
+        // Ignore — may not be available
+      }
+    })
+  }
+
+  // Attach to existing elements
+  const init = () => {
+    document.querySelectorAll('.drag').forEach(attachDrag)
+
+    // Watch for new `.drag` elements
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (node instanceof HTMLElement) {
+            if (node.classList?.contains('drag')) attachDrag(node)
+            node.querySelectorAll?.('.drag').forEach(attachDrag)
+          }
+        }
+      }
+    })
+    observer.observe(document.body, { childList: true, subtree: true })
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', init)
+  } else {
+    init()
+  }
 }

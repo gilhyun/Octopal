@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
-use std::sync::Mutex;
-use tokio::process::Child;
+use std::sync::{Arc, Mutex};
 
 /// Persistent app state (workspaces, folders)
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -176,10 +175,12 @@ impl Default for AppState {
 pub struct ManagedState {
     pub app_state: Mutex<AppState>,
     pub settings: Mutex<AppSettings>,
-    pub running_agents: Mutex<HashMap<String, u32>>, // runId -> child PID
-    pub interrupted_runs: Mutex<HashSet<String>>,
+    pub running_agents: Arc<Mutex<HashMap<String, u32>>>, // runId -> child PID
+    pub interrupted_runs: Arc<Mutex<HashSet<String>>>,
+    #[allow(dead_code)]
     pub permanent_grants: Mutex<HashSet<String>>,
     pub state_dir: PathBuf,
+    #[allow(dead_code)]
     pub is_dev: bool,
 }
 
@@ -216,8 +217,8 @@ impl ManagedState {
         Self {
             app_state: Mutex::new(app_state),
             settings: Mutex::new(settings),
-            running_agents: Mutex::new(HashMap::new()),
-            interrupted_runs: Mutex::new(HashSet::new()),
+            running_agents: Arc::new(Mutex::new(HashMap::new())),
+            interrupted_runs: Arc::new(Mutex::new(HashSet::new())),
             permanent_grants: Mutex::new(HashSet::new()),
             state_dir,
             is_dev,

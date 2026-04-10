@@ -370,6 +370,8 @@ pub async fn send_message(
     let app_clone = app.clone();
     let folder_clone = folder_path.clone();
     let agent_name_clone = agent_name.clone();
+    let state_agents = state.running_agents.clone();
+    let state_interrupted = state.interrupted_runs.clone();
 
     let result = tokio::task::spawn_blocking(move || {
         let mut child = Command::new("claude")
@@ -380,6 +382,10 @@ pub async fn send_message(
             .stdin(Stdio::null())
             .spawn()
             .map_err(|e| format!("Failed to spawn claude: {}", e))?;
+
+        // Store PID so stop_agent can kill it
+        let pid = child.id();
+        state_agents.lock().unwrap().insert(run_id_clone.clone(), pid);
 
         let stdout = child.stdout.take().unwrap();
         let reader = BufReader::new(stdout);
@@ -569,7 +575,14 @@ pub async fn send_message(
         }
 
         let status = child.wait().map_err(|e| e.to_string())?;
-        if !status.success() {
+
+        // Clean up: remove from running agents
+        state_agents.lock().unwrap().remove(&run_id_clone);
+
+        // Check if this run was interrupted (user stopped it)
+        let was_interrupted = state_interrupted.lock().unwrap().remove(&run_id_clone);
+
+        if !status.success() && !was_interrupted {
             return Err(format!("claude exited with code {:?}", status.code()));
         }
 

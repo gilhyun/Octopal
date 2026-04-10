@@ -69,7 +69,7 @@ pub fn list_octos(folder_path: String) -> Result<Vec<OctoFile>, String> {
         let path = entry.path();
         if path.extension().and_then(|e| e.to_str()) == Some("octo") {
             if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(mut octo) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Ok(octo) = serde_json::from_str::<serde_json::Value>(&content) {
                     let name = octo
                         .get("name")
                         .and_then(|v| v.as_str())

@@ -224,7 +224,7 @@ fn extract_file_patch(full_patch: &str, file: &str) -> String {
 pub fn git_revert(
     folder_path: String,
     hash: String,
-    to_hash: Option<String>,
+    _to_hash: Option<String>,
 ) -> GitRevertResult {
     if !is_git_repo(&folder_path) {
         return GitRevertResult {
