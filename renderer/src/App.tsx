@@ -687,7 +687,7 @@ export function App() {
     const allMentions = bufferedMessages.flatMap((m) => parseMentions(m.text))
     let leader: OctoFile | null = null
     let collaborators: OctoFile[] = []
-    let dispatcherModel: 'haiku' | 'sonnet' | 'opus' | undefined
+    let dispatcherModel: 'sonnet' | 'opus' | undefined
 
     if (allMentions.length > 0) {
       const isAll = allMentions.includes('all')
@@ -765,7 +765,7 @@ export function App() {
     alreadyCalled: Set<string>,
     collaborators: OctoFile[] = [],
     attachments: Attachment[] = [],
-    model?: 'haiku' | 'sonnet' | 'opus'
+    model?: 'sonnet' | 'opus'
   ) => {
     if (!activeFolder) return
     const folderPathAtStart = activeFolder

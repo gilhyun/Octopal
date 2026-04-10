@@ -1283,7 +1283,7 @@ ipcMain.handle('dispatcher:route', async (_event, params: {
   recentHistory: Array<{ agentName: string; text: string }>
   folderPath?: string
 }): Promise<
-  | { ok: true; leader: string; collaborators: string[]; model?: 'haiku' | 'sonnet' | 'opus' }
+  | { ok: true; leader: string; collaborators: string[]; model?: 'sonnet' | 'opus' }
   | { ok: false; error: string }
 > => {
   const { message, agents, recentHistory } = params
@@ -1357,10 +1357,10 @@ Rules for collaborators:
 - Collaborators can be mentioned by the leader using @name during their response; they will then be invoked automatically.
 
 Also decide the appropriate model tier for the responding agent:
-- "haiku": simple tasks — greetings, short answers, formatting, translations, follow-up questions, simple code edits
+- "haiku": simple tasks — greetings, short answers, formatting, translations, simple Q&A, quick lookups
 - "sonnet": moderate tasks — code implementation, debugging, multi-step analysis, refactoring, test writing
 - "opus": complex tasks — architecture design, security audit, complex debugging across multiple files, nuanced reasoning
-Default to "haiku" unless the task clearly needs more.
+Default to "haiku" unless the task clearly needs more capability.
 
 Never include agents not in the list. The leader field is required.`
 
@@ -1423,8 +1423,8 @@ Never include agents not in the list. The leader field is required.`
               : []
             const allowedModels = ['haiku', 'sonnet', 'opus']
             const model = typeof parsed.model === 'string' && allowedModels.includes(parsed.model)
-              ? parsed.model as 'haiku' | 'sonnet' | 'opus'
-              : 'haiku'
+              ? parsed.model as 'sonnet' | 'opus'
+              : 'sonnet'
             return { ok: true, leader, collaborators, model }
           }
         }
@@ -1464,7 +1464,7 @@ ipcMain.handle('octo:sendMessage', async (_event, params: {
   isLeader?: boolean
   imagePaths?: string[]
   textPaths?: string[]
-  model?: 'haiku' | 'sonnet' | 'opus'
+  model?: 'sonnet' | 'opus'
 }) => {
   const { folderPath, octoPath, prompt, userTs, runId, peers, collaborators, isLeader, imagePaths, textPaths, model } = params
 
@@ -2138,7 +2138,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   },
   advanced: {
     observerModel: 'haiku',
-    defaultAgentModel: 'sonnet',
+    defaultAgentModel: 'haiku',
     autoModelSelection: true,
   },
 }

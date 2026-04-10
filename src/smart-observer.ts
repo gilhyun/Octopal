@@ -103,7 +103,7 @@ const CIRCUIT_BREAKER_THRESHOLD = 3
 const CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000
 /** Base backoff duration (ms) for exponential backoff */
 const BACKOFF_BASE_MS = 30_000
-/** Default model for CLI calls — Haiku is fast & cheap enough for structured summarisation */
+/** Default model for CLI calls */
 const DEFAULT_CLI_MODEL = 'haiku'
 /** Required fields that must be non-empty strings for valid LLM output */
 const REQUIRED_LLM_FIELDS: (keyof LLMContext)[] = [
@@ -185,7 +185,7 @@ export class SmartObserver {
   get enabled(): boolean { return this._enabled }
   set enabled(val: boolean) { this._enabled = val }
 
-  /** Get/set the CLI model (e.g. 'haiku', 'sonnet') */
+  /** Get/set the CLI model (e.g. 'sonnet', 'opus') */
   get model(): string { return this._model }
   set model(val: string) { this._model = val }
 

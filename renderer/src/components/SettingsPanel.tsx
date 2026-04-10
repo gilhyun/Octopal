@@ -516,7 +516,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                 </span>
                 <select
                   className="settings-select"
-                  value={settings.advanced?.defaultAgentModel || 'sonnet'}
+                  value={settings.advanced?.defaultAgentModel || 'haiku'}
                   onChange={(e) =>
                     update('advanced', { defaultAgentModel: e.target.value as 'haiku' | 'sonnet' | 'opus' })
                   }

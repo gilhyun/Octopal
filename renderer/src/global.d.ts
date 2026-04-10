@@ -83,8 +83,8 @@ interface AppSettings {
     textExpansions: TextShortcut[]
   }
   advanced: {
-    observerModel: 'haiku' | 'sonnet' | 'opus'
-    defaultAgentModel: 'haiku' | 'sonnet' | 'opus'
+    observerModel: 'sonnet' | 'opus'
+    defaultAgentModel: 'sonnet' | 'opus'
     autoModelSelection: boolean
   }
 }
@@ -130,7 +130,7 @@ interface Window {
       isLeader?: boolean
       imagePaths?: string[]
       textPaths?: string[]
-      model?: 'haiku' | 'sonnet' | 'opus'
+      model?: 'sonnet' | 'opus'
     }) => Promise<{ ok: true; output: string } | { ok: false; error: string }>
     onActivity: (cb: (data: { runId: string; text: string }) => void) => () => void
     onActivityLog: (
@@ -162,7 +162,7 @@ interface Window {
       recentHistory: Array<{ agentName: string; text: string }>
       folderPath?: string
     }) => Promise<
-      | { ok: true; leader: string; collaborators: string[]; model?: 'haiku' | 'sonnet' | 'opus' }
+      | { ok: true; leader: string; collaborators: string[]; model?: 'sonnet' | 'opus' }
       | { ok: false; error: string }
     >
 
