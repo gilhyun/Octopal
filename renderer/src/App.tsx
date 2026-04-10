@@ -635,6 +635,7 @@ export function App() {
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
     const hasAttachments = attachments && attachments.length > 0
+    console.log('[Send] input:', JSON.stringify(input.trim()), 'hasText:', hasText, 'hasAttachments:', hasAttachments, 'activeFolder:', activeFolder)
     if ((!hasText && !hasAttachments) || !activeFolder) return
 
     // Expand text shortcuts before sending — saves tokens & enables Layer 0 routing
@@ -695,6 +696,7 @@ export function App() {
     const folderPath = buf.folderPath
     const bufferedMessages = buf.messages
     bufferRef.current = null
+    console.log('[FlushBuffer] folderPath:', folderPath, 'messages:', bufferedMessages.length, 'texts:', bufferedMessages.map(m => m.text))
 
     let combinedText =
       bufferedMessages.length === 1
@@ -780,6 +782,7 @@ export function App() {
 
     // ── Routing ─────────────────────────────────────────
     const allMentions = bufferedMessages.flatMap((m) => parseMentions(m.text))
+    console.log('[Routing] allMentions:', allMentions, 'octos:', octos.map(o => o.name), 'hidden:', octos.filter(o => o.hidden).map(o => o.name))
     let leader: OctoFile | null = null
     let collaborators: OctoFile[] = []
     let dispatcherModel: 'sonnet' | 'opus' | undefined
@@ -860,8 +863,12 @@ export function App() {
       }
     }
 
-    if (!leader) return
+    if (!leader) {
+      console.error('[Routing] ❌ No leader found! Aborting.')
+      return
+    }
 
+    console.log('[Routing] ✅ leader:', leader.name, 'collaborators:', collaborators.map(c => c.name), 'model:', dispatcherModel)
     const called = new Set<string>([leader.name.toLowerCase()])
     invokeAgent(leader, combinedText, userTs, 0, called, collaborators, allAttachments, dispatcherModel)
   }
@@ -965,6 +972,7 @@ export function App() {
       .filter((a) => a.type === 'text')
       .map((a) => a.path)
 
+    console.log('[InvokeAgent] 🚀 target:', target.name, 'depth:', depth, 'prompt:', prompt.slice(0, 100), 'model:', model, 'octoPath:', target.path)
     let res: { ok: boolean; output: string; error?: string }
     try {
       res = await window.api.sendMessage({
@@ -981,6 +989,7 @@ export function App() {
         model,
       })
     } catch (err) {
+      console.error('[InvokeAgent] ❌ sendMessage error for', target.name, ':', err)
       res = { ok: false, output: '', error: String(err) }
     } finally {
       runMapRef.current.delete(runId)
@@ -1004,6 +1013,7 @@ export function App() {
       return // Don't chain — bundled re-invocation will handle it
     }
 
+    console.log('[InvokeAgent] 📥 response for', target.name, '- ok:', res.ok, 'output length:', res.output?.length, 'error:', res.error, 'output preview:', res.output?.slice(0, 200))
     const rawText = res.ok ? res.output : `Error: ${res.error}`
     const permReq = res.ok ? parsePermissionRequest(rawText, target.name) : undefined
 

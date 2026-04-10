@@ -761,6 +761,7 @@ ipcMain.handle('folder:loadHistoryPaged', (_event, params: {
   try {
     if (!fs.existsSync(params.folderPath)) return { messages: [], hasMore: false }
     const all = collectAllMessages(params.folderPath)
+    console.log('[loadHistoryPaged] folderPath:', params.folderPath, 'total messages:', all.length, 'limit:', params.limit, 'beforeTs:', params.beforeTs)
 
     let slice: typeof all
     if (params.beforeTs != null) {
@@ -1405,6 +1406,7 @@ Never include agents not in the list. The leader field is required.`
         if (settled) return
         settled = true
         clearTimeout(timer)
+        console.log('[Dispatcher] claude process exited, code:', code, 'stdout:', stdout.slice(0, 300), 'stderr:', stderr.slice(0, 200))
         if (code !== 0) reject(new Error(stderr || `exited with ${code}`))
         else resolve(stdout.trim())
       })
@@ -1412,6 +1414,7 @@ Never include agents not in the list. The leader field is required.`
         if (settled) return
         settled = true
         clearTimeout(timer)
+        console.error('[Dispatcher] ❌ spawn error:', err)
         reject(err)
       })
     })
@@ -1505,9 +1508,11 @@ ipcMain.handle('octo:sendMessage', async (_event, params: {
     return { error: 'Invalid agent path' }
   }
 
+  console.log('[sendMessage] 📨 START agent:', path.basename(octoPath), 'prompt:', prompt.slice(0, 100), 'model:', model, 'runId:', runId)
   try {
     const octoContent = JSON.parse(fs.readFileSync(octoPath, 'utf-8'))
     const agentName = octoContent.name || path.basename(octoPath, '.octo')
+    console.log('[sendMessage] agentName:', agentName, 'permissions:', JSON.stringify(octoContent.permissions))
     const systemParts: string[] = []
 
     // ── Octo world context (compact) ──
@@ -1680,6 +1685,8 @@ How to collaborate (very important):
 
     claudeArgs.push(finalPrompt)
 
+    console.log('[sendMessage] 🔧 claudeArgs:', claudeArgs.filter(a => a !== '--system-prompt').map(a => typeof a === 'string' && a.length > 100 ? a.slice(0, 100) + '...' : a))
+
     // ── Auto version control: pre-execution setup ──
     const vcEnabled = currentSettings.versionControl?.autoCommit !== false && isGitAvailable()
     let branchInfo: { baseBranch: string; agentBranch: string; created: boolean } | null = null
@@ -1704,12 +1711,14 @@ How to collaborate (very important):
 
     sendActivity('Thinking…')
 
+    console.log('[sendMessage] 🚀 Spawning claude process for', agentName)
     const output = await new Promise<string>((resolve, reject) => {
       const child = spawn('claude', claudeArgs, {
         cwd: folderPath,
         stdio: ['ignore', 'pipe', 'pipe'],
         env: sanitizedEnv(),
       })
+      console.log('[sendMessage] claude PID:', child.pid)
 
       // Track this child process for stop functionality
       runningAgents.set(runId, child)
@@ -1827,12 +1836,15 @@ How to collaborate (very important):
         }
       })
       child.on('close', (code) => {
+        console.log('[sendMessage] 🏁 claude process exited, code:', code, 'agent:', agentName, 'stderr:', stderr.slice(0, 500), 'finalResult length:', finalResult.length)
         if (interruptedRuns.has(runId)) {
           interruptedRuns.delete(runId)
           resolve('[interrupted]')
         } else if (code !== 0) {
+          console.error('[sendMessage] ❌ claude process failed for', agentName, '- stderr:', stderr)
           reject(new Error(stderr || `exited with ${code}`))
         } else {
+          console.log('[sendMessage] ✅ claude process success for', agentName, '- output preview:', finalResult.slice(0, 200))
           resolve(finalResult.trim())
         }
       })
