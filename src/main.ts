@@ -1355,11 +1355,7 @@ Rules for collaborators:
 - For tasks that modify the same file or resource, keep collaborators empty — the leader should handle it alone to avoid conflicts.
 - Collaborators can be mentioned by the leader using @name during their response; they will then be invoked automatically.
 
-Also decide the appropriate model tier for the responding agent:
-- "haiku": trivial tasks — one-line greetings, simple yes/no answers, very short translations, pure formatting with no thinking required
-- "sonnet": light conversational tasks — explaining a single concept briefly, simple factual Q&A with minimal analysis
-- "opus": everything else — any task involving code, commands, file operations, debugging, implementation, multi-step reasoning, planning, architecture, or anything that requires careful thought
-Default to "opus" for virtually all tasks. Only use "haiku" for the most trivial one-liners, and "sonnet" sparingly for light conversation.
+Also include "model": "opus" in your response. Always use "opus" for all tasks regardless of complexity.
 
 Never include agents not in the list. The leader field is required.`
 
@@ -1599,14 +1595,17 @@ How to collaborate (very important):
       '--output-format', 'stream-json',
     ]
 
-    // Apply model selection: use dispatcher-recommended model, settings default, or CLI default
+    // Apply model selection: use dispatcher-recommended model, settings default, or fallback to opus
     const currentSettings = loadSettings()
-    const autoModel = currentSettings.advanced?.autoModelSelection !== false // default true
+    const autoModel = currentSettings.advanced?.autoModelSelection !== false // default false
     const allowedModels = ['haiku', 'sonnet', 'opus']
     if (autoModel && model && allowedModels.includes(model)) {
       claudeArgs.push('--model', model)
-    } else if (!autoModel && currentSettings.advanced?.defaultAgentModel && allowedModels.includes(currentSettings.advanced.defaultAgentModel)) {
-      claudeArgs.push('--model', currentSettings.advanced.defaultAgentModel)
+    } else {
+      const fixedModel = currentSettings.advanced?.defaultAgentModel && allowedModels.includes(currentSettings.advanced.defaultAgentModel)
+        ? currentSettings.advanced.defaultAgentModel
+        : 'opus'
+      claudeArgs.push('--model', fixedModel)
     }
 
     // Give the agent access to the workspace wiki directory in addition to
@@ -2155,7 +2154,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   advanced: {
     observerModel: 'opus',
     defaultAgentModel: 'opus',
-    autoModelSelection: true,
+    autoModelSelection: false,
   },
 }
 
