@@ -1,8 +1,11 @@
 use crate::state::{AppState, HistoryMessage, ManagedState, OctoFile};
+use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
-use tauri::State;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize)]
 pub struct PagedHistory {
@@ -12,28 +15,31 @@ pub struct PagedHistory {
 }
 
 #[tauri::command]
-pub fn pick_folder(
+pub async fn pick_folder(
     workspace_id: String,
     state: State<'_, ManagedState>,
     app: tauri::AppHandle,
 ) -> Result<Option<String>, String> {
     use tauri_plugin_dialog::DialogExt;
 
-    let result = app
-        .dialog()
-        .file()
-        .blocking_pick_folder();
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog().file().pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+
+    let result = rx.await.map_err(|e| e.to_string())?;
 
     match result {
         Some(path) => {
             let folder_path = path.to_string();
-            let mut s = state.app_state.lock().map_err(|e| e.to_string())?;
-            if let Some(ws) = s.workspaces.iter_mut().find(|w| w.id == workspace_id) {
-                if !ws.folders.contains(&folder_path) {
-                    ws.folders.push(folder_path.clone());
+            {
+                let mut s = state.app_state.lock().map_err(|e| e.to_string())?;
+                if let Some(ws) = s.workspaces.iter_mut().find(|w| w.id == workspace_id) {
+                    if !ws.folders.contains(&folder_path) {
+                        ws.folders.push(folder_path.clone());
+                    }
                 }
             }
-            drop(s);
             state.save_state()?;
             Ok(Some(folder_path))
         }
@@ -57,12 +63,82 @@ pub fn remove_folder(
     Ok(result)
 }
 
+/// Set up a filesystem watcher that notifies the frontend when .octo files
+/// in the folder change (created, modified, deleted). Debounced to 150ms so
+/// a single save that fires multiple events collapses into one emit.
+fn ensure_folder_watcher(folder_path: &str, state: &State<'_, ManagedState>, app: &AppHandle) {
+    let mut watchers = match state.folder_watchers.lock() {
+        Ok(g) => g,
+        Err(_) => return,
+    };
+    if watchers.contains_key(folder_path) {
+        return;
+    }
+
+    let folder_clone = folder_path.to_string();
+    let app_clone = app.clone();
+    // Leading-edge debounce: when an event arrives, schedule an emit 150ms later
+    // and ignore further events until that emit fires.
+    let last_scheduled: Arc<StdMutex<Option<Instant>>> = Arc::new(StdMutex::new(None));
+
+    let mut watcher = match notify::recommended_watcher(
+        move |res: Result<notify::Event, notify::Error>| {
+            let event = match res {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            let has_octo = event.paths.iter().any(|p| {
+                p.extension().and_then(|e| e.to_str()) == Some("octo")
+            });
+            if !has_octo {
+                return;
+            }
+            // Rate-limit: if an emit was scheduled <150ms ago, skip.
+            {
+                let mut ls = match last_scheduled.lock() {
+                    Ok(g) => g,
+                    Err(_) => return,
+                };
+                if let Some(t) = *ls {
+                    if t.elapsed() < Duration::from_millis(150) {
+                        return;
+                    }
+                }
+                *ls = Some(Instant::now());
+            }
+            let app_spawn = app_clone.clone();
+            let folder_spawn = folder_clone.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(150)).await;
+                let _ = app_spawn.emit("folder:octosChanged", folder_spawn);
+            });
+        },
+    ) {
+        Ok(w) => w,
+        Err(_) => return,
+    };
+
+    if watcher
+        .watch(Path::new(folder_path), RecursiveMode::NonRecursive)
+        .is_ok()
+    {
+        watchers.insert(folder_path.to_string(), watcher);
+    }
+}
+
 #[tauri::command]
-pub fn list_octos(folder_path: String) -> Result<Vec<OctoFile>, String> {
+pub fn list_octos(
+    folder_path: String,
+    state: State<'_, ManagedState>,
+    app: AppHandle,
+) -> Result<Vec<OctoFile>, String> {
     let dir = Path::new(&folder_path);
     if !dir.is_dir() {
         return Ok(vec![]);
     }
+
+    // Start watching this folder for .octo changes (idempotent).
+    ensure_folder_watcher(&folder_path, &state, &app);
     let mut octos = vec![];
     let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {

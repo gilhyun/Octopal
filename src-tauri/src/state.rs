@@ -179,6 +179,7 @@ pub struct ManagedState {
     pub interrupted_runs: Arc<Mutex<HashSet<String>>>,
     #[allow(dead_code)]
     pub permanent_grants: Mutex<HashSet<String>>,
+    pub folder_watchers: Arc<Mutex<HashMap<String, notify::RecommendedWatcher>>>,
     pub state_dir: PathBuf,
     #[allow(dead_code)]
     pub is_dev: bool,
@@ -220,6 +221,7 @@ impl ManagedState {
             running_agents: Arc::new(Mutex::new(HashMap::new())),
             interrupted_runs: Arc::new(Mutex::new(HashSet::new())),
             permanent_grants: Mutex::new(HashSet::new()),
+            folder_watchers: Arc::new(Mutex::new(HashMap::new())),
             state_dir,
             is_dev,
         }

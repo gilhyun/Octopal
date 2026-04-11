@@ -268,8 +268,9 @@ pub async fn send_message(
             for msg in recent.iter().rev() {
                 let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
                 let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let truncated = if text.len() > 300 {
-                    format!("{}...", &text[..300])
+                let truncated = if text.chars().count() > 300 {
+                    let prefix: String = text.chars().take(300).collect();
+                    format!("{}...", prefix)
                 } else {
                     text.to_string()
                 };
@@ -372,7 +373,18 @@ pub async fn send_message(
             capabilities.join(", ")
         )
     } else {
-        "\n\nYou do NOT have permission to write files, run shell commands, or access the network. Answer with text only.".to_string()
+        [
+            "",
+            "",
+            "You do NOT have permission to write files, run shell commands, or access the network. Answer with text only.",
+            "If the user asks you to do something that requires these tools, briefly explain what you need and then output a permission request tag at the END of your message in this exact format:",
+            "<!--NEEDS_PERMISSIONS: fileWrite, bash, network-->",
+            "Only include the specific permissions you actually need (fileWrite for writing/editing files, bash for running shell commands, network for web access). The app will show the user a button to grant these permissions directly.",
+            "Example: if the user asks you to create a file, say you need file write permission and end with <!--NEEDS_PERMISSIONS: fileWrite-->",
+            "Example: if the user asks you to run a build, you need bash permission: <!--NEEDS_PERMISSIONS: bash-->",
+            "Example: if you need multiple permissions: <!--NEEDS_PERMISSIONS: fileWrite, bash-->",
+        ]
+        .join("\n")
     };
 
     claude_args.push("--system-prompt".to_string());
