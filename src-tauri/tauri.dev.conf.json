@@ -1,0 +1,11 @@
+{
+  "identifier": "com.studioh.octopal.dev",
+  "productName": "Octopal Dev",
+  "app": {
+    "windows": [
+      {
+        "title": "Octopal Dev"
+      }
+    ]
+  }
+}

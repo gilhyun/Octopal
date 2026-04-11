@@ -21,7 +21,7 @@
     "test:coverage": "vitest run --coverage",
     "postinstall": "node scripts/patch-electron-name.js",
     "tauri": "tauri",
-    "tauri:dev": "cargo tauri dev",
+    "tauri:dev": "cargo tauri dev --config src-tauri/tauri.dev.conf.json",
     "tauri:build": "cargo tauri build"
   },
   "devDependencies": {

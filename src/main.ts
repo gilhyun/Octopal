@@ -227,7 +227,8 @@ app.setName('Octopal')
 
 // ── Single instance lock ─────────────────────────
 // Prevent multiple app processes — only allow multiple windows within one process
-const gotTheLock = app.requestSingleInstanceLock()
+// Use separate lock per environment so dev & prod can run simultaneously
+const gotTheLock = app.requestSingleInstanceLock({ env: IS_DEV ? 'dev' : 'prod' })
 if (!gotTheLock) {
   app.quit()
 } else {
