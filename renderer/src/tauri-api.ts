@@ -65,6 +65,10 @@ export function createTauriApi(): typeof window.api {
         text: params.message.text,
         attachments: params.message.attachments ?? null,
       }),
+    readPendingState: (folderPath: string) =>
+      invoke('read_pending_state', { folderPath }),
+    writePendingState: (folderPath: string, state: Record<string, any>) =>
+      invoke('write_pending_state', { folderPath, state }),
 
     // ── Octo CRUD ──
     createOcto: (params) =>
@@ -108,7 +112,7 @@ export function createTauriApi(): typeof window.api {
     // ── Events (push from backend) ──
     onActivity: (cb) => {
       let unlisten: UnlistenFn | null = null
-      listen<{ runId: string; text: string }>('octo:activity', cb).then(
+      listen<{ runId: string; text: string; folderPath?: string; agentName?: string }>('octo:activity', cb).then(
         (u) => (unlisten = u),
       )
       return () => unlisten?.()
@@ -133,16 +137,6 @@ export function createTauriApi(): typeof window.api {
       listen('mcp:tokenExpiry', cb).then((u) => (unlisten = u))
       return () => unlisten?.()
     },
-    onGitMergeConflict: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('git:mergeConflict', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onGitInterruptRollback: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('git:interruptRollback', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
     onFileAccessRequest: (cb) => {
       let unlisten: UnlistenFn | null = null
       listen('fileAccess:request', cb).then((u) => (unlisten = u))
@@ -154,43 +148,13 @@ export function createTauriApi(): typeof window.api {
       return () => unlisten?.()
     },
 
-    // ── Dispatch & Observer ──
+    // ── Dispatch ──
     dispatch: (params) =>
       invoke('dispatcher_route', {
         message: params.message,
         agents: params.agents,
         recentHistory: params.recentHistory,
         folderPath: params.folderPath ?? null,
-      }),
-    observerUpdate: (params) =>
-      invoke('observer_update', {
-        folderPath: params.folderPath,
-        agentName: params.message.agentName,
-        text: params.message.text,
-        ts: params.message.ts,
-      }),
-    observerGetContext: (folderPath: string) =>
-      invoke('observer_get_context', { folderPath }),
-    observerReset: (folderPath: string) =>
-      invoke('observer_reset', { folderPath }),
-
-    // ── SmartObserver ──
-    smartObserverGetContext: (folderPath: string) =>
-      invoke('smart_observer_get_context', { folderPath }),
-    smartObserverForceRefresh: (folderPath: string) =>
-      invoke('smart_observer_force_refresh', { folderPath }),
-    smartObserverSetEnabled: (enabled: boolean) =>
-      invoke('smart_observer_set_enabled', { enabled }),
-    smartObserverSetModel: (model: string) =>
-      invoke('smart_observer_set_model', { model }),
-    smartObserverGetModel: () => invoke('smart_observer_get_model'),
-    smartObserverGetMetrics: () => invoke('smart_observer_get_metrics'),
-
-    classifyMention: (params) =>
-      invoke('classify_mention', {
-        speakerName: params.speakerName,
-        speakerText: params.speakerText,
-        mentionedNames: params.mentionedNames,
       }),
 
     // ── File operations ──
@@ -211,6 +175,7 @@ export function createTauriApi(): typeof window.api {
         folderPath: params.folderPath,
         relativePath: params.relativePath,
       }),
+    readDroppedFile: (params) => invoke('read_dropped_file', { path: params.path }),
 
     // ── Wiki ──
     wikiList: (workspaceId: string) =>
@@ -236,13 +201,6 @@ export function createTauriApi(): typeof window.api {
     stopAgent: (runId: string) => invoke('stop_agent', { runId }),
     stopAllAgents: () => invoke('stop_all_agents'),
 
-    checkContext: (params) =>
-      invoke('dispatcher_check_context', {
-        originalPrompt: params.originalPrompt,
-        newMessage: params.newMessage,
-        agentName: params.agentName,
-      }),
-
     getPlatform: () => invoke('get_platform'),
 
     // ── MCP ──
@@ -250,29 +208,6 @@ export function createTauriApi(): typeof window.api {
       invoke('mcp_health_check', { mcpServers: params.mcpServers }),
     mcpInstallPackage: (params) =>
       invoke('mcp_install_package', { packageName: params.packageName }),
-
-    // ── Git ──
-    gitGetHistory: (params) =>
-      invoke('git_get_history', {
-        folderPath: params.folderPath,
-        page: params.page ?? null,
-        perPage: params.perPage ?? null,
-      }),
-    gitGetDiff: (params) =>
-      invoke('git_get_diff', {
-        folderPath: params.folderPath,
-        hash: params.hash,
-      }),
-    gitRevert: (params) =>
-      invoke('git_revert', {
-        folderPath: params.folderPath,
-        hash: params.hash,
-        toHash: params.toHash ?? null,
-      }),
-    gitPush: (params) =>
-      invoke('git_push', { folderPath: params.folderPath }),
-    gitHasRemote: (params) =>
-      invoke('git_has_remote', { folderPath: params.folderPath }),
 
     // ── File Access ──
     respondFileAccess: (params) =>
@@ -291,6 +226,27 @@ export function createTauriApi(): typeof window.api {
     // ── Multi-window ──
     newWindow: () => invoke('new_window'),
     getWindowCount: () => invoke('get_window_count'),
+
+    // ── Backup / Revert ──
+    listBackups: (folderPath: string) => invoke('list_backups', { folderPath }),
+    readBackupFile: (params) =>
+      invoke('read_backup_file', {
+        folderPath: params.folderPath,
+        backupId: params.backupId,
+        filePath: params.filePath,
+      }),
+    readCurrentFile: (params) =>
+      invoke('read_current_file', {
+        folderPath: params.folderPath,
+        filePath: params.filePath,
+      }),
+    revertBackup: (params) =>
+      invoke('revert_backup', {
+        folderPath: params.folderPath,
+        backupId: params.backupId,
+        filePath: params.filePath ?? null,
+      }),
+    pruneBackups: (folderPath: string) => invoke('prune_backups', { folderPath }),
   }
 }
 
@@ -316,10 +272,24 @@ export function installApiAdapter() {
  * Uses MutationObserver to handle dynamically added elements.
  */
 function setupTauriDragRegions() {
+  // Pre-load the window module so the mousedown handler can call startDragging()
+  // synchronously. macOS requires startDragging() to be invoked while [NSApp currentEvent]
+  // is still the mousedown — any await on a cold dynamic import drops that gesture and
+  // the window will not move (especially noticeable on freshly opened webview windows
+  // where the chunk is not yet cached).
+  let currentWindow: { startDragging: () => Promise<void> } | null = null
+  import('@tauri-apps/api/window')
+    .then((mod) => {
+      currentWindow = mod.getCurrentWindow()
+    })
+    .catch(() => {
+      // Ignore — may not be available
+    })
+
   const attachDrag = (el: Element) => {
     if ((el as any).__tauriDrag) return
     ;(el as any).__tauriDrag = true
-    el.addEventListener('mousedown', async (e: Event) => {
+    el.addEventListener('mousedown', (e: Event) => {
       const me = e as MouseEvent
       // Don't drag if clicking on interactive elements
       const target = me.target as HTMLElement
@@ -332,12 +302,11 @@ function setupTauriDragRegions() {
       }
       // Only left mouse button
       if (me.button !== 0) return
-      try {
-        const { getCurrentWindow } = await import('@tauri-apps/api/window')
-        await getCurrentWindow().startDragging()
-      } catch {
+      // Fire-and-forget — must NOT await before startDragging(), or the OS-level
+      // mousedown event will already be gone by the time the call reaches AppKit.
+      currentWindow?.startDragging().catch(() => {
         // Ignore — may not be available
-      }
+      })
     })
   }
 

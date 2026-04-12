@@ -6,6 +6,7 @@ import { AgentAvatar } from './AgentAvatar'
 import type { Attachment, Message, TokenUsage } from '../types'
 import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown, PanelLeftOpen, PanelRightOpen, PanelRightClose, Code, ChevronDown, ChevronRight, Zap } from 'lucide-react'
 import { MarkdownRenderer } from './MarkdownRenderer'
+import { convertFileSrc } from '@tauri-apps/api/core'
 
 /** Pending attachment before send — holds local preview data */
 export interface PendingAttachment {
@@ -28,6 +29,74 @@ const ALLOWED_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.txt', '.
 const MAX_FILE_SIZE = 10 * 1024 * 1024 // 10MB
 const MAX_ATTACHMENTS = 5
 
+/** Async image loader — resolves path via getAbsolutePath (canonicalize) before convertFileSrc.
+ *  This fixes macOS Unicode normalization (NFC vs NFD) issues with Korean/CJK filenames.
+ *
+ *  Defensive: returns the error placeholder up front when attachment.path is
+ *  missing, so a malformed history entry can never crash the renderer. */
+function MessageImage({ attachment, folderPath, onFail }: { attachment: Attachment; folderPath: string; onFail: () => void }) {
+  const [src, setSrc] = useState<string | null>(null)
+  const [absPath, setAbsPath] = useState<string | null>(null)
+  const [failed, setFailed] = useState(false)
+  const onFailRef = useRef(onFail)
+  // Keep the latest onFail callback in a ref so the resolver effect below can
+  // call it without listing onFail in deps (which would re-run on every parent
+  // render and trigger an invoke loop).
+  useEffect(() => { onFailRef.current = onFail }, [onFail])
+
+  useEffect(() => {
+    if (!folderPath || !attachment?.path) {
+      // Nothing to load — let the parent show the error state.
+      setFailed(true)
+      onFailRef.current?.()
+      return
+    }
+    let cancelled = false
+    window.api.getAbsolutePath({ folderPath, relativePath: attachment.path })
+      .then((abs: string) => {
+        if (!cancelled) {
+          setAbsPath(abs)
+          try {
+            setSrc(convertFileSrc(abs))
+          } catch {
+            setFailed(true)
+            onFailRef.current?.()
+          }
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setFailed(true)
+          onFailRef.current?.()
+        }
+      })
+    return () => { cancelled = true }
+  }, [folderPath, attachment?.path])
+
+  if (failed) return null // parent will show error state via onFail
+
+  if (!src) {
+    // Loading placeholder
+    return (
+      <div className="message-image-loading" style={{ width: 160, height: 120, borderRadius: 8, background: 'var(--bg-elevated)', border: '1px solid var(--border)' }} />
+    )
+  }
+
+  return (
+    <img
+      className="message-image"
+      src={src}
+      alt={attachment.filename || 'image'}
+      loading="lazy"
+      onError={() => {
+        setFailed(true)
+        onFailRef.current?.()
+      }}
+      onClick={() => { if (absPath) window.open(`file://${absPath}`, '_blank') }}
+    />
+  )
+}
+
 /** Collapsible block for pasted-text attachments in chat bubbles */
 function PastedTextBlock({ attachment, folderPath }: { attachment: Attachment; folderPath: string }) {
   const { t } = useTranslation()
@@ -38,7 +107,7 @@ function PastedTextBlock({ attachment, folderPath }: { attachment: Attachment; f
     if (content !== null) { setExpanded(e => !e); return }
     try {
       const abs = await window.api.getAbsolutePath({ folderPath, relativePath: attachment.path })
-      const res = await fetch(`local-file://${encodeURI(abs)}`)
+      const res = await fetch(convertFileSrc(abs))
       const text = await res.text()
       setContent(text)
       setExpanded(true)
@@ -197,6 +266,8 @@ interface ChatPanelProps {
   send: (attachments?: Attachment[]) => void
   onApproveHandoff: (messageId: string) => void
   onDismissHandoff: (messageId: string) => void
+  onConfirmInterrupt: (messageId: string) => void
+  onCancelInterrupt: (messageId: string) => void
   onGrantPermission: (messageId: string) => void
   onDismissPermission: (messageId: string) => void
   hasMoreMessages: boolean
@@ -225,6 +296,8 @@ export function ChatPanel({
   send,
   onApproveHandoff,
   onDismissHandoff,
+  onConfirmInterrupt,
+  onCancelInterrupt,
   onGrantPermission,
   onDismissPermission,
   hasMoreMessages,
@@ -297,6 +370,64 @@ export function ChatPanel({
       return [...prev, ...newAttachments]
     })
   }, [])
+
+  // ── Tauri native drag-drop ──
+  // Tauri 2 captures drag-drop at the window level (when dragDropEnabled=true,
+  // which is the default). HTML5 onDrop handlers below never fire on macOS in
+  // that mode, so we subscribe to the webview's native event instead and read
+  // each dropped file via the read_dropped_file IPC. The HTML5 handlers stay
+  // as a no-op fallback for non-Tauri runtimes.
+  useEffect(() => {
+    let unlisten: (() => void) | null = null
+    let cancelled = false
+    ;(async () => {
+      try {
+        const mod = await import('@tauri-apps/api/webview')
+        const webview = mod.getCurrentWebview()
+        const handle = await webview.onDragDropEvent(async (event) => {
+          const payload: any = event.payload
+          if (!payload || typeof payload !== 'object') return
+          if (payload.type === 'enter' || payload.type === 'over') {
+            setIsDragging(true)
+          } else if (payload.type === 'leave') {
+            setIsDragging(false)
+          } else if (payload.type === 'drop') {
+            setIsDragging(false)
+            const paths: string[] = Array.isArray(payload.paths) ? payload.paths : []
+            if (paths.length === 0) return
+            const files: File[] = []
+            for (const p of paths) {
+              try {
+                const result = await window.api.readDroppedFile({ path: p })
+                // base64 → bytes → File so the existing addFiles flow can
+                // consume it without any branching.
+                const binary = atob(result.data)
+                const bytes = new Uint8Array(binary.length)
+                for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+                files.push(new File([bytes], result.filename, { type: result.mimeType }))
+              } catch (err) {
+                console.error('[drop] failed to read', p, err)
+              }
+            }
+            if (files.length > 0) addFiles(files)
+          }
+        })
+        if (cancelled) {
+          handle()
+        } else {
+          unlisten = handle
+        }
+      } catch (err) {
+        // Not running in Tauri (e.g. tests). HTML5 handlers will pick up the
+        // slack — that's fine.
+        console.debug('[drop] Tauri webview API unavailable:', err)
+      }
+    })()
+    return () => {
+      cancelled = true
+      unlisten?.()
+    }
+  }, [addFiles])
 
   const removeAttachment = useCallback((id: string) => {
     setPendingAttachments(prev => {
@@ -461,14 +592,26 @@ export function ChatPanel({
     if (initialScrollDoneRef.current !== activeFolder) {
       initialScrollDoneRef.current = activeFolder
       requestAnimationFrame(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'instant' })
+        const el = messagesContainerRef.current
+        if (el) {
+          el.scrollTop = el.scrollHeight
+        }
         isNearBottomRef.current = true
       })
       return
     }
 
     if (isNearBottomRef.current) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+      // Use double-rAF to ensure React has finished flushing DOM updates.
+      // Single rAF can fire before layout recalc, causing a blank viewport.
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          const el = messagesContainerRef.current
+          if (el) {
+            el.scrollTop = el.scrollHeight
+          }
+        })
+      })
     }
   }, [folderMessages, activeFolder])
 
@@ -610,7 +753,7 @@ export function ChatPanel({
       onDragOver={onDragOver}
       onDrop={onDrop}
     >
-      <header className="chat-header drag">
+      <header className="chat-header drag" data-tauri-drag-region>
         {!leftSidebarOpen && (
           <button
             className="sidebar-toggle-btn chat-toggle-btn"
@@ -672,7 +815,7 @@ export function ChatPanel({
           </div>
         )}
         {folderMessages.map((m) => {
-          const isUser = m.agentName === 'user'
+          const isUser = m.agentName === 'user' || m.agentName === 'You'
           const isDispatcher = m.agentName === '__dispatcher__'
           const isSystem = m.agentName === '__system__'
           if (isDispatcher) {
@@ -711,10 +854,11 @@ export function ChatPanel({
                 ) : (
                   <div className="bubble-text">
                     {isUser ? (
-                      m.text.length > PASTE_ATTACHMENT_THRESHOLD ? (
-                        <CollapsibleLongText text={m.text} />
-                      ) : m.text
-                    ) : <MarkdownRenderer content={m.text} />}
+                      // Defensive: text can be missing for attachment-only messages.
+                      (m.text ?? '').length > PASTE_ATTACHMENT_THRESHOLD ? (
+                        <CollapsibleLongText text={m.text ?? ''} />
+                      ) : (m.text ?? '')
+                    ) : <MarkdownRenderer content={m.text ?? ''} />}
                   </div>
                 )}
                 {m.handoff && m.handoff.approved === undefined && (
@@ -744,6 +888,30 @@ export function ChatPanel({
                 {m.handoff && m.handoff.approved === true && (
                   <div className="handoff-resolved">{t('chat.handoffApproved')}</div>
                 )}
+                {m.interruptConfirm && m.interruptConfirm.confirmed === undefined && (
+                  <div className="handoff-prompt interrupt-confirm">
+                    <div className="handoff-actions">
+                      <button
+                        className="btn-danger"
+                        onClick={() => onConfirmInterrupt(m.id)}
+                      >
+                        {t('chat.interruptYes')}
+                      </button>
+                      <button
+                        className="btn-primary"
+                        onClick={() => onCancelInterrupt(m.id)}
+                      >
+                        {t('chat.interruptNo')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {m.interruptConfirm && m.interruptConfirm.confirmed === true && (
+                  <div className="handoff-resolved">{t('app.interruptConfirmed')}</div>
+                )}
+                {m.interruptConfirm && m.interruptConfirm.confirmed === false && (
+                  <div className="handoff-resolved">{t('app.interruptCancelled')}</div>
+                )}
                 {m.permissionRequest && m.permissionRequest.granted === undefined && (
                   <div className="permission-prompt">
                     <div className="permission-text">
@@ -771,42 +939,37 @@ export function ChatPanel({
                 {m.permissionRequest && m.permissionRequest.granted === false && (
                   <div className="permission-resolved dismissed">{t('chat.permissionDismissed')}</div>
                 )}
-                {m.attachments && m.attachments.length > 0 && (
+                {Array.isArray(m.attachments) && m.attachments.length > 0 && (
                   <div className="message-images">
-                    {m.attachments.map((att) =>
-                      att.type === 'image' ? (
-                        failedImages.has(att.id) ? (
-                          <div key={att.id} className="message-image-error">
+                    {m.attachments.map((att, idx) => {
+                      // Defensive: skip anything that isn't a usable attachment shape.
+                      if (!att || typeof att !== 'object') return null
+                      const key = att.id || `att-${idx}`
+                      if (att.type === 'image') {
+                        return failedImages.has(att.id) ? (
+                          <div key={key} className="message-image-error">
                             <ImageOff size={16} />
-                            <span>{att.filename}</span>
+                            <span>{att.filename || 'image'}</span>
                           </div>
                         ) : (
-                          <img
-                            key={att.id}
-                            className="message-image"
-                            src={`local-file://${encodeURI(`${activeFolder}/${att.path}`)}`}
-                            alt={att.filename}
-                            loading="lazy"
-                            onError={() => setFailedImages(prev => new Set(prev).add(att.id))}
-                            onClick={() => {
-                              window.api.getAbsolutePath({
-                                folderPath: activeFolder!,
-                                relativePath: att.path,
-                              }).then((abs: string) => {
-                                window.open(`file://${abs}`, '_blank')
-                              })
-                            }}
+                          <MessageImage
+                            key={key}
+                            attachment={att}
+                            folderPath={activeFolder!}
+                            onFail={() => setFailedImages(prev => new Set(prev).add(att.id))}
                           />
                         )
-                      ) : (att as any).isPastedText ? (
-                        <PastedTextBlock key={att.id} attachment={att} folderPath={activeFolder!} />
-                      ) : (
-                        <div key={att.id} className="message-file-badge">
+                      }
+                      if ((att as any).isPastedText) {
+                        return <PastedTextBlock key={key} attachment={att} folderPath={activeFolder!} />
+                      }
+                      return (
+                        <div key={key} className="message-file-badge">
                           <span className="message-file-icon"><FileText size={16} /></span>
-                          <span className="message-file-name">{att.filename}</span>
+                          <span className="message-file-name">{att.filename || 'file'}</span>
                         </div>
                       )
-                    )}
+                    })}
                   </div>
                 )}
                 {!isUser && !m.pending && m.usage && (

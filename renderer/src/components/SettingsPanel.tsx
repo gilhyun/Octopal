@@ -13,8 +13,6 @@ import {
   Trash2,
   Zap,
   Wrench,
-  Activity,
-  History,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'agents' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
@@ -42,7 +40,6 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
     electron: string
     node: string
   } | null>(null)
-  const [metrics, setMetrics] = useState<ObserverMetrics | null>(null)
 
   const TABS: { id: SettingsTab; label: string; icon: typeof Settings }[] = [
     { id: 'general', label: t('settings.tabs.general'), icon: Settings },
@@ -64,19 +61,6 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
     window.api.loadSettings().then(setSettings)
     window.api.getVersion().then(setVersionInfo)
   }, [])
-
-  // Load metrics when Advanced tab is active
-  useEffect(() => {
-    if (tab !== 'advanced') return
-    const load = () => {
-      window.api.smartObserverGetMetrics().then((res) => {
-        if (res.ok) setMetrics(res.metrics)
-      })
-    }
-    load()
-    const interval = setInterval(load, 5000) // refresh every 5s
-    return () => clearInterval(interval)
-  }, [tab])
 
   const update = <K extends keyof AppSettings>(
     section: K,
@@ -253,25 +237,6 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
               <span className="toggle-slider" />
             </label>
 
-            <label className="settings-toggle">
-              <span className="settings-toggle-info">
-                <span className="settings-label">
-                  <History size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
-                  {t('settings.general.autoVersionHistory')}
-                </span>
-                <span className="settings-desc">
-                  {t('settings.general.autoVersionHistoryDesc')}
-                </span>
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.versionControl?.autoCommit !== false}
-                onChange={(e) =>
-                  update('versionControl', { autoCommit: e.target.checked })
-                }
-              />
-              <span className="toggle-slider" />
-            </label>
           </div>
         )}
 
@@ -486,30 +451,8 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
           <div className="settings-section">
             <h3 className="settings-section-title">{t('settings.advanced.title')}</h3>
 
-            {/* Observer Model Selector */}
-            <div className="settings-field">
-              <span className="settings-toggle-info">
-                <span className="settings-label">
-                  <Activity size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
-                  {t('settings.advanced.observerModel')}
-                </span>
-                <span className="settings-desc">{t('settings.advanced.observerModelDesc')}</span>
-              </span>
-              <select
-                className="settings-select"
-                value={settings.advanced?.observerModel || 'haiku'}
-                onChange={(e) =>
-                  update('advanced', { observerModel: e.target.value as 'haiku' | 'sonnet' | 'opus' })
-                }
-              >
-                <option value="haiku">{t('settings.advanced.modelHaiku')}</option>
-                <option value="sonnet">{t('settings.advanced.modelSonnet')}</option>
-                <option value="opus">{t('settings.advanced.modelOpus')}</option>
-              </select>
-            </div>
-
             {/* Auto Model Selection Toggle */}
-            <div className="settings-field">
+            <label className="settings-toggle">
               <span className="settings-toggle-info">
                 <span className="settings-label">
                   <Zap size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
@@ -517,14 +460,16 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                 </span>
                 <span className="settings-desc">{t('settings.advanced.autoModelSelectionDesc')}</span>
               </span>
-              <button
-                className={`settings-toggle ${settings.advanced?.autoModelSelection !== false ? 'active' : ''}`}
-                onClick={() =>
-                  update('advanced', { autoModelSelection: settings.advanced?.autoModelSelection === false })
+              <input
+                type="checkbox"
+                checked={settings.advanced?.autoModelSelection !== false}
+                onChange={(e) =>
+                  update('advanced', { autoModelSelection: e.target.checked })
                 }
                 aria-label="Toggle auto model selection"
               />
-            </div>
+              <span className="toggle-slider" />
+            </label>
 
             {/* Default Agent Model Selector (shown when auto is off) */}
             {settings.advanced?.autoModelSelection === false && (
@@ -549,94 +494,57 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
               </div>
             )}
 
-            {/* Observer Metrics */}
+            {/* Backup Retention */}
             <h3 className="settings-section-title" style={{ marginTop: 24 }}>
-              <Activity size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
-              {t('settings.advanced.metricsTitle')}
+              <RotateCw size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
+              {t('settings.advanced.backupTitle')}
             </h3>
-            <p className="settings-section-desc">{t('settings.advanced.metricsDesc')}</p>
+            <p className="settings-section-desc">{t('settings.advanced.backupDesc')}</p>
 
-            {!metrics || metrics.totalCalls === 0 ? (
-              <p className="settings-section-desc" style={{ fontStyle: 'italic', opacity: 0.6 }}>
-                {t('settings.advanced.metricsNone')}
-              </p>
-            ) : (
-              <div className="observer-metrics">
-                {/* Success Rate Bar */}
-                {metrics.totalCalls > 0 && (
-                  <div className="metrics-success-rate">
-                    <span className="settings-label">{t('settings.advanced.metricsSuccessRate')}</span>
-                    <div className="metrics-bar">
-                      <div
-                        className="metrics-bar-fill"
-                        style={{
-                          width: `${Math.round((metrics.successes / metrics.totalCalls) * 100)}%`,
-                        }}
-                      />
-                    </div>
-                    <span className="metrics-bar-label">
-                      {Math.round((metrics.successes / metrics.totalCalls) * 100)}%
-                    </span>
-                  </div>
-                )}
+            <div className="settings-field">
+              <span className="settings-toggle-info">
+                <span className="settings-label">{t('settings.advanced.backupMaxCount')}</span>
+                <span className="settings-desc">{t('settings.advanced.backupMaxCountDesc')}</span>
+              </span>
+              <input
+                type="number"
+                className="settings-input"
+                min={1}
+                max={1000}
+                value={settings.backup?.maxBackupsPerWorkspace ?? 50}
+                onChange={(e) => {
+                  const n = Math.max(1, Math.min(1000, Number(e.target.value) || 50))
+                  update('backup', {
+                    maxBackupsPerWorkspace: n,
+                    maxAgeDays: settings.backup?.maxAgeDays ?? 7,
+                  })
+                }}
+                style={{ width: 80 }}
+              />
+            </div>
 
-                <div className="metrics-grid">
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsCalls')}</span>
-                    <span className="metrics-value">{metrics.totalCalls}</span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsSuccesses')}</span>
-                    <span className="metrics-value metrics-value--success">{metrics.successes}</span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsParseFailures')}</span>
-                    <span className={`metrics-value ${metrics.parseFailures > 0 ? 'metrics-value--warn' : ''}`}>
-                      {metrics.parseFailures}
-                    </span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsValidationFailures')}</span>
-                    <span className={`metrics-value ${metrics.validationFailures > 0 ? 'metrics-value--warn' : ''}`}>
-                      {metrics.validationFailures}
-                    </span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsTimeouts')}</span>
-                    <span className={`metrics-value ${metrics.timeouts > 0 ? 'metrics-value--error' : ''}`}>
-                      {metrics.timeouts}
-                    </span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsErrors')}</span>
-                    <span className={`metrics-value ${metrics.errors > 0 ? 'metrics-value--error' : ''}`}>
-                      {metrics.errors}
-                    </span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsAvgLatency')}</span>
-                    <span className="metrics-value">
-                      {metrics.avgLatencyMs > 0 ? `${(metrics.avgLatencyMs / 1000).toFixed(1)}s` : '-'}
-                    </span>
-                  </div>
-                  <div className="metrics-item">
-                    <span className="metrics-label">{t('settings.advanced.metricsLastSuccess')}</span>
-                    <span className="metrics-value">
-                      {metrics.lastSuccessAt
-                        ? new Date(metrics.lastSuccessAt).toLocaleTimeString()
-                        : t('settings.advanced.metricsNever')}
-                    </span>
-                  </div>
-                </div>
+            <div className="settings-field">
+              <span className="settings-toggle-info">
+                <span className="settings-label">{t('settings.advanced.backupMaxAge')}</span>
+                <span className="settings-desc">{t('settings.advanced.backupMaxAgeDesc')}</span>
+              </span>
+              <input
+                type="number"
+                className="settings-input"
+                min={1}
+                max={365}
+                value={settings.backup?.maxAgeDays ?? 7}
+                onChange={(e) => {
+                  const n = Math.max(1, Math.min(365, Number(e.target.value) || 7))
+                  update('backup', {
+                    maxBackupsPerWorkspace: settings.backup?.maxBackupsPerWorkspace ?? 50,
+                    maxAgeDays: n,
+                  })
+                }}
+                style={{ width: 80 }}
+              />
+            </div>
 
-                {metrics.lastFailureReason && (
-                  <div className="metrics-failure-reason">
-                    <span className="metrics-label">{t('settings.advanced.metricsLastFailure')}</span>
-                    <span className="metrics-failure-text">{metrics.lastFailureReason}</span>
-                  </div>
-                )}
-              </div>
-            )}
           </div>
         )}
 

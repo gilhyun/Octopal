@@ -3,55 +3,24 @@ use serde::Serialize;
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use tauri::{AppHandle, Emitter, State};
+
+use super::claude_cli::claude_command;
 
 #[cfg(unix)]
 extern crate libc;
 
-/// Resolve the full path to the `claude` CLI binary.
-/// GUI apps on macOS don't inherit the shell PATH, so we check common locations.
-fn resolve_claude_path() -> String {
-    // 1. Try bare `claude` first (works when PATH is inherited, e.g. `cargo tauri dev`)
-    if let Ok(output) = Command::new("which").arg("claude").output() {
-        if output.status.success() {
-            let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !p.is_empty() {
-                return p;
-            }
-        }
-    }
-
-    // 2. Check common install locations
-    let home = std::env::var("HOME").unwrap_or_default();
-    let candidates = [
-        format!("{}/.nvm/versions/node/v22.15.1/bin/claude", home),
-        format!("{}/.local/bin/claude", home),
-        format!("{}/.npm-global/bin/claude", home),
-        "/usr/local/bin/claude".to_string(),
-        "/opt/homebrew/bin/claude".to_string(),
-    ];
-    for candidate in &candidates {
-        if Path::new(candidate).exists() {
-            return candidate.clone();
-        }
-    }
-
-    // 3. Try to find via node/npm
-    if let Ok(output) = Command::new("/bin/sh")
-        .args(&["-l", "-c", "which claude"])
-        .output()
-    {
-        if output.status.success() {
-            let p = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            if !p.is_empty() {
-                return p;
-            }
-        }
-    }
-
-    // Fallback — will fail with a clear error message
-    "claude".to_string()
+/// Defense-in-depth: strip control characters (newlines, tabs, etc.) from any
+/// string before interpolating it into a system prompt. This prevents prompt
+/// injection even if upstream sanitization is bypassed (e.g. hand-edited .octo files).
+pub fn sanitize_prompt_field(s: &str) -> String {
+    s.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ")
 }
 
 #[derive(Clone, Serialize)]
@@ -59,6 +28,10 @@ struct ActivityEvent {
     #[serde(rename = "runId")]
     run_id: String,
     text: String,
+    #[serde(rename = "folderPath")]
+    folder_path: String,
+    #[serde(rename = "agentName")]
+    agent_name: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -70,6 +43,10 @@ struct ActivityLogEvent {
     tool: String,
     target: String,
     ts: u64,
+    #[serde(rename = "backupId", skip_serializing_if = "Option::is_none")]
+    backup_id: Option<String>,
+    #[serde(rename = "conflictWith", skip_serializing_if = "Option::is_none")]
+    conflict_with: Option<crate::commands::file_lock::LockHolder>,
 }
 
 #[derive(Clone, Serialize)]
@@ -121,8 +98,7 @@ pub struct StopAllResult {
 /// Check if claude CLI is installed and logged in
 #[tauri::command]
 pub async fn check_claude_cli() -> Result<serde_json::Value, String> {
-    let claude_bin = resolve_claude_path();
-    let output = Command::new(&claude_bin)
+    let output = claude_command()
         .arg("--version")
         .output();
 
@@ -172,13 +148,20 @@ pub async fn send_message(
         .unwrap_or("assistant")
         .to_string();
 
+    // Isolated mode — this agent doesn't see peers or room history, and
+    // can't emit handoff tags. Used for heavy single-shot research agents.
+    let is_isolated = octo_content
+        .get("isolated")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
     // Build system prompt
     let mut system_parts: Vec<String> = vec![];
 
     system_parts.push("You are a \".octo\" file: a JSON file on disk that stores your name, role, memory, and conversation history.".to_string());
 
     if let Some(role) = octo_content.get("role").and_then(|v| v.as_str()) {
-        system_parts.push(format!("\nYour role: {}", role));
+        system_parts.push(format!("\nYour role: {}", sanitize_prompt_field(role)));
     }
     system_parts.push(format!("Your name: {}", agent_name));
 
@@ -228,27 +211,30 @@ pub async fn send_message(
         }
     }
 
-    // Peers
-    if let Some(peer_list) = &peers {
-        if !peer_list.is_empty() {
-            system_parts.push("\nYou are in a group chat with these other agents:".to_string());
-            for p in peer_list {
-                let pname = p.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                let prole = p.get("role").and_then(|v| v.as_str()).unwrap_or("assistant");
-                system_parts.push(format!("- @{}: {}", pname, prole));
+    // Peers (sanitize name/role at injection point as defense-in-depth).
+    // Skipped entirely when this agent is isolated — it works alone.
+    if !is_isolated {
+        if let Some(peer_list) = &peers {
+            if !peer_list.is_empty() {
+                system_parts.push("\nYou are in a group chat with these other agents:".to_string());
+                for p in peer_list {
+                    let pname = sanitize_prompt_field(p.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
+                    let prole = sanitize_prompt_field(p.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
+                    system_parts.push(format!("- @{}: {}", pname, prole));
+                }
             }
         }
     }
 
-    // Collaboration mode
-    if is_leader == Some(true) {
+    // Collaboration mode — isolated agents never collaborate
+    if !is_isolated && is_leader == Some(true) {
         if let Some(collabs) = &collaborators {
             if !collabs.is_empty() {
                 let collab_list: Vec<String> = collabs
                     .iter()
                     .map(|c| {
-                        let n = c.get("name").and_then(|v| v.as_str()).unwrap_or("?");
-                        let r = c.get("role").and_then(|v| v.as_str()).unwrap_or("assistant");
+                        let n = sanitize_prompt_field(c.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
+                        let r = sanitize_prompt_field(c.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
                         format!("- @{} ({})", n, r)
                     })
                     .collect();
@@ -260,21 +246,188 @@ pub async fn send_message(
         }
     }
 
-    // Recent history (last 10 entries from octo)
-    if let Some(history) = octo_content.get("history").and_then(|v| v.as_array()) {
-        let recent: Vec<_> = history.iter().rev().take(10).collect::<Vec<_>>();
-        if !recent.is_empty() {
-            system_parts.push("\nRecent conversation:".to_string());
-            for msg in recent.iter().rev() {
-                let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("user");
-                let text = msg.get("text").and_then(|v| v.as_str()).unwrap_or("");
-                let truncated = if text.chars().count() > 300 {
-                    let prefix: String = text.chars().take(300).collect();
-                    format!("{}...", prefix)
+    // Auto-delegation: self-assessment instructions. Isolated agents don't
+    // learn about the handoff protocol at all — they're single-shot.
+    if !is_isolated {
+    if let Some(peer_list) = &peers {
+        if !peer_list.is_empty() {
+            let peer_summary: Vec<String> = peer_list
+                .iter()
+                .map(|p| {
+                    let pname = sanitize_prompt_field(p.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
+                    let prole = sanitize_prompt_field(p.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
+                    format!("@{} ({})", pname, prole)
+                })
+                .collect();
+            system_parts.push(format!(
+                "\n=== HANDOFF PROTOCOL ===\n\
+                Before starting any task, assess:\n\
+                1. Does this task match MY expertise ({name} — {role})?\n\
+                2. Is there a better-suited agent among my peers?\n\
+                \n\
+                If the task clearly belongs to another agent's domain, you can hand it off by ending your reply with a <HANDOFF> tag. The user will be asked to approve, and the target agent will be invoked with the full context.\n\
+                \n\
+                Format (put this at the END of your reply, one per target):\n\
+                <HANDOFF target=\"<peer_name>\" reason=\"<one-line why>\" />\n\
+                \n\
+                Important rules:\n\
+                - The <HANDOFF> tag is the ONLY way to delegate — a free `@mention` in prose is just a reference and will NOT trigger a chain.\n\
+                - `target` MUST exactly match one of the peer names below (case-insensitive).\n\
+                - Only emit a <HANDOFF> tag when the target REALLY needs to act — don't CC people for no reason.\n\
+                - Small/trivial tasks: just do them, don't over-delegate.\n\
+                - Partial match (your domain + another's): handle YOUR part, then emit a <HANDOFF> for the rest.\n\
+                - Clearly outside your expertise: emit <HANDOFF> immediately with a clear reason.\n\
+                - Include the actual work/answer in the prose BEFORE the tag — the tag is just the routing instruction.\n\
+                - You can emit multiple <HANDOFF> tags if multiple agents should be involved in parallel.\n\
+                \n\
+                Example end of reply:\n\
+                \"I've added the API endpoint and wired it up. The frontend side still needs the new form — that's designer territory.\n\
+                <HANDOFF target=\"designer\" reason=\"build the form UI for the new /api/foo endpoint\" />\"\n\
+                \n\
+                Available peers: {peers}",
+                name = sanitize_prompt_field(&agent_name),
+                role = sanitize_prompt_field(octo_content.get("role").and_then(|v| v.as_str()).unwrap_or("assistant")),
+                peers = peer_summary.join(", ")
+            ));
+        }
+    }
+    } // end: !is_isolated wrapper for the handoff protocol block
+
+    // Recent conversation — shared across the WHOLE room, not per-agent.
+    //
+    // Historical note: Octopal used to feed each agent only its own .octo
+    // history. That siloed every agent: if @developer answered a question,
+    // @designer would never see it on its next turn, making group chats
+    // feel choppy ("the other agent doesn't know what just happened").
+    //
+    // Now every non-isolated agent reads the shared `.octopal/room-history.json`
+    // and sees every turn in the room, self-tagged with "(me)" so it knows
+    // which lines it wrote itself. This is how AutoGen GroupChat and the
+    // OpenAI Agents SDK share context by default — there's no reason to
+    // reinvent isolation here.
+    //
+    // Budget packing: we pack from newest to oldest, include each message
+    // whole if it fits, and truncate the boundary message with "[…]" so
+    // the model knows something was cut. ~8000 chars ≈ 2000 tokens.
+    //
+    // Noise filters:
+    //   - `__dispatcher__` / `__system__` pseudo-agents (UI-only events)
+    //   - Empty / whitespace-only messages
+    //   - The CURRENT user turn (already on its way in as the prompt arg —
+    //     including it in history too would confuse claude about what's new)
+    //
+    // Isolated agents skip this entirely — they're single-shot workers.
+    const RECENT_HISTORY_CHAR_BUDGET: usize = 8000;
+    const HARD_PER_MESSAGE_CAP: usize = 2000;
+
+    if !is_isolated {
+        let room_history_path = Path::new(&folder_path)
+            .join(".octopal")
+            .join("room-history.json");
+
+        let all_msgs: Vec<serde_json::Value> = fs::read_to_string(&room_history_path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default();
+
+        if !all_msgs.is_empty() {
+            // Skip the tail user message if it's the one being processed
+            // right now (appendUserMessage writes BEFORE send_message runs).
+            let current_prompt_trimmed = prompt.trim();
+            let skip_last = all_msgs.last().map(|m| {
+                let is_user = m
+                    .get("agentName")
+                    .and_then(|v| v.as_str())
+                    == Some("user");
+                let text_matches = m
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .map(|t| {
+                        let t_trim = t.trim();
+                        !t_trim.is_empty()
+                            && (current_prompt_trimmed == t_trim
+                                || current_prompt_trimmed.contains(t_trim))
+                    })
+                    .unwrap_or(false);
+                is_user && text_matches
+            }).unwrap_or(false);
+
+            let take_len = if skip_last {
+                all_msgs.len().saturating_sub(1)
+            } else {
+                all_msgs.len()
+            };
+
+            let mut included: Vec<(String, String)> = Vec::new();
+            let mut used_chars: usize = 0;
+
+            for msg in all_msgs[..take_len].iter().rev() {
+                let speaker = msg
+                    .get("agentName")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("?");
+
+                // Drop UI-only pseudo-agents — dispatcher animations,
+                // system bundle notices, interrupt confirmation bubbles.
+                if speaker == "__dispatcher__" || speaker == "__system__" {
+                    continue;
+                }
+
+                let text = msg
+                    .get("text")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                if text.trim().is_empty() {
+                    continue;
+                }
+
+                // Tag the speaker. "(me)" for the current agent's own
+                // past turns, plain name for user and peers.
+                let label = if speaker == agent_name {
+                    format!("{} (me)", speaker)
                 } else {
-                    text.to_string()
+                    speaker.to_string()
                 };
-                system_parts.push(format!("[{}]: {}", role, truncated));
+
+                // Per-message hard cap so a single giant paste can't
+                // monopolize the budget.
+                let capped: String = if text.chars().count() > HARD_PER_MESSAGE_CAP {
+                    let head: String = text.chars().take(HARD_PER_MESSAGE_CAP).collect();
+                    format!("{}[…]", head)
+                } else {
+                    text
+                };
+
+                let msg_len = capped.chars().count() + label.chars().count() + 4;
+                if used_chars + msg_len > RECENT_HISTORY_CHAR_BUDGET {
+                    let remaining = RECENT_HISTORY_CHAR_BUDGET.saturating_sub(used_chars);
+                    if remaining > 80 {
+                        let tail_chars = remaining - 40;
+                        let start = capped.chars().count().saturating_sub(tail_chars);
+                        let tail: String = capped.chars().skip(start).collect();
+                        included.push((label, format!("[…] {}", tail)));
+                    }
+                    break;
+                }
+
+                used_chars += msg_len;
+                included.push((label, capped));
+            }
+
+            if !included.is_empty() {
+                system_parts.push(format!(
+                    "\nRecent conversation in this room (you are @{name}):",
+                    name = agent_name
+                ));
+                system_parts.push(
+                    "Lines tagged \"(me)\" are your own earlier turns. Lines with other agents' names are peers speaking in the same room — you can reference what they said. Use this as context for your reply, but don't parrot back what's already been said."
+                        .to_string(),
+                );
+                // We packed newest-first; flip back to chronological order.
+                for (label, text) in included.into_iter().rev() {
+                    system_parts.push(format!("[{}]: {}", label, text));
+                }
             }
         }
     }
@@ -335,7 +488,9 @@ pub async fn send_message(
         }
     } // settings guard dropped here
 
-    // Permissions args
+    // Permissions args — if any grant is set, use --dangerously-skip-permissions
+    // and selectively block the ungranted tools. If no grants at all, claude's
+    // default permission prompts still apply (the agent just can't do much).
     if has_active_perms {
         claude_args.push("--dangerously-skip-permissions".to_string());
         if let Some(p) = perms {
@@ -348,6 +503,13 @@ pub async fn send_message(
                 claude_args.push("Write".to_string());
                 claude_args.push("--disallowed-tools".to_string());
                 claude_args.push("Edit".to_string());
+            }
+            // Network permission — gates WebFetch. Previously read but not
+            // enforced, which meant `"network": false` in a .octo file was a
+            // silent lie. Now actually blocks the tool.
+            if p.get("network").and_then(|v| v.as_bool()) != Some(true) {
+                claude_args.push("--disallowed-tools".to_string());
+                claude_args.push("WebFetch".to_string());
             }
         }
     }
@@ -395,14 +557,17 @@ pub async fn send_message(
         folder_path
     ));
 
-    // Attachments
+    // Attachments — use absolute paths with @ references so Claude CLI
+    // can read and include them as vision/text content blocks.
     let mut final_prompt = prompt.clone();
-    let mut refs: Vec<String> = vec![];
+    let mut image_refs: Vec<String> = vec![];
+    let mut text_refs: Vec<String> = vec![];
     if let Some(imgs) = &image_paths {
         for img in imgs {
             let abs = Path::new(&folder_path).join(img);
             if abs.exists() {
-                refs.push(format!("@{}", img));
+                // Use absolute path for reliable file resolution in -p mode
+                image_refs.push(abs.to_string_lossy().to_string());
             }
         }
     }
@@ -410,12 +575,20 @@ pub async fn send_message(
         for txt in txts {
             let abs = Path::new(&folder_path).join(txt);
             if abs.exists() {
-                refs.push(format!("@{}", txt));
+                text_refs.push(abs.to_string_lossy().to_string());
             }
         }
     }
-    if !refs.is_empty() {
-        final_prompt = format!("Attached files: {}\n\n{}", refs.join(" "), prompt);
+    // Add image files via @ reference with absolute paths
+    let mut all_refs: Vec<String> = vec![];
+    for img_path in &image_refs {
+        all_refs.push(format!("@{}", img_path));
+    }
+    for txt_path in &text_refs {
+        all_refs.push(format!("@{}", txt_path));
+    }
+    if !all_refs.is_empty() {
+        final_prompt = format!("{}\n\n{}", all_refs.join(" "), prompt);
     }
     claude_args.push(final_prompt.clone());
 
@@ -423,6 +596,8 @@ pub async fn send_message(
     let _ = app.emit("octo:activity", ActivityEvent {
         run_id: run_id.clone(),
         text: "Thinking…".to_string(),
+        folder_path: folder_path.clone(),
+        agent_name: agent_name.clone(),
     });
 
     // Spawn claude CLI
@@ -432,19 +607,41 @@ pub async fn send_message(
     let agent_name_clone = agent_name.clone();
     let state_agents = state.running_agents.clone();
     let state_interrupted = state.interrupted_runs.clone();
+    let backup_tracker = state.backup_tracker.clone();
+    let file_lock_manager = state.file_lock_manager.clone();
+
+    // Opportunistic prune of old backups for this folder. Cheap if there's
+    // nothing to do; runs once per send_message. Reads retention limits up
+    // front so the spawned thread doesn't need access to ManagedState.
+    {
+        let prune_folder = folder_path.clone();
+        let (max_count, max_age) = {
+            let s = state.settings.lock().map_err(|e| e.to_string())?;
+            (
+                s.backup.max_backups_per_workspace as usize,
+                s.backup.max_age_days as u64,
+            )
+        };
+        std::thread::spawn(move || {
+            let _ = crate::commands::backup::prune_with_limits(
+                &prune_folder,
+                max_count,
+                max_age,
+            );
+        });
+    }
 
     let result = tokio::task::spawn_blocking(move || {
-        // Resolve full path to `claude` — GUI apps on macOS don't inherit shell PATH
-        let claude_bin = resolve_claude_path();
-
-        let mut child = Command::new(&claude_bin)
+        // GUI apps on macOS don't inherit shell PATH, and `claude`'s shebang
+        // relies on `env node` — `claude_command()` handles both.
+        let mut child = claude_command()
             .args(&claude_args)
             .current_dir(&folder_clone)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped()) // Capture stderr to diagnose errors
             .stdin(Stdio::null())
             .spawn()
-            .map_err(|e| format!("Failed to spawn claude ({}): {}", claude_bin, e))?;
+            .map_err(|e| format!("Failed to spawn claude: {}", e))?;
 
         // Read stderr in a separate thread to avoid deadlock
         let stderr = child.stderr.take().unwrap();
@@ -554,6 +751,8 @@ pub async fn send_message(
                                     ActivityEvent {
                                         run_id: run_id_clone.clone(),
                                         text: label,
+                                        folder_path: folder_clone.clone(),
+                                        agent_name: agent_name_clone.clone(),
                                     },
                                 );
 
@@ -579,6 +778,48 @@ pub async fn send_message(
                                             .to_string(),
                                         _ => String::new(),
                                     };
+
+                                    // For Write/Edit, snapshot the file (if first
+                                    // touch in this run) and check for cross-run
+                                    // lock conflicts. The snapshot races claude's
+                                    // own write, but in practice the JSON tool_use
+                                    // event reaches us before the disk write
+                                    // resolves for the typical small-file case —
+                                    // good enough for the safety net.
+                                    let mut backup_id: Option<String> = None;
+                                    let mut conflict_with: Option<
+                                        crate::commands::file_lock::LockHolder,
+                                    > = None;
+                                    if matches!(tool, "Write" | "Edit") {
+                                        let fp = input
+                                            .get("file_path")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
+                                        if !fp.is_empty() {
+                                            // Resolve to absolute for the lock key
+                                            let abs_path = if Path::new(fp).is_absolute() {
+                                                std::path::PathBuf::from(fp)
+                                            } else {
+                                                Path::new(&folder_clone).join(fp)
+                                            };
+                                            if let Err(existing) = file_lock_manager
+                                                .try_acquire(
+                                                    abs_path.clone(),
+                                                    &run_id_clone,
+                                                    &agent_name_clone,
+                                                )
+                                            {
+                                                conflict_with = Some(existing);
+                                            }
+                                            backup_id = backup_tracker.snapshot(
+                                                Path::new(&folder_clone),
+                                                &run_id_clone,
+                                                &agent_name_clone,
+                                                fp,
+                                            );
+                                        }
+                                    }
+
                                     let _ = app_clone.emit(
                                         "activity:log",
                                         ActivityLogEvent {
@@ -591,6 +832,8 @@ pub async fn send_message(
                                                 .unwrap()
                                                 .as_millis()
                                                 as u64,
+                                            backup_id,
+                                            conflict_with,
                                         },
                                     );
                                 }
@@ -600,6 +843,8 @@ pub async fn send_message(
                                     ActivityEvent {
                                         run_id: run_id_clone.clone(),
                                         text: "Writing response…".to_string(),
+                                        folder_path: folder_clone.clone(),
+                                        agent_name: agent_name_clone.clone(),
                                     },
                                 );
                             }
@@ -658,8 +903,11 @@ pub async fn send_message(
         // Collect stderr output
         let stderr_output = stderr_handle.join().unwrap_or_default();
 
-        // Clean up: remove from running agents
+        // Clean up: remove from running agents + drop file locks + drop
+        // backup-tracker in-memory state (backup files on disk persist).
         state_agents.lock().unwrap().remove(&run_id_clone);
+        file_lock_manager.release_run(&run_id_clone);
+        backup_tracker.finalize_run(&run_id_clone);
 
         // Check if this run was interrupted (user stopped it)
         let was_interrupted = state_interrupted.lock().unwrap().remove(&run_id_clone);
@@ -715,6 +963,10 @@ pub async fn send_message(
                 .join("room-history.json");
             let octopal_dir = Path::new(&folder_path).join(".octopal");
             fs::create_dir_all(&octopal_dir).ok();
+
+            // Rotate if the file has grown past our size threshold. Idempotent
+            // + safe if the file is missing or malformed.
+            crate::commands::folder::maybe_rotate_room_history(&room_history_path);
 
             let mut room_history: Vec<serde_json::Value> = if room_history_path.exists() {
                 fs::read_to_string(&room_history_path)
@@ -808,7 +1060,14 @@ pub fn stop_all_agents(state: State<'_, ManagedState>) -> StopAllResult {
 
 #[tauri::command]
 pub fn get_platform() -> String {
-    std::env::consts::OS.to_string()
+    // Return Node.js-style platform names ("darwin"/"win32"/"linux") for
+    // compatibility with existing CSS class hooks (`.platform-darwin`, etc.)
+    // and any UI code that was written against Electron's `process.platform`.
+    match std::env::consts::OS {
+        "macos" => "darwin".to_string(),
+        "windows" => "win32".to_string(),
+        other => other.to_string(),
+    }
 }
 
 // ── MCP stubs ──
@@ -824,10 +1083,28 @@ pub fn mcp_install_package(_package_name: String) -> serde_json::Value {
     serde_json::json!({ "ok": false, "error": "MCP install not yet implemented in Tauri" })
 }
 
-// ── Multi-window stubs ──
+// ── Multi-window ──
 #[tauri::command]
-pub fn new_window() -> serde_json::Value {
-    serde_json::json!({ "ok": false, "error": "Multi-window not yet implemented in Tauri" })
+pub fn new_window(app_handle: tauri::AppHandle) -> serde_json::Value {
+    let label = format!("window-{}", uuid::Uuid::new_v4());
+    match tauri::WebviewWindowBuilder::new(
+        &app_handle,
+        &label,
+        tauri::WebviewUrl::App("index.html".into()),
+    )
+    .title("Octopal")
+    .inner_size(1200.0, 800.0)
+    .min_inner_size(300.0, 400.0)
+    .decorations(true)
+    .title_bar_style(tauri::TitleBarStyle::Overlay)
+    .hidden_title(true)
+    .accept_first_mouse(true)
+    .focused(true)
+    .build()
+    {
+        Ok(_) => serde_json::json!({ "ok": true, "label": label }),
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
 }
 
 #[tauri::command]

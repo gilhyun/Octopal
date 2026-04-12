@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong><span style="font-size: 1.8em;">My PC is my Company.</span></strong><br />
+  <strong><span style="font-size: 3.8em;">My PC is my Company.</span></strong><br />
   An agentic workplace messenger for Claude Code.<br />
   No servers, no accounts — just your PC and a team of AI agents.
 </p>

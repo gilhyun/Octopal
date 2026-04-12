@@ -4,6 +4,9 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
+use crate::commands::backup::BackupTracker;
+use crate::commands::file_lock::FileLockManager;
+
 /// Persistent app state (workspaces, folders)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppState {
@@ -29,6 +32,12 @@ pub struct OctoFile {
     pub icon: String,
     pub color: Option<String>,
     pub hidden: Option<bool>,
+    /// When true, this agent runs in "isolated mode": it never sees peers or
+    /// the shared room history, and other agents can't hand off to it. Used
+    /// for heavy single-shot research/analysis agents that would pollute the
+    /// group chat. Claude Code's subagent pattern.
+    #[serde(default)]
+    pub isolated: Option<bool>,
     pub permissions: Option<OctoPermissions>,
     #[serde(rename = "mcpServers")]
     pub mcp_servers: Option<serde_json::Value>,
@@ -61,6 +70,9 @@ pub struct HistoryMessage {
     pub role: Option<String>,
     #[serde(rename = "roomTs")]
     pub room_ts: Option<f64>,
+    /// Attachments (images, text files) sent with the message
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<serde_json::Value>,
 }
 
 /// App settings
@@ -73,6 +85,8 @@ pub struct AppSettings {
     pub advanced: AdvancedSettings,
     #[serde(rename = "versionControl")]
     pub version_control: VersionControlSettings,
+    #[serde(default)]
+    pub backup: BackupSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,8 +133,6 @@ pub struct TextShortcut {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdvancedSettings {
-    #[serde(rename = "observerModel")]
-    pub observer_model: String,
     #[serde(rename = "defaultAgentModel")]
     pub default_agent_model: String,
     #[serde(rename = "autoModelSelection")]
@@ -131,6 +143,34 @@ pub struct AdvancedSettings {
 pub struct VersionControlSettings {
     #[serde(rename = "autoCommit")]
     pub auto_commit: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BackupSettings {
+    /// Maximum number of backup directories to keep per workspace.
+    /// Older ones are pruned to OS trash.
+    #[serde(rename = "maxBackupsPerWorkspace", default = "default_max_backups")]
+    pub max_backups_per_workspace: u32,
+    /// Backups older than this many days are pruned, regardless of count.
+    #[serde(rename = "maxAgeDays", default = "default_max_age_days")]
+    pub max_age_days: u32,
+}
+
+fn default_max_backups() -> u32 {
+    50
+}
+
+fn default_max_age_days() -> u32 {
+    7
+}
+
+impl Default for BackupSettings {
+    fn default() -> Self {
+        Self {
+            max_backups_per_workspace: default_max_backups(),
+            max_age_days: default_max_age_days(),
+        }
+    }
 }
 
 impl Default for AppSettings {
@@ -153,11 +193,11 @@ impl Default for AppSettings {
                 text_expansions: vec![],
             },
             advanced: AdvancedSettings {
-                observer_model: "haiku".to_string(),
                 default_agent_model: "opus".to_string(),
                 auto_model_selection: false,
             },
             version_control: VersionControlSettings { auto_commit: true },
+            backup: BackupSettings::default(),
         }
     }
 }
@@ -183,6 +223,11 @@ pub struct ManagedState {
     pub state_dir: PathBuf,
     #[allow(dead_code)]
     pub is_dev: bool,
+    /// Tracks per-run pre-write file snapshots so the activity panel can
+    /// offer "revert" on every Write/Edit an agent performs.
+    pub backup_tracker: Arc<BackupTracker>,
+    /// Best-effort file claim map used to flag concurrent-agent conflicts.
+    pub file_lock_manager: Arc<FileLockManager>,
 }
 
 impl ManagedState {
@@ -224,6 +269,8 @@ impl ManagedState {
             folder_watchers: Arc::new(Mutex::new(HashMap::new())),
             state_dir,
             is_dev,
+            backup_tracker: Arc::new(BackupTracker::new()),
+            file_lock_manager: Arc::new(FileLockManager::new()),
         }
     }
 

@@ -27,7 +27,7 @@ export function RightSidebar({
 
   return (
     <aside className="right-sidebar">
-      <div className="sidebar-header drag">
+      <div className="sidebar-header drag" data-tauri-drag-region>
         <span className="section-title">{t('agents.title')}</span>
         {activeFolder && (
           <button

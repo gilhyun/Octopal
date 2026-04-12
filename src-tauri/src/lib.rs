@@ -4,6 +4,79 @@ mod state;
 use state::ManagedState;
 use tauri::Manager;
 
+// ── macOS Dock menu ────────────────────────────────
+#[cfg(target_os = "macos")]
+#[allow(unexpected_cfgs, deprecated)]
+mod dock_menu {
+    use cocoa::base::{id, nil};
+    use cocoa::foundation::NSString;
+    use objc::runtime::{Class, Object, Sel};
+    use objc::{class, msg_send, sel, sel_impl};
+    use std::sync::{Once, OnceLock};
+
+    static APP_HANDLE: OnceLock<tauri::AppHandle> = OnceLock::new();
+    static REGISTER_CLASS: Once = Once::new();
+
+    extern "C" fn new_window_action(_this: &Object, _cmd: Sel, _sender: id) {
+        if let Some(handle) = APP_HANDLE.get() {
+            let label = format!("window-{}", uuid::Uuid::new_v4());
+            let _ = tauri::WebviewWindowBuilder::new(
+                handle,
+                &label,
+                tauri::WebviewUrl::App("index.html".into()),
+            )
+            .title("Octopal")
+            .inner_size(1200.0, 800.0)
+            .min_inner_size(300.0, 400.0)
+            .decorations(true)
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true)
+            .accept_first_mouse(true)
+            .focused(true)
+            .build();
+        }
+    }
+
+    pub fn setup(app: &tauri::App) {
+        let _ = APP_HANDLE.set(app.handle().clone());
+
+        REGISTER_CLASS.call_once(|| {
+            let superclass = Class::get("NSObject").unwrap();
+            let mut decl =
+                objc::declare::ClassDecl::new("OctoDockMenuTarget", superclass).unwrap();
+            unsafe {
+                decl.add_method(
+                    sel!(newWindow:),
+                    new_window_action as extern "C" fn(&Object, Sel, id),
+                );
+            }
+            decl.register();
+        });
+
+        unsafe {
+            let cls = Class::get("OctoDockMenuTarget").unwrap();
+            let target: id = msg_send![cls, new];
+            // Leak target so it lives for the app lifetime
+            let _prevent_drop: id = msg_send![target, retain];
+
+            let menu: id = msg_send![class!(NSMenu), new];
+            let title = NSString::alloc(nil).init_str("New Window");
+            let key = NSString::alloc(nil).init_str("");
+            let item: id = msg_send![class!(NSMenuItem), alloc];
+            let item: id = msg_send![item,
+                initWithTitle: title
+                action: sel!(newWindow:)
+                keyEquivalent: key
+            ];
+            let _: () = msg_send![item, setTarget: target];
+            let _: () = msg_send![menu, addItem: item];
+
+            let ns_app: id = msg_send![class!(NSApplication), sharedApplication];
+            let _: () = msg_send![ns_app, setDockMenu: menu];
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let is_dev = cfg!(debug_assertions);
@@ -22,6 +95,29 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_process::init())
         .manage(managed)
+        .setup(|app| {
+            // Allow asset protocol to access files under the user's home directory
+            if let Some(home) = dirs::home_dir() {
+                let _ = app.asset_protocol_scope().allow_directory(&home, true);
+            }
+            // Also allow /tmp for temporary files
+            let _ = app.asset_protocol_scope().allow_directory("/tmp", true);
+
+            // Allow all existing workspace folders in asset protocol scope
+            if let Ok(st) = app.state::<ManagedState>().app_state.lock() {
+                for ws in &st.workspaces {
+                    for folder in &ws.folders {
+                        let _ = app
+                            .asset_protocol_scope()
+                            .allow_directory(std::path::Path::new(folder), true);
+                    }
+                }
+            }
+
+            #[cfg(target_os = "macos")]
+            dock_menu::setup(app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             // Workspace
             commands::workspace::load_state,
@@ -36,6 +132,8 @@ pub fn run() {
             commands::folder::load_history,
             commands::folder::load_history_paged,
             commands::folder::append_user_message,
+            commands::folder::read_pending_state,
+            commands::folder::write_pending_state,
             // Octo (Agent CRUD)
             commands::octo::create_octo,
             commands::octo::update_octo,
@@ -51,16 +149,11 @@ pub fn run() {
             commands::wiki::wiki_read,
             commands::wiki::wiki_write,
             commands::wiki::wiki_delete,
-            // Git
-            commands::git::git_get_history,
-            commands::git::git_get_diff,
-            commands::git::git_revert,
-            commands::git::git_push,
-            commands::git::git_has_remote,
             // Files
             commands::files::save_file,
             commands::files::read_file_base64,
             commands::files::get_absolute_path,
+            commands::files::read_dropped_file,
             // Settings
             commands::settings::load_settings,
             commands::settings::save_settings,
@@ -73,19 +166,14 @@ pub fn run() {
             commands::agent::get_window_count,
             // File access
             commands::agent::respond_file_access,
-            // Observer / Router
-            commands::observer::observer_update,
-            commands::observer::observer_get_context,
-            commands::observer::observer_reset,
-            commands::observer::smart_observer_get_context,
-            commands::observer::smart_observer_force_refresh,
-            commands::observer::smart_observer_set_enabled,
-            commands::observer::smart_observer_set_model,
-            commands::observer::smart_observer_get_model,
-            commands::observer::smart_observer_get_metrics,
-            commands::observer::dispatcher_route,
-            commands::observer::classify_mention,
-            commands::observer::dispatcher_check_context,
+            // Router
+            commands::dispatcher::dispatcher_route,
+            // Backup / Revert
+            commands::backup::list_backups,
+            commands::backup::read_backup_file,
+            commands::backup::read_current_file,
+            commands::backup::revert_backup,
+            commands::backup::prune_backups,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

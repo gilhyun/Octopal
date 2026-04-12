@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import './i18n'
-import type { ActivityLogEntry, Attachment, Message, PermissionRequest, TokenUsage } from './types'
+import type { ActivityLogEntry, Attachment, InterruptConfirm, Message, PermissionRequest, TokenUsage } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { WikiPanel } from './components/WikiPanel'
 import { RightSidebar } from './components/RightSidebar'
 import { ActivityPanel } from './components/ActivityPanel'
-import { TimelinePanel } from './components/TimelinePanel'
 import { CreateAgentModal } from './components/modals/CreateAgentModal'
 import { CreateWorkspaceModal } from './components/modals/CreateWorkspaceModal'
 import { WelcomeModal } from './components/modals/WelcomeModal'
@@ -16,6 +15,7 @@ import { EditAgentModal } from './components/modals/EditAgentModal'
 import { ClaudeLoginModal } from './components/modals/ClaudeLoginModal'
 import { FileAccessApprovalModal, type FileAccessDecision } from './components/modals/FileAccessApprovalModal'
 import { SettingsPanel } from './components/SettingsPanel'
+import { TaskBoard } from './components/TaskBoard'
 import { ToastContainer, showToast } from './components/Toast'
 import { expandShortcut } from './shortcut-expander'
 
@@ -49,7 +49,7 @@ export function App() {
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
   const [mentionOpen, setMentionOpen] = useState(false)
   const [mentionQuery, setMentionQuery] = useState('')
-  const [centerTab, setCenterTab] = useState<'chat' | 'wiki' | 'activity' | 'timeline' | 'settings'>('chat')
+  const [centerTab, setCenterTab] = useState<'chat' | 'wiki' | 'activity' | 'settings' | 'tasks'>('chat')
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [platform, setPlatform] = useState<string>('darwin')
@@ -78,6 +78,27 @@ export function App() {
     runId: string
     prompt: string
     userTs: number
+  }>>(new Map())
+
+  // Pending interrupt confirmations — resolve(true) = proceed, resolve(false) = cancel
+  const pendingInterruptRef = useRef<Map<string, {
+    resolve: (confirmed: boolean) => void
+    messageId: string
+    folderPath: string
+    runningAgents: string[]
+    bufferedText: string
+    bufferedAttachments: Attachment[]
+    userTs: number
+  }>>(new Map())
+
+  // Track active chain runs for completion reporting — key is `chain-${userTs}`
+  const activeChainRef = useRef<Map<string, {
+    folderPath: string
+    userTs: number
+    originalPrompt: string
+    agents: Set<string>           // agents involved in this chain
+    completedAgents: Set<string>  // agents that finished
+    startTs: number
   }>>(new Map())
 
   // MCP status per agent (keyed by agent path)
@@ -182,45 +203,6 @@ export function App() {
       })
     })
   }, [t, octos])
-
-  // Listen for Git merge conflict notifications from main process
-  useEffect(() => {
-    return window.api.onGitMergeConflict((data) => {
-      // Add system message to the chat
-      setMessages((prev) => ({
-        ...prev,
-        [data.folderPath]: [
-          ...(prev[data.folderPath] || []),
-          {
-            id: `git-conflict-${Date.now()}`,
-            agentName: '__system__',
-            text: `⚠️ ${data.agentName}의 변경사항이 충돌합니다. 수동 확인이 필요합니다. (branch: ${data.agentBranch})`,
-            ts: Date.now(),
-            pending: false,
-          },
-        ],
-      }))
-    })
-  }, [])
-
-  // Listen for Git interrupt rollback notifications
-  useEffect(() => {
-    return window.api.onGitInterruptRollback((data) => {
-      setMessages((prev) => ({
-        ...prev,
-        [data.folderPath]: [
-          ...(prev[data.folderPath] || []),
-          {
-            id: `git-rollback-${Date.now()}`,
-            agentName: '__system__',
-            text: t('timeline.rollbackNotice'),
-            ts: Date.now(),
-            pending: false,
-          },
-        ],
-      }))
-    })
-  }, [t])
 
   // Compact mode: below this threshold sidebars open as overlays
   const COMPACT_BREAKPOINT = 700
@@ -414,26 +396,76 @@ export function App() {
       // Load history normally
       const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
       setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
+
+      // Hydrate pending-handoff state from disk so the Approve/Dismiss
+      // buttons survive window reloads. The persisted blob uses
+      // { handoffs: { [messageId]: ctx } } with Sets stored as arrays.
+      let hydratedHandoffs = new Map<string, any>()
+      try {
+        const raw = await window.api.readPendingState(folder)
+        const entries = (raw?.handoffs ?? {}) as Record<string, any>
+        for (const [id, ctx] of Object.entries(entries)) {
+          hydratedHandoffs.set(id, {
+            folderPath: ctx.folderPath,
+            speakerName: ctx.speakerName,
+            speakerOutput: ctx.speakerOutput,
+            nextTargetPaths: ctx.nextTargetPaths || [],
+            nextTargetReasons: ctx.nextTargetReasons || [],
+            userTs: ctx.userTs,
+            depth: ctx.depth ?? 0,
+            alreadyCalled: new Set(ctx.alreadyCalled || []),
+          })
+          pendingHandoffsRef.current.set(id, {
+            folderPath: ctx.folderPath,
+            speakerName: ctx.speakerName,
+            speakerOutput: ctx.speakerOutput,
+            nextTargetPaths: ctx.nextTargetPaths || [],
+            nextTargetReasons: ctx.nextTargetReasons || [],
+            userTs: ctx.userTs,
+            depth: ctx.depth ?? 0,
+            alreadyCalled: new Set<string>(ctx.alreadyCalled || []),
+          })
+        }
+      } catch {
+        // Non-fatal — fall through with empty hydration
+      }
+
       setMessages((prev) => {
         const existing = prev[folder] || []
         // Preserve pending messages and unresolved permission requests (in-memory only)
         const preserveMessages = existing.filter(
           (m) => m.pending || (m.permissionRequest && m.permissionRequest.granted === undefined)
         )
+        // Re-attach hydrated `handoff` field to the matching history messages
+        // so the Approve/Dismiss buttons re-appear on reload.
+        const attachHandoff = (m: Message): Message => {
+          const ctx = hydratedHandoffs.get(m.id)
+          if (!ctx) return m
+          return {
+            ...m,
+            handoff: {
+              targets: ctx.nextTargetPaths
+                .map((path: string) => existingOctos.find((o) => o.path === path)?.name)
+                .filter((n: string | undefined): n is string => !!n),
+            },
+          }
+        }
         if (preserveMessages.length === 0) {
-          return { ...prev, [folder]: history }
+          return { ...prev, [folder]: history.map(attachHandoff) }
         }
         const historyIds = new Set(history.map((m) => m.id))
         const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
-        // For messages already in history, merge back permissionRequest from in-memory state
         const permMap = new Map(
           preserveMessages
             .filter((m) => m.permissionRequest)
             .map((m) => [m.id, m.permissionRequest])
         )
-        const mergedHistory = history.map((m) =>
-          permMap.has(m.id) ? { ...m, permissionRequest: permMap.get(m.id) } : m
-        )
+        const mergedHistory = history.map((m) => {
+          let merged: Message = m
+          if (permMap.has(m.id)) merged = { ...merged, permissionRequest: permMap.get(m.id) }
+          merged = attachHandoff(merged)
+          return merged
+        })
         return { ...prev, [folder]: [...mergedHistory, ...missingPreserved] }
       })
     }
@@ -481,11 +513,40 @@ export function App() {
     return unsubscribe
   }, [])
 
-  // Watch for .octo file changes in the active folder
+  // Watch for .octo file changes in the active folder (cross-window sync)
   useEffect(() => {
     const unsubscribe = window.api.onOctosChanged((changedFolder) => {
       if (changedFolder === activeFolder) {
+        // Refresh the agent list in the sidebar
         window.api.listOctos(changedFolder).then(setOctos)
+
+        // Refresh chat messages (merge with in-flight pending messages)
+        window.api.loadHistoryPaged({ folderPath: changedFolder, limit: PAGE_SIZE }).then(({ messages: history, hasMore }) => {
+          setHasMoreMessages((prev) => ({ ...prev, [changedFolder]: hasMore }))
+          setMessages((prev) => {
+            const existing = prev[changedFolder] || []
+            // Preserve pending messages and unresolved permission requests (in-memory only).
+            // Exclude remote pending messages (from other windows) — they'll be
+            // replaced by the real history that just arrived.
+            const preserveMessages = existing.filter(
+              (m) => (m.pending && !m.id.startsWith('remote-')) || (m.permissionRequest && m.permissionRequest.granted === undefined)
+            )
+            if (preserveMessages.length === 0) {
+              return { ...prev, [changedFolder]: history }
+            }
+            const historyIds = new Set(history.map((m) => m.id))
+            const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
+            const permMap = new Map(
+              preserveMessages
+                .filter((m) => m.permissionRequest)
+                .map((m) => [m.id, m.permissionRequest])
+            )
+            const mergedHistory = history.map((m) =>
+              permMap.has(m.id) ? { ...m, permissionRequest: permMap.get(m.id) } : m
+            )
+            return { ...prev, [changedFolder]: [...mergedHistory, ...missingPreserved] }
+          })
+        })
       }
     })
     return unsubscribe
@@ -496,20 +557,56 @@ export function App() {
     if (octos.length > 0) checkMcpHealth(octos)
   }, [octos.map((o) => `${o.path}:${JSON.stringify(o.mcpServers)}`).join(',')])
 
-  // Listen for agent activity (tool calls) and update the pending bubble
+  // Listen for agent activity (tool calls) and update the pending bubble.
+  // For the window that sent the message, runMapRef has the mapping.
+  // For OTHER windows, we create a temporary "remote pending" bubble so the
+  // typing indicator is visible everywhere.
   useEffect(() => {
-    const unsubscribe = window.api.onActivity(({ runId, text }) => {
+    const unsubscribe = window.api.onActivity(({ runId, text, folderPath: evFolder, agentName: evAgent }) => {
       const mapping = runMapRef.current.get(runId)
-      if (!mapping) return
-      setMessages((prev) => {
-        const list = prev[mapping.folderPath] || []
-        return {
-          ...prev,
-          [mapping.folderPath]: list.map((m) =>
-            m.id === mapping.messageId ? { ...m, activity: text } : m
-          ),
-        }
-      })
+      if (mapping) {
+        // This window owns the run — update the existing pending message
+        setMessages((prev) => {
+          const list = prev[mapping.folderPath] || []
+          return {
+            ...prev,
+            [mapping.folderPath]: list.map((m) =>
+              m.id === mapping.messageId ? { ...m, activity: text } : m
+            ),
+          }
+        })
+      } else if (evFolder && evAgent) {
+        // Another window's run — show a remote typing indicator
+        const remotePendingId = `remote-${runId}`
+        setMessages((prev) => {
+          const list = prev[evFolder] || []
+          const existing = list.find((m) => m.id === remotePendingId)
+          if (existing) {
+            // Update existing remote pending bubble
+            return {
+              ...prev,
+              [evFolder]: list.map((m) =>
+                m.id === remotePendingId ? { ...m, activity: text } : m
+              ),
+            }
+          }
+          // Create a new remote pending bubble
+          return {
+            ...prev,
+            [evFolder]: [
+              ...list,
+              {
+                id: remotePendingId,
+                agentName: evAgent,
+                text: '',
+                ts: Date.now(),
+                pending: true,
+                activity: text,
+              },
+            ],
+          }
+        })
+      }
     })
     return unsubscribe
   }, [])
@@ -526,6 +623,8 @@ export function App() {
           tool: entry.tool,
           target: entry.target,
           ts: entry.ts,
+          backupId: entry.backupId,
+          conflictWith: entry.conflictWith,
         }].slice(-200) // cap at 200 entries per folder
         return { ...prev, [entry.folderPath]: next }
       })
@@ -632,6 +731,28 @@ export function App() {
   const stripPermissionTag = (text: string): string =>
     text.replace(/<!--NEEDS_PERMISSIONS:\s*[\w\s,]+-->/g, '').trim()
 
+  /**
+   * Parse structured <HANDOFF target="..." reason="..."> tags from an
+   * agent's reply. This is the ONLY way to trigger a chain to another
+   * agent — free @mentions in the body are just references.
+   *
+   * Format is forgiving about quote styles and whitespace, and `reason` is
+   * optional. Multiple tags are allowed (parallel fan-out).
+   */
+  const parseHandoffTags = (text: string): Array<{ target: string; reason: string }> => {
+    const re = /<HANDOFF\s+target\s*=\s*["']([^"']+)["'](?:\s+reason\s*=\s*["']([^"']*)["'])?\s*\/?>/gi
+    const out: Array<{ target: string; reason: string }> = []
+    let m
+    while ((m = re.exec(text)) !== null) {
+      out.push({ target: m[1].trim(), reason: (m[2] || '').trim() })
+    }
+    return out
+  }
+
+  /** Strip <HANDOFF ...> tags from displayed text so users don't see the protocol. */
+  const stripHandoffTags = (text: string): string =>
+    text.replace(/<HANDOFF\s+target\s*=\s*["'][^"']+["'](?:\s+reason\s*=\s*["'][^"']*["'])?\s*\/?>/gi, '').trim()
+
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
     const hasAttachments = attachments && attachments.length > 0
@@ -718,67 +839,84 @@ export function App() {
       .filter(([key]) => key.startsWith(`${folderPath}::`))
 
     if (runningInFolder.length > 0) {
-      const [activeKey, activeRun] = runningInFolder[0]
-      try {
-        const contextRes = await withTimeout(
-          window.api.checkContext({
-            originalPrompt: activeRun.prompt,
-            newMessage: combinedText,
-            agentName: activeRun.agentName,
-          }),
-          20_000,
-          'Context check',
-        )
+      const [, activeRun] = runningInFolder[0]
+      // When multiple agents are running, confirm with the user before
+      // interrupting. When a single agent is running, interrupt silently —
+      // the user just typed, so they expect the new message to land.
+      if (runningInFolder.length > 1) {
+        const runningAgentNames = runningInFolder.map(([, r]) => r.agentName)
+        const confirmMsgId = `interrupt-confirm-${Date.now()}`
 
-        if (contextRes.ok && contextRes.decision !== 'unrelated') {
-          // Interrupt the running agent
-          await window.api.stopAgent(activeRun.runId)
+        const confirmed = await new Promise<boolean>((resolve) => {
+          pendingInterruptRef.current.set(confirmMsgId, {
+            resolve,
+            messageId: confirmMsgId,
+            folderPath,
+            runningAgents: runningAgentNames,
+            bufferedText: combinedText,
+            bufferedAttachments: allAttachments,
+            userTs,
+          })
 
-          // Show system message about bundling
-          const bundleMsgId = `bundle-${Date.now()}`
-          const isModify = contextRes.decision === 'modify'
           setMessages((prev) => ({
             ...prev,
             [folderPath]: [
               ...(prev[folderPath] || []),
               {
-                id: bundleMsgId,
+                id: confirmMsgId,
                 agentName: '__system__',
-                text: isModify
-                  ? t('app.bundleModify', { agent: activeRun.agentName })
-                  : t('app.bundleForward', { agent: activeRun.agentName }),
+                text: t('app.interruptConfirm', {
+                  count: runningInFolder.length,
+                  agents: runningAgentNames.join(', '),
+                }),
                 ts: Date.now(),
                 pending: false,
+                interruptConfirm: {
+                  runningAgents: runningAgentNames,
+                },
               },
             ],
           }))
+        })
 
-          // Use the bundled prompt from LLM, or fallback
-          if (contextRes.bundledPrompt) {
-            combinedText = contextRes.bundledPrompt
-          } else if (!isModify) {
-            // Supplement fallback: merge original + new
-            combinedText = `${activeRun.prompt}\n\n${t('app.additionalInstruction', { text: combinedText })}`
-          }
-          // For modify without bundledPrompt, just use combinedText as-is (the new message replaces)
+        if (!confirmed) {
+          // User cancelled — don't interrupt, don't route this message
+          return
         }
-        // For 'unrelated', proceed normally — the running agent keeps going,
-        // new message gets routed separately.
-      } catch {
-        // Context check failed — proceed normally (conservative: don't interrupt)
       }
-    }
 
-    // ── Observer: track user message ─────────────────────
-    window.api.observerUpdate({
-      folderPath,
-      message: {
-        agentName: 'user',
-        text: combinedText,
-        ts: userTs,
-        mentions: bufferedMessages.flatMap((m) => parseMentions(m.text)),
-      },
-    })
+      // Interrupt all running agents in this folder
+      for (const [, run] of runningInFolder) {
+        await window.api.stopAgent(run.runId)
+      }
+
+      // Show a system message about the interrupt + bundle
+      const bundleMsgId = `bundle-${Date.now()}`
+      const stoppedNames = runningInFolder.length > 1
+        ? runningInFolder.map(([, r]) => `@${r.agentName}`).join(', ')
+        : `@${activeRun.agentName}`
+      setMessages((prev) => ({
+        ...prev,
+        [folderPath]: [
+          ...(prev[folderPath] || []),
+          {
+            id: bundleMsgId,
+            agentName: '__system__',
+            text: runningInFolder.length > 1
+              ? t('app.bundleMultiStop', { agents: stoppedNames, count: runningInFolder.length })
+              : t('app.bundleForward', { agent: activeRun.agentName }),
+            ts: Date.now(),
+            pending: false,
+          },
+        ],
+      }))
+
+      // Merge original prompt + new message so the rerouted agent gets full
+      // context. Replaces the old "modify vs supplement" classifier (always
+      // returned supplement), which was a stub that added overhead without
+      // improving quality.
+      combinedText = `${activeRun.prompt}\n\n${t('app.additionalInstruction', { text: combinedText })}`
+    }
 
     // ── Routing ─────────────────────────────────────────
     const allMentions = bufferedMessages.flatMap((m) => parseMentions(m.text))
@@ -800,9 +938,10 @@ export function App() {
       }
     }
 
-    // If no leader yet (no mentions, or mentions didn't match any agent), use dispatcher
+    // If no leader yet (no mentions, or mentions didn't match any agent), use dispatcher.
+    // Isolated agents are excluded — they can only be reached via explicit @mention.
     if (!leader) {
-      const visibleAgents = octos.filter((r) => !r.hidden)
+      const visibleAgents = octos.filter((r) => !r.hidden && !r.isolated)
       if (visibleAgents.length === 1) {
         // Only one visible agent — skip dispatcher, route directly
         leader = visibleAgents[0]
@@ -892,6 +1031,22 @@ export function App() {
     // user switches to a different folder/workspace mid-run.
     const octosSnapshot = [...octos]
 
+    // Chain tracking for completion reporting
+    const chainKey = `chain-${userTs}`
+    if (depth === 0) {
+      activeChainRef.current.set(chainKey, {
+        folderPath: folderPathAtStart,
+        userTs,
+        originalPrompt: prompt,
+        agents: new Set([target.name]),
+        completedAgents: new Set(),
+        startTs: Date.now(),
+      })
+    } else {
+      const chain = activeChainRef.current.get(chainKey)
+      if (chain) chain.agents.add(target.name)
+    }
+
     const pendingId = `p-${userTs}-${target.name}-${depth}-${Date.now()}`
     const runId = `run-${userTs}-${target.name}-${depth}-${Math.random().toString(36).slice(2, 8)}`
     runMapRef.current.set(runId, { folderPath: folderPathAtStart, messageId: pendingId })
@@ -947,8 +1102,12 @@ export function App() {
       })
     }
 
+    // Peers = every other visible, non-isolated agent. Isolated agents are
+    // not surfaced as handoff targets — they're single-shot workers that
+    // only run when the user explicitly @mentions them.
     const peers = octosSnapshot
       .filter((r) => r.name.toLowerCase() !== target.name.toLowerCase())
+      .filter((r) => !r.isolated)
       .map((r) => ({ name: r.name, role: r.role }))
 
     const isLeader = depth === 0 && collaborators.length > 0
@@ -1016,6 +1175,9 @@ export function App() {
     console.log('[InvokeAgent] 📥 response for', target.name, '- ok:', res.ok, 'output length:', res.output?.length, 'error:', res.error, 'output preview:', res.output?.slice(0, 200))
     const rawText = res.ok ? res.output : `Error: ${res.error}`
     const permReq = res.ok ? parsePermissionRequest(rawText, target.name) : undefined
+    // Hide both the permission-request tag and the handoff tag from the
+    // rendered bubble so users never see the protocol markup.
+    const displayText = stripHandoffTags(permReq ? stripPermissionTag(rawText) : rawText)
 
     setMessages((prev) => {
       const list = prev[folderPathAtStart] || []
@@ -1025,7 +1187,7 @@ export function App() {
           m.id === pendingId
             ? {
                 ...m,
-                text: permReq ? stripPermissionTag(rawText) : rawText,
+                text: displayText,
                 pending: false,
                 error: !res.ok,
                 activity: undefined,
@@ -1036,89 +1198,101 @@ export function App() {
       }
     })
 
-    // ── Observer: track agent response ──────────────────
-    if (res.ok && res.output !== '[interrupted]') {
-      const agentMentions = parseMentions(res.output)
-      window.api.observerUpdate({
-        folderPath: folderPathAtStart,
-        message: {
-          agentName: target.name,
-          text: res.output,
-          ts: Date.now(),
-          mentions: agentMentions.length > 0 ? agentMentions : undefined,
-        },
-      })
+    // Mark this agent as completed in the chain
+    const chain = activeChainRef.current.get(chainKey)
+    if (chain) chain.completedAgents.add(target.name)
+
+    // Helper: emit completion report if all chain agents are done
+    const maybeReportChainCompletion = () => {
+      const c = activeChainRef.current.get(chainKey)
+      if (!c || c.agents.size < 2) {
+        // Single-agent task — no need for a summary report
+        activeChainRef.current.delete(chainKey)
+        return
+      }
+      if (c.completedAgents.size < c.agents.size) return // still running
+      activeChainRef.current.delete(chainKey)
+
+      const elapsed = Math.round((Date.now() - c.startTs) / 1000)
+      const agentList = Array.from(c.agents).map((n) => `@${n}`).join(', ')
+      const reportMsgId = `chain-report-${Date.now()}`
+      setMessages((prev) => ({
+        ...prev,
+        [c.folderPath]: [
+          ...(prev[c.folderPath] || []),
+          {
+            id: reportMsgId,
+            agentName: '__system__',
+            text: t('app.chainComplete', {
+              agents: agentList,
+              count: c.agents.size,
+              elapsed,
+            }),
+            ts: Date.now(),
+            pending: false,
+          },
+        ],
+      }))
     }
 
-    // Chain: parse @mentions from the agent's response
-    if (!res.ok || depth >= MAX_CHAIN_DEPTH) return
-    const mentioned = parseMentions(res.output)
-    if (mentioned.length === 0) return
-
-    const nextTargets = octosSnapshot.filter((r) => {
-      const ln = r.name.toLowerCase()
-      return (
-        ln !== target.name.toLowerCase() &&
-        !alreadyCalled.has(ln) &&
-        mentioned.some((m) => m.toLowerCase() === ln)
-      )
-    })
-    if (nextTargets.length === 0) return
-
-    // Ask the classifier whether this is a real handoff, a proposal that needs
-    // user approval, or just a passing reference.
-    let classification: { ok: boolean; decision?: string }
-    try {
-      classification = await window.api.classifyMention({
-        speakerName: target.name,
-        speakerText: res.output,
-        mentionedNames: nextTargets.map((r) => r.name),
-      })
-    } catch {
-      classification = { ok: false }
+    // Chain: parse the structured <HANDOFF> tag from the agent's response.
+    // Replaces the old "@mention + classifier" pipeline — agents now emit an
+    // explicit marker when they want to delegate, and the UI hides the tag
+    // from the rendered text. Any free-form @mention in the reply is just a
+    // reference, not a handoff.
+    if (!res.ok || depth >= MAX_CHAIN_DEPTH) {
+      maybeReportChainCompletion()
+      return
     }
-
-    const decision =
-      classification.ok ? classification.decision : 'approval'
-
-    if (decision === 'ignore') return
-
-    if (decision === 'approval') {
-      // Park the chain on the speaker's message — user decides via the UI.
-      setMessages((prev) => {
-        const list = prev[folderPathAtStart] || []
-        return {
-          ...prev,
-          [folderPathAtStart]: list.map((m) =>
-            m.id === pendingId
-              ? {
-                  ...m,
-                  handoff: { targets: nextTargets.map((r) => r.name) },
-                }
-              : m
-          ),
-        }
-      })
-      // Remember the context so approval can resume the chain with full info.
-      pendingHandoffsRef.current.set(pendingId, {
-        folderPath: folderPathAtStart,
-        speakerName: target.name,
-        speakerOutput: res.output,
-        nextTargetPaths: nextTargets.map((r) => r.path),
-        userTs,
-        depth,
-        alreadyCalled: new Set(alreadyCalled),
-      })
+    const handoffs = parseHandoffTags(res.output)
+    if (handoffs.length === 0) {
+      maybeReportChainCompletion()
       return
     }
 
-    // handoff: auto-chain
-    for (const next of nextTargets) {
-      const contextPrompt = `${target.name} just said in the group chat:\n\n"${res.output}"\n\n${target.name} mentioned you (@${next.name}) and may want your input. Respond to their message.`
-      const newCalled = new Set(alreadyCalled)
-      newCalled.add(next.name.toLowerCase())
-      invokeAgent(next, contextPrompt, userTs, depth + 1, newCalled)
+    const nextTargets = handoffs
+      .map((h) => {
+        const ln = h.target.toLowerCase()
+        if (ln === target.name.toLowerCase()) return null
+        if (alreadyCalled.has(ln)) return null
+        const octo = octosSnapshot.find((r) => r.name.toLowerCase() === ln)
+        return octo ? { octo, reason: h.reason } : null
+      })
+      .filter((x): x is { octo: OctoFile; reason: string } => x !== null)
+
+    if (nextTargets.length === 0) {
+      maybeReportChainCompletion()
+      return
     }
+
+    // Always gate handoffs on user approval for safety — the user can see
+    // both the speaker's reply and the proposed target before the chain
+    // continues. (Future: per-agent "auto-delegate" flag to skip this.)
+    setMessages((prev) => {
+      const list = prev[folderPathAtStart] || []
+      return {
+        ...prev,
+        [folderPathAtStart]: list.map((m) =>
+          m.id === pendingId
+            ? {
+                ...m,
+                handoff: { targets: nextTargets.map((n) => n.octo.name) },
+              }
+            : m
+        ),
+      }
+    })
+    pendingHandoffsRef.current.set(pendingId, {
+      folderPath: folderPathAtStart,
+      speakerName: target.name,
+      speakerOutput: res.output,
+      nextTargetPaths: nextTargets.map((n) => n.octo.path),
+      nextTargetReasons: nextTargets.map((n) => n.reason),
+      userTs,
+      depth,
+      alreadyCalled: new Set(alreadyCalled),
+    })
+    persistPendingState(folderPathAtStart)
   }
 
   // Map of messageId -> stored handoff context, so approval can resume a parked chain.
@@ -1130,6 +1304,8 @@ export function App() {
         speakerName: string
         speakerOutput: string
         nextTargetPaths: string[]
+        /** Per-target reason extracted from the <HANDOFF reason="..."> attribute. Index-aligned with nextTargetPaths. */
+        nextTargetReasons: string[]
         userTs: number
         depth: number
         alreadyCalled: Set<string>
@@ -1137,10 +1313,39 @@ export function App() {
     >
   >(new Map())
 
+  /**
+   * Persist the pending-handoff map for a folder to disk. Serialization
+   * converts the Sets to arrays; the inverse runs on hydration in the folder
+   * switch effect below.
+   *
+   * Written opportunistically — failure is non-fatal. Worst case: a window
+   * reload loses the pending approval buttons and the user has to resend.
+   */
+  const persistPendingState = (folderPath: string) => {
+    const entries: Record<string, any> = {}
+    for (const [id, ctx] of pendingHandoffsRef.current.entries()) {
+      if (ctx.folderPath !== folderPath) continue
+      entries[id] = {
+        folderPath: ctx.folderPath,
+        speakerName: ctx.speakerName,
+        speakerOutput: ctx.speakerOutput,
+        nextTargetPaths: ctx.nextTargetPaths,
+        nextTargetReasons: ctx.nextTargetReasons,
+        userTs: ctx.userTs,
+        depth: ctx.depth,
+        alreadyCalled: Array.from(ctx.alreadyCalled),
+      }
+    }
+    window.api.writePendingState(folderPath, { handoffs: entries }).catch(() => {
+      // Non-fatal — next write will try again.
+    })
+  }
+
   const approveHandoff = (messageId: string) => {
     const ctx = pendingHandoffsRef.current.get(messageId)
     if (!ctx) return
     pendingHandoffsRef.current.delete(messageId)
+    persistPendingState(ctx.folderPath)
 
     // Mark the message as approved so the UI hides the buttons.
     setMessages((prev) => {
@@ -1155,9 +1360,19 @@ export function App() {
       }
     })
 
-    const nextTargets = octos.filter((r) => ctx.nextTargetPaths.includes(r.path))
-    for (const next of nextTargets) {
-      const contextPrompt = `${ctx.speakerName} said in the group chat:\n\n"${ctx.speakerOutput}"\n\n${ctx.speakerName} asked the user whether to involve you, and the user approved. Respond to their message and take over the part they asked you to handle.`
+    // The target agent will see the speaker's full message (and all prior
+    // room history) in the shared "Recent conversation" section of its
+    // system prompt — no need to quote the speaker's reply back to it.
+    // The user-prompt here just states the intent and passes along the
+    // per-target reason the speaker gave.
+    for (let i = 0; i < ctx.nextTargetPaths.length; i++) {
+      const path = ctx.nextTargetPaths[i]
+      const reason = ctx.nextTargetReasons[i] || ''
+      const next = octos.find((r) => r.path === path)
+      if (!next) continue
+
+      const reasonLine = reason ? ` Reason: "${reason}".` : ''
+      const contextPrompt = `@${ctx.speakerName} handed off to you (@${next.name}) and the user approved.${reasonLine} Pick up the task — the full conversation is in your recent-conversation context.`
       const newCalled = new Set(ctx.alreadyCalled)
       newCalled.add(next.name.toLowerCase())
       invokeAgent(next, contextPrompt, ctx.userTs, ctx.depth + 1, newCalled)
@@ -1168,6 +1383,7 @@ export function App() {
     const ctx = pendingHandoffsRef.current.get(messageId)
     if (!ctx) return
     pendingHandoffsRef.current.delete(messageId)
+    persistPendingState(ctx.folderPath)
     setMessages((prev) => {
       const list = prev[ctx.folderPath] || []
       return {
@@ -1179,6 +1395,42 @@ export function App() {
         ),
       }
     })
+  }
+
+  const confirmInterrupt = (messageId: string) => {
+    const ctx = pendingInterruptRef.current.get(messageId)
+    if (!ctx) return
+    pendingInterruptRef.current.delete(messageId)
+    setMessages((prev) => {
+      const list = prev[ctx.folderPath] || []
+      return {
+        ...prev,
+        [ctx.folderPath]: list.map((m) =>
+          m.id === messageId && m.interruptConfirm
+            ? { ...m, interruptConfirm: { ...m.interruptConfirm, confirmed: true } }
+            : m
+        ),
+      }
+    })
+    ctx.resolve(true)
+  }
+
+  const cancelInterrupt = (messageId: string) => {
+    const ctx = pendingInterruptRef.current.get(messageId)
+    if (!ctx) return
+    pendingInterruptRef.current.delete(messageId)
+    setMessages((prev) => {
+      const list = prev[ctx.folderPath] || []
+      return {
+        ...prev,
+        [ctx.folderPath]: list.map((m) =>
+          m.id === messageId && m.interruptConfirm
+            ? { ...m, interruptConfirm: { ...m.interruptConfirm, confirmed: false } }
+            : m
+        ),
+      }
+    })
+    ctx.resolve(false)
   }
 
   const grantPermission = async (messageId: string) => {
@@ -1222,7 +1474,7 @@ export function App() {
       const msgIndex = folderMsgs.findIndex((m) => m.id === messageId)
       let lastUserMsg: Message | undefined
       for (let i = msgIndex - 1; i >= 0; i--) {
-        if (folderMsgs[i].agentName === 'user') {
+        if (folderMsgs[i].agentName === 'user' || folderMsgs[i].agentName === 'You') {
           lastUserMsg = folderMsgs[i]
           break
         }
@@ -1280,7 +1532,7 @@ export function App() {
         />
       )}
 
-      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'timeline' || centerTab === 'settings' ? 'center-panel--wide' : ''}`}>
+      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'timeline' || centerTab === 'settings' || centerTab === 'tasks' ? 'center-panel--wide' : ''}`}>
         {centerTab === 'chat' ? (
           <ChatPanel
             activeFolder={activeFolder}
@@ -1296,6 +1548,8 @@ export function App() {
             send={send}
             onApproveHandoff={approveHandoff}
             onDismissHandoff={dismissHandoff}
+            onConfirmInterrupt={confirmInterrupt}
+            onCancelInterrupt={cancelInterrupt}
             onGrantPermission={grantPermission}
             onDismissPermission={dismissPermission}
             hasMoreMessages={!!hasMoreMessages[activeFolder || '']}
@@ -1326,9 +1580,14 @@ export function App() {
             shortcuts={shortcutsRef.current}
           />
         ) : centerTab === 'activity' ? (
-          <ActivityPanel activityLog={folderActivity} octos={octos} folderMessages={folderMessages} />
-        ) : centerTab === 'timeline' ? (
-          <TimelinePanel activeFolder={activeFolder} octos={octos} />
+          <ActivityPanel
+            activityLog={folderActivity}
+            octos={octos}
+            folderMessages={folderMessages}
+            folderPath={activeFolder ?? undefined}
+          />
+        ) : centerTab === 'tasks' ? (
+          <TaskBoard />
         ) : centerTab === 'settings' ? (
           <SettingsPanel onSettingsSaved={(s) => {
             shortcutsRef.current = s.shortcuts?.textExpansions || []

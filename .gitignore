@@ -5,8 +5,7 @@ release
 .ico-temp
 *.log
 .env
-.octopal/uploads/
-.octopal/room-log.json
+.octopal/
 *.octo
 
 # Tauri

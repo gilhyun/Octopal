@@ -25,6 +25,14 @@ interface OctoFile {
   icon: string
   color?: string
   hidden?: boolean
+  /**
+   * When true, this agent is excluded from the dispatcher's auto-routing
+   * and from other agents' peer lists. It can only be reached via an
+   * explicit `@mention` in the user's message, and it never sees shared
+   * room history or other peers. Used for single-shot research/analysis
+   * agents that shouldn't pollute the group conversation.
+   */
+  isolated?: boolean
   permissions?: OctoPermissions | null
   mcpServers?: McpServersConfig | null
 }
@@ -53,18 +61,6 @@ interface TextShortcut {
   description?: string
 }
 
-interface ObserverMetrics {
-  totalCalls: number
-  successes: number
-  parseFailures: number
-  validationFailures: number
-  timeouts: number
-  errors: number
-  avgLatencyMs: number
-  lastSuccessAt: number | null
-  lastFailureReason: string | null
-}
-
 interface AppSettings {
   general: {
     restoreLastWorkspace: boolean
@@ -85,12 +81,12 @@ interface AppSettings {
     textExpansions: TextShortcut[]
   }
   advanced: {
-    observerModel: 'sonnet' | 'opus'
-    defaultAgentModel: 'sonnet' | 'opus'
+    defaultAgentModel: 'sonnet' | 'opus' | 'haiku'
     autoModelSelection: boolean
   }
-  versionControl: {
-    autoCommit: boolean
+  backup?: {
+    maxBackupsPerWorkspace: number
+    maxAgeDays: number
   }
 }
 
@@ -111,6 +107,8 @@ interface Window {
       folderPath: string
       message: { id: string; ts: number; text: string; attachments?: any[] }
     }) => Promise<{ ok: true }>
+    readPendingState: (folderPath: string) => Promise<Record<string, any>>
+    writePendingState: (folderPath: string, state: Record<string, any>) => Promise<void>
     createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: OctoPermissions; mcpServers?: McpServersConfig }) =>
       Promise<{ ok: true; path: string } | { ok: false; error: string }>
     updateOcto: (params: {
@@ -137,7 +135,7 @@ interface Window {
       textPaths?: string[]
       model?: 'sonnet' | 'opus'
     }) => Promise<{ ok: true; output: string } | { ok: false; error: string }>
-    onActivity: (cb: (data: { runId: string; text: string }) => void) => () => void
+    onActivity: (cb: (data: { runId: string; text: string; folderPath?: string; agentName?: string }) => void) => () => void
     onActivityLog: (
       cb: (data: {
         folderPath: string
@@ -145,8 +143,35 @@ interface Window {
         tool: string
         target: string
         ts: number
+        backupId?: string
+        conflictWith?: { runId: string; agentName: string; acquiredAtMs: number }
       }) => void,
     ) => () => void
+
+    // Backup / Revert
+    listBackups: (folderPath: string) => Promise<Array<{
+      id: string
+      runId: string
+      agentName: string
+      ts: number
+      folderPath: string
+      files: Array<{ path: string; existed: boolean }>
+    }>>
+    readBackupFile: (params: {
+      folderPath: string
+      backupId: string
+      filePath: string
+    }) => Promise<string>
+    readCurrentFile: (params: {
+      folderPath: string
+      filePath: string
+    }) => Promise<string>
+    revertBackup: (params: {
+      folderPath: string
+      backupId: string
+      filePath?: string
+    }) => Promise<{ ok: boolean; reverted: string[]; failed: string[] }>
+    pruneBackups: (folderPath: string) => Promise<number>
     onUsageReport: (
       cb: (data: {
         runId: string
@@ -171,85 +196,6 @@ interface Window {
       | { ok: false; error: string }
     >
 
-    // Observer
-    observerUpdate: (params: {
-      folderPath: string
-      message: { agentName: string; text: string; ts: number; mentions?: string[] }
-    }) => Promise<{ ok: true }>
-    observerGetContext: (folderPath: string) => Promise<{
-      ok: true
-      context: {
-        currentTopic: string | null
-        recentTopics: string[]
-        agentActivity: Record<string, {
-          lastActiveTs: number
-          messageCount: number
-          lastWorkingOn: string
-          recentKeywords: string[]
-        }>
-        pendingMentions: string[]
-        conversationPhase: 'idle' | 'planning' | 'implementation' | 'review' | 'discussion'
-        messageCount: number
-        lastRespondent: string | null
-        lastActivityTs: number
-      }
-    }>
-    observerReset: (folderPath: string) => Promise<{ ok: true }>
-
-    // SmartObserver (Layer 1 — LLM-powered context tracker)
-    smartObserverGetContext: (folderPath: string) => Promise<{
-      ok: true
-      context: {
-        rule: {
-          currentTopic: string | null
-          recentTopics: string[]
-          agentActivity: Record<string, {
-            lastActiveTs: number
-            messageCount: number
-            lastWorkingOn: string
-            recentKeywords: string[]
-          }>
-          pendingMentions: string[]
-          conversationPhase: 'idle' | 'planning' | 'implementation' | 'review' | 'discussion'
-          messageCount: number
-          lastRespondent: string | null
-          lastActivityTs: number
-        }
-        llm: {
-          conversationSummary: string
-          currentTopic: string
-          topicHistory: string[]
-          conversationPhase: string
-          agentContext: Record<string, {
-            workingOn: string
-            lastContribution: string
-          }>
-          userIntent: string
-          openThreads: string[]
-          updatedAt: number
-        } | null
-      }
-    }>
-    smartObserverForceRefresh: (folderPath: string) => Promise<
-      | { ok: true; llm: any }
-      | { ok: false; error: string }
-    >
-    smartObserverSetEnabled: (enabled: boolean) => Promise<{ ok: true }>
-    smartObserverSetModel: (model: string) => Promise<
-      | { ok: true; model: string }
-      | { ok: false; error: string }
-    >
-    smartObserverGetModel: () => Promise<{ ok: true; model: string }>
-    smartObserverGetMetrics: () => Promise<{ ok: true; metrics: ObserverMetrics }>
-
-    classifyMention: (params: {
-      speakerName: string
-      speakerText: string
-      mentionedNames: string[]
-    }) => Promise<
-      | { ok: true; decision: 'handoff' | 'approval' | 'ignore'; reason?: string }
-      | { ok: false; error: string }
-    >
     onOctosChanged: (cb: (folderPath: string) => void) => () => void
     saveFile: (params: {
       folderPath: string
@@ -268,6 +214,12 @@ interface Window {
       folderPath: string
       relativePath: string
     }) => Promise<string>
+    readDroppedFile: (params: { path: string }) => Promise<{
+      filename: string
+      data: string
+      mimeType: string
+      size: number
+    }>
     wikiList: (workspaceId: string) => Promise<
       Array<{ name: string; path: string; size: number; mtime: number }>
     >
@@ -298,74 +250,6 @@ interface Window {
       Promise<{ ok: boolean; error?: string }>
     onMcpTokenExpiry: (
       cb: (data: { agentName: string; serverName: string; message: string }) => void,
-    ) => () => void
-
-    // Git Phase 3: History, Diff, Revert, Push
-    gitGetHistory: (params: {
-      folderPath: string
-      page?: number
-      perPage?: number
-    }) => Promise<{
-      ok: boolean
-      commits: Array<{
-        hash: string
-        shortHash: string
-        author: string
-        email: string
-        date: string
-        message: string
-        body: string
-      }>
-      total: number
-      error?: string
-    }>
-    gitGetDiff: (params: {
-      folderPath: string
-      hash: string
-    }) => Promise<{
-      ok: boolean
-      entries: Array<{
-        file: string
-        status: string
-        additions: number
-        deletions: number
-        patch: string
-      }>
-      error?: string
-    }>
-    gitRevert: (params: {
-      folderPath: string
-      hash: string
-      toHash?: string
-    }) => Promise<{
-      ok: boolean
-      reverted?: boolean | number
-      conflict?: boolean
-      error?: string
-    }>
-    gitPush: (params: { folderPath: string }) => Promise<{
-      ok: boolean
-      pushed?: boolean
-      error?: string
-    }>
-    gitHasRemote: (params: { folderPath: string }) => Promise<{
-      ok: boolean
-      hasRemote: boolean
-    }>
-
-    // Git Merge Conflict
-    onGitMergeConflict: (
-      cb: (data: {
-        agentName: string
-        agentBranch: string
-        baseBranch: string
-        folderPath: string
-      }) => void,
-    ) => () => void
-
-    // Git Interrupt Rollback
-    onGitInterruptRollback: (
-      cb: (data: { agentName: string; folderPath: string }) => void,
     ) => () => void
 
     // File Access Approval

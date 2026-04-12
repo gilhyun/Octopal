@@ -5,7 +5,7 @@
 </p>
 
 <p align="center">
-  <strong>내 PC가 곧 나만의 컴파니.</strong><br />
+  <strong><span style="font-size: 3.8em;">내 PC가 곧 나만의 컴파니.</span></strong><br />
   클로드 코드를 위한 에이전틱 워크플레이스 메신저.<br />
   서버도, 계정도 필요 없어요 — 내 PC와 AI 에이전트 팀만 있으면 됩니다.
 </p>

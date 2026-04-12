@@ -2,6 +2,28 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
+/// Maximum allowed length for the role field (prevents prompt injection via long payloads).
+const MAX_ROLE_LENGTH: usize = 200;
+
+/// Sanitize the role field: strip control characters (including newlines),
+/// collapse whitespace, and enforce a length limit.
+/// This prevents prompt injection via `.octo` files where a crafted role
+/// could break out of the system prompt structure.
+pub fn sanitize_role(role: &str) -> String {
+    let cleaned: String = role
+        .chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<&str>>()
+        .join(" ");
+    if cleaned.len() > MAX_ROLE_LENGTH {
+        cleaned.chars().take(MAX_ROLE_LENGTH).collect::<String>().trim_end().to_string()
+    } else {
+        cleaned
+    }
+}
+
 #[derive(Serialize)]
 pub struct CreateResult {
     pub ok: bool,
@@ -47,9 +69,11 @@ pub fn create_octo(
         };
     }
 
+    let sanitized_role = sanitize_role(&role);
+
     let mut octo = serde_json::json!({
         "name": sanitized_name,
-        "role": role,
+        "role": sanitized_role,
         "icon": icon.unwrap_or_else(|| "🤖".to_string()),
         "history": [],
         "memory": [],
@@ -124,7 +148,7 @@ pub fn update_octo(
         octo["name"] = serde_json::Value::String(n.clone());
     }
     if let Some(r) = role {
-        octo["role"] = serde_json::Value::String(r);
+        octo["role"] = serde_json::Value::String(sanitize_role(&r));
     }
     if let Some(i) = icon {
         octo["icon"] = serde_json::Value::String(i);
@@ -155,7 +179,8 @@ pub fn update_octo(
         if new_path != path && !new_path.exists() {
             match fs::write(&new_path, serde_json::to_string_pretty(&octo).unwrap()) {
                 Ok(_) => {
-                    fs::remove_file(path).ok();
+                    // Old file is being replaced by the renamed copy → trash.
+                    let _ = trash::delete(path).or_else(|_| fs::remove_file(path));
                     final_path = new_path.to_string_lossy().to_string();
                     return CreateResult {
                         ok: true,
@@ -199,16 +224,28 @@ pub fn delete_octo(octo_path: String) -> CreateResult {
         };
     }
 
-    match fs::remove_file(path) {
+    // Send to OS trash so deletes are recoverable.
+    match trash::delete(path) {
         Ok(_) => CreateResult {
             ok: true,
             path: None,
             error: None,
         },
-        Err(e) => CreateResult {
-            ok: false,
-            path: None,
-            error: Some(e.to_string()),
-        },
+        Err(e) => {
+            // Fall back to a hard delete if the platform's trash isn't
+            // available (e.g., headless Linux without a desktop session).
+            match fs::remove_file(path) {
+                Ok(_) => CreateResult {
+                    ok: true,
+                    path: None,
+                    error: None,
+                },
+                Err(fs_err) => CreateResult {
+                    ok: false,
+                    path: None,
+                    error: Some(format!("trash: {}, fs: {}", e, fs_err)),
+                },
+            }
+        }
     }
 }

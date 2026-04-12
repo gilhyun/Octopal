@@ -97,9 +97,12 @@ pub fn save_file(
         .unwrap_or("bin")
         .replace("jpeg", "jpg")
         .replace("plain", "txt");
-    let safe_name = format!("{}_{}.{}", id.chars().take(8).collect::<String>(),
-        file_name.chars().filter(|c| c.is_alphanumeric() || *c == '-' || *c == '_' || *c == '.').collect::<String>(),
-        ext);
+    // Use ASCII-only chars in filename to avoid macOS Unicode normalization (NFC/NFD) issues
+    let ascii_name: String = file_name.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .collect();
+    let name_part = if ascii_name.is_empty() { "file".to_string() } else { ascii_name };
+    let safe_name = format!("{}_{}.{}", id.chars().take(8).collect::<String>(), name_part, ext);
     let file_path = uploads_dir.join(&safe_name);
 
     // data is base64 encoded
@@ -116,7 +119,7 @@ pub fn save_file(
             let att_type = if mime_type.starts_with("image/") {
                 "image"
             } else {
-                "file"
+                "text"
             };
             let relative = format!(
                 ".octopal/uploads/{}",
@@ -186,4 +189,89 @@ pub fn get_absolute_path(folder_path: String, relative_path: String) -> Result<S
         .canonicalize()
         .unwrap_or(abs.clone());
     Ok(resolved.to_string_lossy().to_string())
+}
+
+#[derive(Serialize)]
+pub struct DroppedFile {
+    pub filename: String,
+    /// Base64-encoded file bytes — the renderer turns this back into a `File`
+    /// object so the existing addFiles flow can consume it unchanged.
+    pub data: String,
+    #[serde(rename = "mimeType")]
+    pub mime_type: String,
+    pub size: u64,
+}
+
+/// Cap on dropped file size — matches the renderer's MAX_FILE_SIZE so the
+/// backend never reads anything that the UI would reject anyway.
+const MAX_DROPPED_FILE_SIZE: u64 = 10 * 1024 * 1024;
+
+/// Read an arbitrary file by absolute path. Used by the drag-and-drop flow:
+/// Tauri 2's native drag-drop event gives us absolute paths the user just
+/// dropped, and we read them here so the renderer can turn them into File
+/// objects via the same code path as the file picker.
+///
+/// Defenses:
+///   - Refuses sensitive paths (.env, credentials, etc.)
+///   - Refuses anything bigger than MAX_DROPPED_FILE_SIZE
+///   - Refuses non-files (no symlink chasing into directories)
+#[tauri::command]
+pub fn read_dropped_file(path: String) -> Result<DroppedFile, String> {
+    if is_sensitive_path(&path) {
+        return Err("Access denied: sensitive path".to_string());
+    }
+    let p = Path::new(&path);
+    let metadata = fs::metadata(p).map_err(|e| e.to_string())?;
+    if !metadata.is_file() {
+        return Err("Not a file".to_string());
+    }
+    if metadata.len() > MAX_DROPPED_FILE_SIZE {
+        return Err(format!(
+            "File too large: {} bytes (max {})",
+            metadata.len(),
+            MAX_DROPPED_FILE_SIZE
+        ));
+    }
+    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let filename = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("file")
+        .to_string();
+    let mime_type = guess_mime(p);
+    Ok(DroppedFile {
+        filename,
+        data: encoded,
+        mime_type,
+        size: metadata.len(),
+    })
+}
+
+fn guess_mime(path: &Path) -> String {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
+    match ext.as_str() {
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "txt" => "text/plain",
+        "md" | "markdown" => "text/markdown",
+        "json" => "application/json",
+        "js" | "jsx" | "mjs" | "cjs" => "text/javascript",
+        "ts" | "tsx" => "text/typescript",
+        "py" => "text/x-python",
+        "rs" => "text/x-rust",
+        "go" => "text/x-go",
+        "html" | "htm" => "text/html",
+        "css" => "text/css",
+        "yml" | "yaml" => "text/yaml",
+        "toml" => "text/toml",
+        _ => "application/octet-stream",
+    }
+    .to_string()
 }

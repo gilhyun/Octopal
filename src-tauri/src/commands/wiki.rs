@@ -87,7 +87,12 @@ pub fn wiki_delete(
     let wiki_dir = state.wiki_dir(&workspace_id);
     let file_path = wiki_dir.join(&name);
     if file_path.exists() {
-        fs::remove_file(&file_path).map_err(|e| e.to_string())?;
+        // Trash so users can recover an accidental wiki page deletion.
+        if let Err(e) = trash::delete(&file_path) {
+            // Fallback for headless / unsupported platforms.
+            fs::remove_file(&file_path)
+                .map_err(|fs_err| format!("trash: {}, fs: {}", e, fs_err))?;
+        }
     }
     Ok(serde_json::json!({ "ok": true }))
 }

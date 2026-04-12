@@ -112,7 +112,7 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
   return (
     <div className="wiki-panel">
       <aside className="wiki-sidebar">
-        <div className="wiki-sidebar-header drag">
+        <div className="wiki-sidebar-header drag" data-tauri-drag-region>
           <span className="section-title">{t('wiki.title')}</span>
           <button className="wiki-new-btn" onClick={openCreatePage} title={t('wiki.newPage')}>
             <Plus size={14} />

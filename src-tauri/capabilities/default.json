@@ -1,7 +1,7 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the main window",
-  "windows": ["main"],
+  "description": "Default capabilities for the main window and runtime-spawned windows",
+  "windows": ["main", "window-*"],
   "permissions": [
     "core:default",
     "core:window:default",
@@ -61,6 +61,17 @@
     "fs:allow-write-file",
     "fs:allow-read-text-file",
     "fs:allow-write-text-file",
+    {
+      "identifier": "fs:scope",
+      "allow": [
+        { "path": "$HOME/**" },
+        { "path": "$DOCUMENT/**" },
+        { "path": "$DOWNLOAD/**" },
+        { "path": "$DESKTOP/**" },
+        { "path": "/tmp/**" },
+        { "path": "/var/**" }
+      ]
+    },
     "process:default",
     "process:allow-exit",
     "process:allow-restart"

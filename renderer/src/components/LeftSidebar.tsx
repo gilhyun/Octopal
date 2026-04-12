@@ -1,14 +1,14 @@
 import { useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { basename } from '../utils'
-import { Plus, FolderOpen, ChevronDown, X, BookOpen, Activity, Settings, PanelLeftClose, GitCommit } from 'lucide-react'
+import { Plus, FolderOpen, ChevronDown, X, BookOpen, Activity, Settings, PanelLeftClose, LayoutGrid } from 'lucide-react'
 
 interface LeftSidebarProps {
   activeWorkspace: Workspace | null
   state: AppState
   activeFolder: string | null
-  centerTab: 'chat' | 'wiki' | 'activity' | 'timeline' | 'settings'
-  setCenterTab: (tab: 'chat' | 'wiki' | 'activity' | 'timeline' | 'settings') => void
+  centerTab: 'chat' | 'wiki' | 'activity' | 'settings' | 'tasks'
+  setCenterTab: (tab: 'chat' | 'wiki' | 'activity' | 'settings' | 'tasks') => void
   activityCount: number
   workspaceMenuOpen: boolean
   setWorkspaceMenuOpen: (v: boolean | ((prev: boolean) => boolean)) => void
@@ -57,7 +57,7 @@ export function LeftSidebar({
 
   return (
     <aside className="left-sidebar">
-      <div className="sidebar-header drag">
+      <div className="sidebar-header drag" data-tauri-drag-region>
         <div style={{ flex: 1 }} />
         <button
           className="sidebar-toggle-btn"
@@ -150,23 +150,25 @@ export function LeftSidebar({
             <span className="sidebar-nav-badge">{activityCount}</span>
           )}
         </button>
+        {/* TODO: Tasks menu temporarily hidden
         <button
-          className={`sidebar-nav-item ${centerTab === 'timeline' ? 'active' : ''}`}
+          className={`sidebar-nav-item ${centerTab === 'tasks' ? 'active' : ''}`}
           onClick={() => {
-            if (centerTab === 'timeline') {
+            if (centerTab === 'tasks') {
               if (!activeFolder && folders.length > 0) {
                 setActiveFolder(folders[0])
               }
               setCenterTab('chat')
             } else {
-              setCenterTab('timeline')
+              setCenterTab('tasks')
             }
           }}
           disabled={!state.activeWorkspaceId}
         >
-          <GitCommit size={16} />
-          <span>{t('sidebar.timeline')}</span>
+          <LayoutGrid size={16} />
+          <span>Tasks</span>
         </button>
+        */}
       </div>
       <div className="project-list">
         <button className="add-folder-btn" onClick={pickFolder} disabled={!activeWorkspace}>
