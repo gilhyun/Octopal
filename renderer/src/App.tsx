@@ -530,22 +530,37 @@ export function App() {
           const cleanHistory = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
           setMessages((prev) => {
             const existing = prev[changedFolder] || []
+            // Preserve in-memory-only state that doesn't exist in room-history.json:
+            // pending messages, unresolved permission requests, AND unresolved handoff approvals.
+            // Without this, the folder watcher's hot-reload wipes the Approve/Dismiss buttons
+            // ~150ms after they appear (the classic "button flashes then vanishes" bug).
             const preserveMessages = existing.filter(
-              (m) => (m.pending && !m.id.startsWith('remote-')) || (m.permissionRequest && m.permissionRequest.granted === undefined)
+              (m) => (m.pending && !m.id.startsWith('remote-'))
+                || (m.permissionRequest && m.permissionRequest.granted === undefined)
+                || (m.handoff && m.handoff.approved === undefined)
             )
             if (preserveMessages.length === 0) {
               return { ...prev, [changedFolder]: cleanHistory }
             }
             const historyIds = new Set(cleanHistory.map((m) => m.id))
             const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
+            // Build merge maps for fields that only live in memory
             const permMap = new Map(
-              preserveMessages
+              existing
                 .filter((m) => m.permissionRequest)
                 .map((m) => [m.id, m.permissionRequest])
             )
-            const mergedHistory = cleanHistory.map((m) =>
-              permMap.has(m.id) ? { ...m, permissionRequest: permMap.get(m.id) } : m
+            const handoffMap = new Map(
+              existing
+                .filter((m) => m.handoff)
+                .map((m) => [m.id, m.handoff])
             )
+            const mergedHistory = cleanHistory.map((m) => {
+              let merged: Message = m
+              if (permMap.has(m.id)) merged = { ...merged, permissionRequest: permMap.get(m.id) }
+              if (handoffMap.has(m.id)) merged = { ...merged, handoff: handoffMap.get(m.id) }
+              return merged
+            })
             return { ...prev, [changedFolder]: [...mergedHistory, ...missingPreserved] }
           })
         })

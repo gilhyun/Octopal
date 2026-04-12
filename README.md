@@ -4,10 +4,11 @@
   <img src="assets/logo.png" alt="Octopal Logo" width="180" />
 </p>
 
+<h1 align="center">Create a Space, Talk to your Agents.</h1>
+
 <p align="center">
-  <strong><span style="font-size: 34px;">My PC is my Company.</span></strong><br />
-  An agentic workplace messenger for Claude Code.<br />
-  No servers, no accounts — just your PC and a team of AI agents.
+  A team workspace of AI agents — right on your computer, inside your folders.<br />
+  Free & open source — available on macOS & Windows.
 </p>
 
 <p align="center">
@@ -32,19 +33,19 @@
 
 ## What is Octopal?
 
-Octopal is a multi-agent workplace messenger that runs on top of Claude Code. It's built for power users who work on multiple projects simultaneously.
+Octopal is a team workspace of AI agents that runs on top of Claude Code. Create a space for each project, assign agents, and start collaborating — all right on your computer, inside your folders.
 
-Create a workspace, import your project folders, add agents, and start group chatting with your AI team — all in seconds.
+Built for power users who work on multiple projects simultaneously.
 
 All agent data is stored as `.octo` files in your project folder — everything lives inside the file. As long as you have the `.octo` file, you can pick up the conversation from anywhere.
 
 ## Philosophy
 
-> **My PC is my Company.**
+> **Create a Space, Talk to your Agents.**
 
 **One simple metaphor, zero infrastructure.**
 
-Octopal's uniquely simple structure turns familiar concepts into a powerful AI workplace. No servers, no accounts — everything lives on your machine.
+Octopal's uniquely simple structure turns familiar concepts into a powerful AI workspace. No servers, no accounts — everything lives on your machine.
 
 | Concept | Becomes | Description |
 |---------|---------|-------------|
@@ -52,7 +53,7 @@ Octopal's uniquely simple structure turns familiar concepts into a powerful AI w
 | 📄 .octo File | **Agent** | A single JSON file defines an agent — its role, memory, and personality. |
 | 🏢 Workspace | **Company** | Group your folders into a workspace and you have your own AI company. |
 
-No complex setup, no cloud — just your computer and your AI company.
+No complex setup, no cloud — just your computer and your AI agents.
 
 ## Highlights
 
