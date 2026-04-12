@@ -281,7 +281,7 @@ export function App() {
           // Load history (should be empty for a fresh folder)
           const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
           setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
-          setMessages((prev) => ({ ...prev, [folder]: history }))
+          setMessages((prev) => ({ ...prev, [folder]: history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') })) }))
 
           // Auto-send first message from assistant
           const assistant = refreshed.find((o) => o.name === 'assistant')
@@ -450,17 +450,20 @@ export function App() {
             },
           }
         }
+        // Strip protocol tags from every loaded history message so users
+        // never see raw <HANDOFF> or <!--NEEDS_PERMISSIONS--> markup.
+        const cleanHistory = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
         if (preserveMessages.length === 0) {
-          return { ...prev, [folder]: history.map(attachHandoff) }
+          return { ...prev, [folder]: cleanHistory.map(attachHandoff) }
         }
-        const historyIds = new Set(history.map((m) => m.id))
+        const historyIds = new Set(cleanHistory.map((m) => m.id))
         const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
         const permMap = new Map(
           preserveMessages
             .filter((m) => m.permissionRequest)
             .map((m) => [m.id, m.permissionRequest])
         )
-        const mergedHistory = history.map((m) => {
+        const mergedHistory = cleanHistory.map((m) => {
           let merged: Message = m
           if (permMap.has(m.id)) merged = { ...merged, permissionRequest: permMap.get(m.id) }
           merged = attachHandoff(merged)
@@ -496,9 +499,10 @@ export function App() {
     setHasMoreMessages((prev) => ({ ...prev, [activeFolder]: hasMore }))
     setMessages((prev) => {
       const existing = prev[activeFolder] || []
-      // Deduplicate by id
       const existingIds = new Set(existing.map((m) => m.id))
-      const newOlder = older.filter((m) => !existingIds.has(m.id))
+      const newOlder = older
+        .filter((m) => !existingIds.has(m.id))
+        .map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
       return { ...prev, [activeFolder]: [...newOlder, ...existing] }
     })
     setLoadingMore(false)
@@ -523,25 +527,23 @@ export function App() {
         // Refresh chat messages (merge with in-flight pending messages)
         window.api.loadHistoryPaged({ folderPath: changedFolder, limit: PAGE_SIZE }).then(({ messages: history, hasMore }) => {
           setHasMoreMessages((prev) => ({ ...prev, [changedFolder]: hasMore }))
+          const cleanHistory = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
           setMessages((prev) => {
             const existing = prev[changedFolder] || []
-            // Preserve pending messages and unresolved permission requests (in-memory only).
-            // Exclude remote pending messages (from other windows) — they'll be
-            // replaced by the real history that just arrived.
             const preserveMessages = existing.filter(
               (m) => (m.pending && !m.id.startsWith('remote-')) || (m.permissionRequest && m.permissionRequest.granted === undefined)
             )
             if (preserveMessages.length === 0) {
-              return { ...prev, [changedFolder]: history }
+              return { ...prev, [changedFolder]: cleanHistory }
             }
-            const historyIds = new Set(history.map((m) => m.id))
+            const historyIds = new Set(cleanHistory.map((m) => m.id))
             const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
             const permMap = new Map(
               preserveMessages
                 .filter((m) => m.permissionRequest)
                 .map((m) => [m.id, m.permissionRequest])
             )
-            const mergedHistory = history.map((m) =>
+            const mergedHistory = cleanHistory.map((m) =>
               permMap.has(m.id) ? { ...m, permissionRequest: permMap.get(m.id) } : m
             )
             return { ...prev, [changedFolder]: [...mergedHistory, ...missingPreserved] }
@@ -740,7 +742,10 @@ export function App() {
    * optional. Multiple tags are allowed (parallel fan-out).
    */
   const parseHandoffTags = (text: string): Array<{ target: string; reason: string }> => {
-    const re = /<HANDOFF\s+target\s*=\s*["']([^"']+)["'](?:\s+reason\s*=\s*["']([^"']*)["'])?\s*\/?>/gi
+    // Use `"` as the canonical delimiter (matching the prompt instruction).
+    // The reason text may contain single quotes, parentheses, URLs, etc. —
+    // `[^"]*` allows everything except the closing double-quote.
+    const re = /<HANDOFF\s+target\s*=\s*"([^"]+)"(?:\s+reason\s*=\s*"([^"]*)")?\s*\/?>/gi
     const out: Array<{ target: string; reason: string }> = []
     let m
     while ((m = re.exec(text)) !== null) {
@@ -751,7 +756,16 @@ export function App() {
 
   /** Strip <HANDOFF ...> tags from displayed text so users don't see the protocol. */
   const stripHandoffTags = (text: string): string =>
-    text.replace(/<HANDOFF\s+target\s*=\s*["'][^"']+["'](?:\s+reason\s*=\s*["'][^"']*["'])?\s*\/?>/gi, '').trim()
+    text.replace(/<HANDOFF\s+target\s*=\s*"[^"]+"(?:\s+reason\s*=\s*"[^"]*")?\s*\/?>/gi, '').trim()
+
+  /**
+   * Clean protocol tags from message text. Used both at invoke-time (real-time
+   * response) AND at history-load time (room-history.json → messages state).
+   * Without this, reloading the app would show raw `<HANDOFF>` and
+   * `<!--NEEDS_PERMISSIONS-->` tags in the chat bubbles.
+   */
+  const sanitizeDisplayText = (text: string): string =>
+    stripHandoffTags(stripPermissionTag(text))
 
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
