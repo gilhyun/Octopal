@@ -128,6 +128,14 @@ interface Window {
       prompt: string
       userTs: number
       runId: string
+      /**
+       * UI-side ID of the pending assistant bubble that this response will
+       * fill in. When provided, the backend persists the assistant message
+       * under the same ID in `room-history.json` so the folder watcher's
+       * history reload can reconcile with the in-memory bubble instead of
+       * producing a duplicate.
+       */
+      pendingId?: string
       peers?: Array<{ name: string; role: string }>
       collaborators?: Array<{ name: string; role: string }>
       isLeader?: boolean

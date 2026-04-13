@@ -112,7 +112,12 @@ pub async fn check_claude_cli() -> Result<serde_json::Value, String> {
     }
 }
 
-/// Send a message to an agent via the claude CLI
+/// Send a message to an agent via the claude CLI.
+///
+/// `pending_id` is the UI-side pending-bubble ID. When provided, it becomes
+/// the `id` of the assistant entry persisted to room-history.json so the
+/// folder watcher's history reload reconciles with the in-memory bubble
+/// instead of producing a duplicate. Falls back to a fresh UUID when omitted.
 #[tauri::command]
 pub async fn send_message(
     folder_path: String,
@@ -120,6 +125,7 @@ pub async fn send_message(
     prompt: String,
     user_ts: f64,
     run_id: String,
+    pending_id: Option<String>,
     peers: Option<Vec<serde_json::Value>>,
     collaborators: Option<Vec<serde_json::Value>>,
     is_leader: Option<bool>,
@@ -991,8 +997,16 @@ pub async fn send_message(
                 vec![]
             };
 
+            // Reuse the UI's pending-bubble ID when provided so the folder
+            // watcher's hot-reload can match the on-disk entry to the
+            // in-memory bubble (preserving permission/handoff UI state
+            // without producing a duplicate). Fall back to a fresh UUID for
+            // any legacy callers that don't pass pending_id.
+            let entry_id = pending_id
+                .clone()
+                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
             let mut history_entry = serde_json::json!({
-                "id": uuid::Uuid::new_v4().to_string(),
+                "id": entry_id,
                 "agentName": agent_name,
                 "text": output,
                 "ts": chrono::Utc::now().timestamp_millis() as f64,

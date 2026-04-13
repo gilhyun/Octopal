@@ -101,6 +101,7 @@ export function createTauriApi(): typeof window.api {
         prompt: params.prompt,
         userTs: params.userTs,
         runId: params.runId,
+        pendingId: params.pendingId ?? null,
         peers: params.peers ?? null,
         collaborators: params.collaborators ?? null,
         isLeader: params.isLeader ?? null,

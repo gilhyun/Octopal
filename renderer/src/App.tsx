@@ -361,6 +361,7 @@ export function App() {
               prompt: firstPrompt,
               userTs: ts,
               runId,
+              pendingId,
               peers: [],
             })
 
@@ -1175,6 +1176,7 @@ export function App() {
         prompt,
         userTs,
         runId,
+        pendingId,
         peers,
         collaborators: collaboratorPayload,
         isLeader,
