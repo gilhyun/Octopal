@@ -264,142 +264,121 @@ export function App() {
 
     const bootstrap = async () => {
       const existingOctos = await window.api.listOctos(folder)
-
-      // Auto-create assistant.octo if the folder has no agents
-      if (existingOctos.length === 0 && !bootstrappedFoldersRef.current.has(folder)) {
-        bootstrappedFoldersRef.current.add(folder)
-        const createResult = await window.api.createOcto({
-          folderPath: folder,
-          name: 'assistant',
-          role: 'General assistant. Scans the project, answers questions, and helps with tasks.',
-          icon: '🐙',
-        })
-        if (createResult.ok) {
-          // Re-list to pick up the new agent
-          const refreshed = await window.api.listOctos(folder)
-          setOctos(refreshed)
-
-          // Load history (should be empty for a fresh folder)
-          const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
-          setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
-          setMessages((prev) => ({ ...prev, [folder]: history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') })) }))
-
-          // Auto-send first message from assistant
-          const assistant = refreshed.find((o) => o.name === 'assistant')
-          if (assistant && history.length === 0) {
-            const ts = Date.now()
-            const pendingId = `p-${ts}-assistant-first`
-            const runId = `run-${ts}-assistant-first-${Math.random().toString(36).slice(2, 8)}`
-            runMapRef.current.set(runId, { folderPath: folder, messageId: pendingId })
-
-            setMessages((prev) => ({
-              ...prev,
-              [folder]: [
-                ...(prev[folder] || []),
-                {
-                  id: pendingId,
-                  agentName: 'assistant',
-                  text: '',
-                  ts,
-                  pending: true,
-                  activity: t('app.scanningProject'),
-                },
-              ],
-            }))
-
-            const firstPrompt = [
-              'You have just been added to this project folder. This is your first interaction — there is no user message yet.',
-              'Scan the project folder to understand what it contains, then provide a welcome message.',
-              '',
-              'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:',
-              '',
-              'If the folder has code/files:',
-              '```',
-              '👋 Hi! I\'m your AI assistant for this project.',
-              '',
-              '**Here\'s what I found:**',
-              '- 📁 Project: `<project-name>` (<framework> + <language>)',
-              '- 📦 Dependencies: <top 3-5 notable deps>',
-              '- 📄 <N> files scanned',
-              '',
-              '**Try asking me:**',
-              '- "Explain the project structure"',
-              '- "Find where <relevant feature> is handled"',
-              '- "Help me fix a bug in <relevant area>"',
-              '',
-              '💡 **Tips:**',
-              '- Need more help? **Hire AI teammates** — specialists like designers, planners, or reviewers!',
-              '- Each agent\'s capabilities (file write, shell, network) can be configured in their settings.',
-              '- You\'ll see a real-time **activity log** of everything agents do in the sidebar.',
-              '```',
-              '',
-              'If the folder is empty:',
-              '```',
-              '👋 Hi! I\'m your AI assistant.',
-              '',
-              'This folder is empty — no worries! I can help you:',
-              '- 🛠 Scaffold a new project',
-              '- 📝 Create config files',
-              '- 💡 Brainstorm ideas',
-              '- 🤖 Hire more AI teammates to collaborate with',
-              '',
-              '🔐 **About permissions:**',
-              '- I can read files by default, but writing/shell/network need to be **enabled in agent settings**.',
-              '- When an agent suggests involving another teammate, you\'ll see **Approve / Dismiss** buttons to stay in control.',
-              '- Check the **activity log** in the sidebar to see everything agents are doing in real time.',
-              '',
-              'Just type a message to get started!',
-              '```',
-              '',
-              'IMPORTANT: Output ONLY the message content (not the ``` fences). Keep the emoji, bold, and bullet formatting exactly as shown.',
-              'Fill in the placeholders with actual project info. Tailor the "Try asking me" suggestions to the specific project.',
-              'Keep it short and friendly (under 150 words). Do not ask questions.',
-            ].join('\n')
-
-            const res = await window.api.sendMessage({
-              folderPath: folder,
-              octoPath: assistant.path,
-              prompt: firstPrompt,
-              userTs: ts,
-              runId,
-              pendingId,
-              peers: [],
-            })
-
-            runMapRef.current.delete(runId)
-
-            setMessages((prev) => {
-              const list = prev[folder] || []
-              const rawText = res.ok ? res.output : `Error: ${(res as any).error}`
-              const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name) : undefined
-              const usage = res.ok ? (res as any).usage : undefined
-              return {
-                ...prev,
-                [folder]: list.map((m) =>
-                  m.id === pendingId
-                    ? {
-                        ...m,
-                        text: permReq ? stripPermissionTag(rawText) : rawText,
-                        pending: false,
-                        error: !res.ok,
-                        activity: undefined,
-                        permissionRequest: permReq,
-                        ...(usage ? { usage } : {}),
-                      }
-                    : m
-                ),
-              }
-            })
-          }
-          return // already loaded history above
-        }
-      }
-
       setOctos(existingOctos)
 
-      // Load history normally
+      // Load history
       const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
       setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
+      setMessages((prev) => ({ ...prev, [folder]: history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') })) }))
+
+      // Auto-send greeting from assistant on fresh folders (no history yet)
+      const assistant = existingOctos.find((o) => o.name === 'assistant')
+      if (assistant && history.length === 0 && !bootstrappedFoldersRef.current.has(folder)) {
+        bootstrappedFoldersRef.current.add(folder)
+        const ts = Date.now()
+        const pendingId = `p-${ts}-assistant-first`
+        const runId = `run-${ts}-assistant-first-${Math.random().toString(36).slice(2, 8)}`
+        runMapRef.current.set(runId, { folderPath: folder, messageId: pendingId })
+
+        setMessages((prev) => ({
+          ...prev,
+          [folder]: [
+            ...(prev[folder] || []),
+            {
+              id: pendingId,
+              agentName: 'assistant',
+              text: '',
+              ts,
+              pending: true,
+              activity: t('app.scanningProject'),
+            },
+          ],
+        }))
+
+        const firstPrompt = [
+          'You have just been added to this project folder. This is your first interaction — there is no user message yet.',
+          'Scan the project folder to understand what it contains, then provide a welcome message.',
+          '',
+          'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:',
+          '',
+          'If the folder has code/files:',
+          '```',
+          '👋 Hi! I\'m your AI assistant for this project.',
+          '',
+          '**Here\'s what I found:**',
+          '- 📁 Project: `<project-name>` (<framework> + <language>)',
+          '- 📦 Dependencies: <top 3-5 notable deps>',
+          '- 📄 <N> files scanned',
+          '',
+          '**Try asking me:**',
+          '- "Explain the project structure"',
+          '- "Find where <relevant feature> is handled"',
+          '- "Help me fix a bug in <relevant area>"',
+          '',
+          '💡 **Tips:**',
+          '- Need more help? **Hire AI teammates** — specialists like designers, planners, or reviewers!',
+          '- Each agent\'s capabilities (file write, shell, network) can be configured in their settings.',
+          '- You\'ll see a real-time **activity log** of everything agents do in the sidebar.',
+          '```',
+          '',
+          'If the folder is empty:',
+          '```',
+          '👋 Hi! I\'m your AI assistant.',
+          '',
+          'This folder is empty — no worries! I can help you:',
+          '- 🛠 Scaffold a new project',
+          '- 📝 Create config files',
+          '- 💡 Brainstorm ideas',
+          '- 🤖 Hire more AI teammates to collaborate with',
+          '',
+          '🔐 **About permissions:**',
+          '- I can read files by default, but writing/shell/network need to be **enabled in agent settings**.',
+          '- When an agent suggests involving another teammate, you\'ll see **Approve / Dismiss** buttons to stay in control.',
+          '- Check the **activity log** in the sidebar to see everything agents are doing in real time.',
+          '',
+          'Just type a message to get started!',
+          '```',
+          '',
+          'IMPORTANT: Output ONLY the message content (not the ``` fences). Keep the emoji, bold, and bullet formatting exactly as shown.',
+          'Fill in the placeholders with actual project info. Tailor the "Try asking me" suggestions to the specific project.',
+          'Keep it short and friendly (under 150 words). Do not ask questions.',
+        ].join('\n')
+
+        const res = await window.api.sendMessage({
+          folderPath: folder,
+          octoPath: assistant.path,
+          prompt: firstPrompt,
+          userTs: ts,
+          runId,
+          pendingId,
+          peers: [],
+        })
+
+        runMapRef.current.delete(runId)
+
+        setMessages((prev) => {
+          const list = prev[folder] || []
+          const rawText = res.ok ? res.output : `Error: ${(res as any).error}`
+          const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name) : undefined
+          const usage = res.ok ? (res as any).usage : undefined
+          return {
+            ...prev,
+            [folder]: list.map((m) =>
+              m.id === pendingId
+                ? {
+                    ...m,
+                    text: permReq ? stripPermissionTag(rawText) : rawText,
+                    pending: false,
+                    error: !res.ok,
+                    activity: undefined,
+                    permissionRequest: permReq,
+                    ...(usage ? { usage } : {}),
+                  }
+                : m
+            ),
+          }
+        })
+      }
 
       // Hydrate pending-handoff state from disk so the Approve/Dismiss
       // buttons survive window reloads. The persisted blob uses

@@ -1,7 +1,7 @@
 {
   "name": "octopal",
   "productName": "Octopal",
-  "version": "0.1.33",
+  "version": "0.1.34",
   "description": "Chat with your .octo agents. Load a folder, talk to agents in a group room.",
   "packageManager": "pnpm@10.8.1",
   "scripts": {
