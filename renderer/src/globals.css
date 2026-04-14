@@ -174,69 +174,69 @@
 }
 
 /* ── Design Tokens: Octopal Crimson (Original) ── */
-/* Brand color: #a41925 — Deep Crimson */
+/* Brand color: #c42030 — Crimson Red (send btn + user bubble only) | Theme: Deep Navy #13131a */
 :root {
-  /* Background layers — subtle crimson undertone */
-  --bg-base: #110c0d;
-  --bg-surface: #1a1314;
-  --bg-elevated: #241c1e;
-  --bg-hover: #302628;
+  /* Background layers — unified warm dark (#151411) */
+  --bg-base: #151411;
+  --bg-surface: #151411;
+  --bg-elevated: #1e1d1a;
+  --bg-hover: #272520;
 
-  /* Borders — crimson-tinted */
-  --border: #3a2b2e;
-  --border-hover: #4d3b40;
+  /* Borders — warm olive-tinted */
+  --border: #302d26;
+  --border-hover: #403c33;
 
-  /* Text — warm rose-toned whites */
-  --text-primary: #efe7ea;
-  --text-heading: #fff1f4;
-  --text-secondary: #b69aa4;
-  --text-muted: #947a82;
-  --text-dim: #685057;
+  /* Text — warm neutral whites */
+  --text-primary: #e8e5df;
+  --text-heading: #f5f2ec;
+  --text-secondary: #a8a498;
+  --text-muted: #807c70;
+  --text-dim: #585548;
 
-  /* Accent — Brand Crimson #a41925 */
-  --accent: #a41925;
-  --accent-hover: #bf2030;
-  --accent-glow: rgba(164, 25, 37, 0.15);
+  /* Accent — Brand Crimson (send button + user bubble only) */
+  --accent: #c42030;
+  --accent-hover: #d92a3a;
+  --accent-glow: rgba(196, 32, 48, 0.18);
 
-  /* Semantic — harmonized with crimson brand */
+  /* Semantic — harmonized with warm dark */
   --danger: #e84455;
   --danger-hover: #f25a6a;
   --danger-text: #ffa0a0;
-  --danger-bg: #2d1416;
-  --danger-glow: rgba(232, 68, 85, 0.15);
+  --danger-bg: #1e1614;
+  --danger-glow: rgba(232, 68, 85, 0.10);
 
   --success: #3da874;
   --success-hover: #4fc288;
   --success-text: #7ee8b0;
-  --success-bg: #142d1f;
-  --success-glow: rgba(61, 168, 116, 0.15);
+  --success-bg: #161e18;
+  --success-glow: rgba(61, 168, 116, 0.10);
 
   --warning: #e8a832;
   --warning-hover: #f2bc4a;
   --warning-text: #ffd580;
-  --warning-bg: #2d2414;
-  --warning-glow: rgba(232, 168, 50, 0.15);
+  --warning-bg: #1e1c15;
+  --warning-glow: rgba(232, 168, 50, 0.10);
 
   --info: #5a8ec8;
   --info-hover: #6ea2dc;
   --info-text: #a0c8ff;
-  --info-bg: #142030;
-  --info-glow: rgba(90, 142, 200, 0.15);
+  --info-bg: #161820;
+  --info-glow: rgba(90, 142, 200, 0.10);
 
-  /* Timeline / Piping — NLE style (Ocean Teal) */
-  --tl-piping: #4AADAB;
-  --tl-piping-text: #6CC7C5;
-  --tl-piping-bg: rgba(74, 173, 171, 0.06);
-  --tl-piping-bg-hover: rgba(74, 173, 171, 0.12);
-  --tl-piping-glow: rgba(74, 173, 171, 0.15);
-  --tl-lane-main: rgba(255, 255, 255, 0.035);
-  --tl-lane-main-border: rgba(255, 255, 255, 0.06);
-  --tl-lane-piping: rgba(74, 173, 171, 0.07);
-  --tl-lane-piping-border: rgba(74, 173, 171, 0.12);
+  /* Timeline / Piping — warm muted teal */
+  --tl-piping: #5A9A8E;
+  --tl-piping-text: #78B8AA;
+  --tl-piping-bg: rgba(90, 154, 142, 0.06);
+  --tl-piping-bg-hover: rgba(90, 154, 142, 0.12);
+  --tl-piping-glow: rgba(90, 154, 142, 0.12);
+  --tl-lane-main: rgba(255, 255, 255, 0.03);
+  --tl-lane-main-border: rgba(255, 255, 255, 0.05);
+  --tl-lane-piping: rgba(90, 154, 142, 0.06);
+  --tl-lane-piping-border: rgba(90, 154, 142, 0.10);
 
-  /* Shadows — crimson-tinted */
-  --shadow-md: 0 12px 32px rgba(14, 6, 8, 0.7);
-  --shadow-lg: 0 20px 60px rgba(14, 6, 8, 0.6);
+  /* Shadows — warm dark */
+  --shadow-md: 0 12px 32px rgba(10, 10, 8, 0.7);
+  --shadow-lg: 0 20px 60px rgba(10, 10, 8, 0.6);
 
   /* Radii */
   --radius-sm: 4px;
@@ -319,9 +319,9 @@ button {
   outline-offset: 2px;
 }
 
-/* ── Octopal Crimson: Signature glow effects ── */
+/* ── Octopal Warm Dark: Signature glow effects ── */
 .sidebar-nav-item.active {
-  box-shadow: inset 0 0 20px rgba(212, 64, 88, 0.08);
+  box-shadow: inset 0 0 20px rgba(160, 150, 120, 0.06);
 }
 
 /* ── Layout ── */
@@ -630,7 +630,7 @@ button {
   height: 96px;
   object-fit: contain;
   animation: mascot-bounce 2s ease-in-out infinite;
-  filter: drop-shadow(0 4px 12px rgba(164, 25, 38, 0.3));
+  filter: drop-shadow(0 4px 12px rgba(120, 110, 80, 0.3));
 }
 
 /* 웰컴 모달 전용: 더 큰 캐릭터 */
@@ -642,7 +642,7 @@ button {
   width: 120px;
   height: 120px;
   animation: mascot-bounce-lg 2s ease-in-out infinite;
-  filter: drop-shadow(0 6px 20px rgba(164, 25, 38, 0.35));
+  filter: drop-shadow(0 6px 20px rgba(120, 110, 80, 0.35));
 }
 
 @keyframes mascot-bounce-lg {
@@ -2367,7 +2367,7 @@ button {
 
 .empty-logo--bounce {
   animation: mascot-bounce-sm 3s ease-in-out infinite;
-  filter: drop-shadow(0 3px 8px rgba(164, 25, 38, 0.2));
+  filter: drop-shadow(0 3px 8px rgba(120, 110, 80, 0.2));
 }
 
 @keyframes mascot-bounce-sm {
@@ -2498,7 +2498,7 @@ button {
 
 .welcome-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 16px rgba(212, 64, 88, 0.3);
+  box-shadow: 0 4px 16px rgba(140, 130, 100, 0.3);
 }
 
 /* Open Folder Modal (simple version - no mascot) */
@@ -2524,7 +2524,7 @@ button {
 
 .empty-cta:hover {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(212, 64, 88, 0.25);
+  box-shadow: 0 4px 12px rgba(140, 130, 100, 0.25);
 }
 
 .message {
@@ -3362,10 +3362,9 @@ button {
 }
 
 .composer-textarea:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 1px var(--accent),
-    0 0 20px var(--accent-glow),
-    0 0 40px var(--accent-glow);
+  border-color: var(--border-hover);
+  box-shadow: 0 0 0 1px var(--border-hover),
+    0 0 12px rgba(140, 130, 100, 0.08);
 }
 
 .send {
