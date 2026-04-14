@@ -199,10 +199,16 @@
     },
     "editAgent": {
       "title": "에이전트 편집",
-      "deleteConfirm": "{{name}}을(를) 삭제할까요? .octo 파일이 영구적으로 제거됩니다.",
+      "deleteConfirm": "{{name}}을(를) 삭제할까요? 에이전트 폴더가 영구적으로 제거됩니다.",
       "tabBasic": "기본 정보",
+      "tabPrompt": "프롬프트",
       "tabPermissions": "권한",
-      "tabMcp": "MCP"
+      "tabMcp": "MCP",
+      "rolePlaceholder": "React, TypeScript 전문 풀스택 개발자",
+      "roleHint": "다른 에이전트에게 보여지는 짧은 소개 (1-2문장).",
+      "promptLabel": "시스템 프롬프트",
+      "promptHint": "에이전트의 전체 지시사항. prompt.md 파일로 저장되며 VS Code 등에서도 편집 가능합니다.",
+      "promptPlaceholder": "당신은 개발자 에이전트입니다. 깔끔한 코드를 작성하고, 기능을 구현하고, 버그를 수정합니다..."
     },
     "createWorkspace": {
       "title": "새 워크스페이스",

@@ -1,0 +1,1 @@
+QA engineer and test specialist. Writes unit/integration tests, finds edge cases, validates features, and ensures reliability across the application.

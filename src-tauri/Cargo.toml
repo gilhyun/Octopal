@@ -1,6 +1,6 @@
 [package]
 name = "octopal"
-version = "0.1.30"
+version = "0.1.31"
 description = "Chat with your .octo agents"
 authors = ["Studio H"]
 edition = "2021"
@@ -34,6 +34,7 @@ chrono = "0.4"
 base64 = "0.22"
 trash = "5"
 sha2 = "0.10"
+urlencoding = "2"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

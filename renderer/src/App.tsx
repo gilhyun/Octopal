@@ -236,6 +236,7 @@ export function App() {
     return () => window.removeEventListener('resize', handleResize)
   }, [])
 
+
   // Reset active folder when workspace changes
   useEffect(() => {
     if (activeWorkspace && activeWorkspace.folders.length > 0) {
@@ -789,6 +790,7 @@ export function App() {
   const sanitizeDisplayText = (text: string): string =>
     stripHandoffTags(stripPermissionTag(text))
 
+  // ── DM (1:1 chat) helpers ────────────────────────────────────────
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
     const hasAttachments = attachments && attachments.length > 0

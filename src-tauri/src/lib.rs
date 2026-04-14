@@ -83,11 +83,17 @@ pub fn run() {
     let managed = ManagedState::new(is_dev);
 
     tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
-            // Focus existing window when a second instance is launched
-            if let Some(w) = app.get_webview_window("main") {
-                let _ = w.unminimize();
-                let _ = w.set_focus();
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            // Check if any .octo file was passed as argument
+            let octo_file = args.iter().find(|a| a.ends_with(".octo"));
+            if let Some(file_path) = octo_file {
+                commands::agent::open_octo_file(app, file_path);
+            } else {
+                // Focus existing window when a second instance is launched
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
             }
         }))
         .plugin(tauri_plugin_dialog::init())
@@ -97,9 +103,13 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(managed)
         .setup(|app| {
-            // Allow asset protocol to access files under the user's home directory
+            // Allow asset protocol to access .octopal config directory only
+            // (NOT the entire home directory — that triggers macOS permission popups)
             if let Some(home) = dirs::home_dir() {
-                let _ = app.asset_protocol_scope().allow_directory(&home, true);
+                let octopal_dir = home.join(".octopal");
+                let _ = app
+                    .asset_protocol_scope()
+                    .allow_directory(&octopal_dir, true);
             }
             // Also allow /tmp for temporary files
             let _ = app.asset_protocol_scope().allow_directory("/tmp", true);
@@ -108,15 +118,34 @@ pub fn run() {
             if let Ok(st) = app.state::<ManagedState>().app_state.lock() {
                 for ws in &st.workspaces {
                     for folder in &ws.folders {
+                        let folder_path = std::path::Path::new(folder);
                         let _ = app
                             .asset_protocol_scope()
-                            .allow_directory(std::path::Path::new(folder), true);
+                            .allow_directory(folder_path, true);
+                        // Explicitly allow .octopal subdir — hidden dirs may be
+                        // skipped by the glob matcher used in allow_directory.
+                        let octopal_sub = folder_path.join(".octopal");
+                        let _ = app
+                            .asset_protocol_scope()
+                            .allow_directory(&octopal_sub, true);
                     }
                 }
             }
 
             #[cfg(target_os = "macos")]
             dock_menu::setup(app);
+
+            // Handle .octo file opened via OS file association (first launch)
+            let octo_file = std::env::args().find(|a| a.ends_with(".octo"));
+            if let Some(file_path) = octo_file {
+                let handle = app.handle().clone();
+                // Delay slightly so the main window finishes setup first
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(500));
+                    commands::agent::open_octo_file(&handle, &file_path);
+                });
+            }
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -139,6 +168,7 @@ pub fn run() {
             commands::octo::create_octo,
             commands::octo::update_octo,
             commands::octo::delete_octo,
+            commands::octo::read_agent_prompt,
             // Agent execution
             commands::agent::check_claude_cli,
             commands::agent::send_message,

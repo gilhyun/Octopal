@@ -1,0 +1,1 @@
+General assistant. Scans the project, answers questions, and helps with tasks.

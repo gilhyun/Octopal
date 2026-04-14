@@ -2594,6 +2594,7 @@ dependencies = [
  "tauri-plugin-updater",
  "tokio",
  "trash",
+ "urlencoding",
  "uuid",
 ]
 

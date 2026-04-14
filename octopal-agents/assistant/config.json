@@ -1,0 +1,14 @@
+{
+  "color": "",
+  "createdAt": "2026-04-07T15:18:09.253Z",
+  "icon": "🐙",
+  "name": "assistant",
+  "permissions": {
+    "allowPaths": [],
+    "bash": false,
+    "denyPaths": [],
+    "fileWrite": true,
+    "network": false
+  },
+  "role": "General assistant. Scans the project, answers questions, and helps with tasks."
+}

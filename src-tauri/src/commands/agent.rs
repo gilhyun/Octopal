@@ -145,7 +145,7 @@ pub async fn send_message(
         });
     }
 
-    // Read the octo file
+    // Read the agent config file (.json or legacy .octo)
     let octo_content: serde_json::Value = {
         let content = fs::read_to_string(&octo_path).map_err(|e| e.to_string())?;
         serde_json::from_str(&content).map_err(|e| e.to_string())?
@@ -157,6 +157,26 @@ pub async fn send_message(
         .unwrap_or("assistant")
         .to_string();
 
+    // Load companion prompt.md file if it exists.
+    // v3 subfolder: config.json sits next to prompt.md in the same directory.
+    // Legacy flat: {name}.json sits next to {name}.md.
+    let md_prompt: Option<String> = {
+        let octo_file = Path::new(&octo_path);
+        let parent = octo_file.parent().unwrap();
+
+        // v3: same directory as config.json → prompt.md
+        let v3_path = parent.join("prompt.md");
+        if v3_path.exists() {
+            fs::read_to_string(&v3_path).ok().filter(|s| !s.trim().is_empty())
+        } else if let Some(stem) = octo_file.file_stem().and_then(|s| s.to_str()) {
+            // Legacy flat: {stem}.md
+            let legacy_path = parent.join(format!("{}.md", stem));
+            fs::read_to_string(&legacy_path).ok().filter(|s| !s.trim().is_empty())
+        } else {
+            None
+        }
+    };
+
     // Isolated mode — this agent doesn't see peers or room history, and
     // can't emit handoff tags. Used for heavy single-shot research agents.
     let is_isolated = octo_content
@@ -167,10 +187,14 @@ pub async fn send_message(
     // Build system prompt
     let mut system_parts: Vec<String> = vec![];
 
-    system_parts.push("You are a \".octo\" file: a JSON file on disk that stores your name, role, memory, and conversation history.".to_string());
-
-    if let Some(role) = octo_content.get("role").and_then(|v| v.as_str()) {
-        system_parts.push(format!("\nYour role: {}", sanitize_prompt_field(role)));
+    // Use .md prompt file if available, otherwise fall back to role field
+    if let Some(ref prompt) = md_prompt {
+        system_parts.push(prompt.clone());
+    } else {
+        system_parts.push("You are a \".octo\" file: a JSON file on disk that stores your name, role, memory, and conversation history.".to_string());
+        if let Some(role) = octo_content.get("role").and_then(|v| v.as_str()) {
+            system_parts.push(format!("\nYour role: {}", sanitize_prompt_field(role)));
+        }
     }
     system_parts.push(format!("Your name: {}", agent_name));
 
@@ -1155,6 +1179,64 @@ pub fn new_window(app_handle: tauri::AppHandle) -> serde_json::Value {
 #[tauri::command]
 pub fn get_window_count() -> serde_json::Value {
     serde_json::json!({ "count": 1, "max": 5 })
+}
+
+/// Called from the backend when OS opens an agent file (.json or legacy .octo).
+/// Reads the file, determines the agent name and parent folder.
+pub fn open_octo_file(app_handle: &tauri::AppHandle, file_path: &str) {
+    let path = std::path::Path::new(file_path);
+    let ext = path.extension().and_then(|e| e.to_str());
+    if !path.exists() || (ext != Some("json") && ext != Some("octo")) {
+        return;
+    }
+
+    // Read agent name from the agent JSON
+    let _agent_name = if let Ok(contents) = std::fs::read_to_string(path) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
+            json.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or_else(|| {
+                    path.file_stem()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("agent")
+                })
+                .to_string()
+        } else {
+            path.file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("agent")
+                .to_string()
+        }
+    } else {
+        return;
+    };
+
+    // Determine the project folder:
+    // v3 subfolder: octopal-agents/{name}/config.json → go up 3 levels
+    // v2 flat: octopal-agents/{name}.json → go up 2 levels
+    // v1 root: ./{name}.octo → go up 1 level
+    let _folder_path = if let Some(parent) = path.parent() {
+        if parent
+            .parent()
+            .and_then(|gp| gp.file_name())
+            .and_then(|n| n.to_str())
+            == Some("octopal-agents")
+        {
+            // v3: config.json inside agent subfolder inside octopal-agents/
+            parent.parent().and_then(|p| p.parent()).unwrap_or(parent)
+        } else if parent.file_name().and_then(|n| n.to_str()) == Some("octopal-agents") {
+            // v2: flat file inside octopal-agents/
+            parent.parent().unwrap_or(parent)
+        } else {
+            parent
+        }
+    } else {
+        return;
+    };
+
+    // TODO: When DM/1:1 chat feature is re-implemented, open a chat window here.
+    // For now, the file is just recognized — the main window handles agent interaction.
+    let _ = app_handle; // suppress unused warning
 }
 
 // ── File access respond ──

@@ -1,9 +1,9 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { EmojiPicker } from '../EmojiPicker'
 import { McpValidationModal } from './McpValidationModal'
 
-type AgentTab = 'basic' | 'permissions' | 'mcp'
+type AgentTab = 'basic' | 'prompt' | 'permissions' | 'mcp'
 
 interface EditAgentModalProps {
   agent: OctoFile
@@ -23,6 +23,8 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [tab, setTab] = useState<AgentTab>('basic')
   const [name, setName] = useState(agent.name)
   const [role, setRole] = useState(agent.role)
+  const [prompt, setPrompt] = useState('')
+  const [promptLoading, setPromptLoading] = useState(true)
   const [icon, setIcon] = useState(agent.icon || '')
   const [color, setColor] = useState(agent.color || '')
   const [fileWrite, setFileWrite] = useState(agent.permissions?.fileWrite === true)
@@ -35,6 +37,14 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [error, setError] = useState<string | null>(null)
   const [showMcpValidation, setShowMcpValidation] = useState(false)
   const [pendingMcpServers, setPendingMcpServers] = useState<McpServersConfig | null>(null)
+
+  // Load prompt.md content on mount
+  useEffect(() => {
+    window.api.readAgentPrompt(agent.path).then((res) => {
+      if (res.ok) setPrompt(res.path)
+      setPromptLoading(false)
+    }).catch(() => setPromptLoading(false))
+  }, [agent.path])
 
   const save = async () => {
     setError(null)
@@ -69,6 +79,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
       octoPath: agent.path,
       name,
       role,
+      prompt,
       icon,
       color,
       permissions,
@@ -106,6 +117,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
 
   const tabs: { id: AgentTab; label: string }[] = [
     { id: 'basic', label: t('modals.editAgent.tabBasic') },
+    { id: 'prompt', label: t('modals.editAgent.tabPrompt') },
     { id: 'permissions', label: t('modals.editAgent.tabPermissions') },
     { id: 'mcp', label: t('modals.editAgent.tabMcp') },
   ]
@@ -146,11 +158,35 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
               />
 
               <label className="modal-label">{t('label.role')}</label>
-              <textarea
-                className="modal-textarea"
+              <input
+                className="modal-input"
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
+                placeholder={t('modals.editAgent.rolePlaceholder')}
               />
+              <div className="modal-hint">{t('modals.editAgent.roleHint')}</div>
+            </>
+          )}
+
+          {tab === 'prompt' && (
+            <>
+              <label className="modal-label" style={{ marginTop: 0 }}>{t('modals.editAgent.promptLabel')}</label>
+              <div className="modal-hint" style={{ marginTop: 0 }}>
+                {t('modals.editAgent.promptHint')}
+              </div>
+              {promptLoading ? (
+                <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: '12px 0' }}>
+                  {t('common.loading')}
+                </div>
+              ) : (
+                <textarea
+                  className="modal-textarea modal-textarea--mono"
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  placeholder={t('modals.editAgent.promptPlaceholder')}
+                  rows={12}
+                />
+              )}
             </>
           )}
 
@@ -212,12 +248,11 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
                 {t('mcp.hint')}
               </div>
               <textarea
-                className="modal-textarea"
+                className="modal-textarea modal-textarea--mono"
                 placeholder={t('mcp.placeholder')}
                 value={mcpJson}
                 onChange={(e) => { setMcpJson(e.target.value); setMcpError(null) }}
                 rows={8}
-                style={{ fontFamily: 'monospace', fontSize: 12 }}
               />
               {mcpError && <div className="modal-error">{mcpError}</div>}
             </>

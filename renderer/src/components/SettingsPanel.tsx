@@ -170,9 +170,11 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
         setTimeout(() => setUpdateStatus('idle'), 3000)
       }
     } catch (err: any) {
+      console.error('[Updater] Update check failed:', err)
       setUpdateStatus('error')
-      setUpdateError(err?.message || 'Update check failed')
-      setTimeout(() => setUpdateStatus('idle'), 5000)
+      const message = err?.message || 'Update check failed'
+      setUpdateError(message)
+      // Don't auto-dismiss error — let user see and click to retry
     }
   }
 

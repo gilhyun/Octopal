@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::fs;
 use std::path::Path;
 
-/// Maximum allowed length for the role field (prevents prompt injection via long payloads).
+/// Maximum allowed length for the role field (short description, not full prompt).
 const MAX_ROLE_LENGTH: usize = 200;
 
 /// Sanitize the role field: strip control characters (including newlines),
@@ -24,6 +24,42 @@ pub fn sanitize_role(role: &str) -> String {
     }
 }
 
+/// Read the prompt.md file for an agent given its config.json path.
+#[tauri::command]
+pub fn read_agent_prompt(octo_path: String) -> CreateResult {
+    let path = Path::new(&octo_path);
+    if !path.exists() {
+        return CreateResult {
+            ok: false,
+            path: None,
+            error: Some("Agent file not found".to_string()),
+        };
+    }
+    let agent_dir = path.parent().unwrap();
+    let prompt_path = agent_dir.join("prompt.md");
+    if prompt_path.exists() {
+        match fs::read_to_string(&prompt_path) {
+            Ok(content) => CreateResult {
+                ok: true,
+                path: Some(content), // reuse path field for prompt content
+                error: None,
+            },
+            Err(e) => CreateResult {
+                ok: false,
+                path: None,
+                error: Some(e.to_string()),
+            },
+        }
+    } else {
+        // No prompt.md — return empty
+        CreateResult {
+            ok: true,
+            path: Some(String::new()),
+            error: None,
+        }
+    }
+}
+
 #[derive(Serialize)]
 pub struct CreateResult {
     pub ok: bool,
@@ -38,6 +74,7 @@ pub fn create_octo(
     folder_path: String,
     name: String,
     role: String,
+    prompt: Option<String>,
     icon: Option<String>,
     color: Option<String>,
     permissions: Option<serde_json::Value>,
@@ -58,10 +95,19 @@ pub fn create_octo(
         };
     }
 
-    let filename = sanitized_name.to_lowercase().replace(' ', "-");
-    let octo_path = Path::new(&folder_path).join(format!("{}.octo", filename));
+    let dirname = sanitized_name.to_lowercase().replace(' ', "-");
+    let agent_dir = Path::new(&folder_path).join("octopal-agents").join(&dirname);
+    if let Err(e) = fs::create_dir_all(&agent_dir) {
+        return CreateResult {
+            ok: false,
+            path: None,
+            error: Some(format!("Failed to create agent folder: {}", e)),
+        };
+    }
+    let config_path = agent_dir.join("config.json");
+    let prompt_path = agent_dir.join("prompt.md");
 
-    if octo_path.exists() {
+    if config_path.exists() {
         return CreateResult {
             ok: false,
             path: None,
@@ -75,7 +121,6 @@ pub fn create_octo(
         "name": sanitized_name,
         "role": sanitized_role,
         "icon": icon.unwrap_or_else(|| "🤖".to_string()),
-        "history": [],
         "memory": [],
     });
 
@@ -89,17 +134,26 @@ pub fn create_octo(
         octo["mcpServers"] = m;
     }
 
-    match fs::write(&octo_path, serde_json::to_string_pretty(&octo).unwrap()) {
-        Ok(_) => CreateResult {
-            ok: true,
-            path: Some(octo_path.to_string_lossy().to_string()),
-            error: None,
-        },
-        Err(e) => CreateResult {
-            ok: false,
-            path: None,
-            error: Some(e.to_string()),
-        },
+    // Write agent config.json
+    match fs::write(&config_path, serde_json::to_string_pretty(&octo).unwrap()) {
+        Ok(_) => {}
+        Err(e) => {
+            return CreateResult {
+                ok: false,
+                path: None,
+                error: Some(e.to_string()),
+            }
+        }
+    }
+
+    // Write prompt.md (use dedicated prompt if provided, otherwise role as fallback)
+    let prompt_content = prompt.unwrap_or_else(|| sanitized_role.clone());
+    let _ = fs::write(&prompt_path, &prompt_content);
+
+    CreateResult {
+        ok: true,
+        path: Some(config_path.to_string_lossy().to_string()),
+        error: None,
     }
 }
 
@@ -108,6 +162,7 @@ pub fn update_octo(
     octo_path: String,
     name: Option<String>,
     role: Option<String>,
+    prompt: Option<String>,
     icon: Option<String>,
     color: Option<String>,
     permissions: Option<serde_json::Value>,
@@ -168,31 +223,42 @@ pub fn update_octo(
         }
     }
 
-    // If name changed, we may need to rename the file
+    // Resolve companion prompt.md path (in the same directory as config.json)
+    let agent_dir = path.parent().unwrap();
+    let prompt_path = agent_dir.join("prompt.md");
+
+    // Write prompt.md only when explicitly provided (decoupled from role)
+    if let Some(p) = prompt {
+        let _ = fs::write(&prompt_path, &p);
+    }
+
+    // If name changed, rename the entire agent folder
     let mut final_path = octo_path.clone();
     if let Some(new_name) = &name {
-        let new_filename = new_name.to_lowercase().replace(' ', "-");
-        let new_path = path
-            .parent()
-            .unwrap()
-            .join(format!("{}.octo", new_filename));
-        if new_path != path && !new_path.exists() {
-            match fs::write(&new_path, serde_json::to_string_pretty(&octo).unwrap()) {
-                Ok(_) => {
-                    // Old file is being replaced by the renamed copy → trash.
-                    let _ = trash::delete(path).or_else(|_| fs::remove_file(path));
-                    final_path = new_path.to_string_lossy().to_string();
-                    return CreateResult {
-                        ok: true,
-                        path: Some(final_path),
-                        error: None,
-                    };
-                }
-                Err(e) => {
-                    return CreateResult {
-                        ok: false,
-                        path: None,
-                        error: Some(e.to_string()),
+        let new_dirname = new_name.to_lowercase().replace(' ', "-");
+        // Agent folder's parent is octopal-agents/
+        if let Some(agents_root) = agent_dir.parent() {
+            let new_agent_dir = agents_root.join(&new_dirname);
+
+            if new_agent_dir != agent_dir && !new_agent_dir.exists() {
+                match fs::rename(agent_dir, &new_agent_dir) {
+                    Ok(_) => {
+                        // Write updated config to new location
+                        let new_config = new_agent_dir.join("config.json");
+                        let _ = fs::write(&new_config, serde_json::to_string_pretty(&octo).unwrap());
+                        final_path = new_config.to_string_lossy().to_string();
+                        return CreateResult {
+                            ok: true,
+                            path: Some(final_path),
+                            error: None,
+                        };
+                    }
+                    Err(e) => {
+                        return CreateResult {
+                            ok: false,
+                            path: None,
+                            error: Some(format!("Failed to rename agent folder: {}", e)),
+                        }
                     }
                 }
             }
@@ -224,17 +290,40 @@ pub fn delete_octo(octo_path: String) -> CreateResult {
         };
     }
 
+    // Determine what to delete:
+    // - v3 subfolder structure: config.json's parent folder (the agent folder)
+    // - legacy flat file: just the file + companion .md
+    let target = if path.file_name().and_then(|n| n.to_str()) == Some("config.json") {
+        // v3: delete the entire agent folder
+        path.parent().unwrap().to_path_buf()
+    } else {
+        // Legacy: delete the file itself + companion .md
+        if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+            if let Some(parent) = path.parent() {
+                let md_path = parent.join(format!("{}.md", stem));
+                if md_path.exists() {
+                    let _ = trash::delete(&md_path).or_else(|_| fs::remove_file(&md_path));
+                }
+            }
+        }
+        path.to_path_buf()
+    };
+
     // Send to OS trash so deletes are recoverable.
-    match trash::delete(path) {
+    match trash::delete(&target) {
         Ok(_) => CreateResult {
             ok: true,
             path: None,
             error: None,
         },
         Err(e) => {
-            // Fall back to a hard delete if the platform's trash isn't
-            // available (e.g., headless Linux without a desktop session).
-            match fs::remove_file(path) {
+            // Fall back to hard delete
+            let result = if target.is_dir() {
+                fs::remove_dir_all(&target)
+            } else {
+                fs::remove_file(&target)
+            };
+            match result {
                 Ok(_) => CreateResult {
                     ok: true,
                     path: None,

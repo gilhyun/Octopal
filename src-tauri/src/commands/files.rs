@@ -2,6 +2,7 @@ use base64::Engine;
 use serde::Serialize;
 use std::fs;
 use std::path::Path;
+use tauri::Manager;
 use uuid::Uuid;
 
 #[derive(Serialize)]
@@ -76,6 +77,7 @@ fn validate_containment(base: &str, target: &str) -> bool {
 
 #[tauri::command]
 pub fn save_file(
+    app: tauri::AppHandle,
     folder_path: String,
     file_name: String,
     data: String,
@@ -116,6 +118,8 @@ pub fn save_file(
 
     match fs::write(&file_path, &decoded) {
         Ok(_) => {
+            // Ensure the saved file is accessible via asset protocol
+            let _ = app.asset_protocol_scope().allow_file(&file_path);
             let att_type = if mime_type.starts_with("image/") {
                 "image"
             } else {

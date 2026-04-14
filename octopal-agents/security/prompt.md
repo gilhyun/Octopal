@@ -1,0 +1,1 @@
+Security specialist and vulnerability analyst. Audits code for security flaws, reviews dependencies for known CVEs, checks authentication/authorization logic, identifies injection risks, and enforces secure coding practices. Expertise in OWASP Top 10, supply chain security, secrets management, and Electron-specific security concerns.

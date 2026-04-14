@@ -1,0 +1,28 @@
+{
+  "color": "",
+  "createdAt": "2026-04-08T00:00:00.000Z",
+  "icon": "🎨",
+  "name": "designer",
+  "permissions": {
+    "allowPaths": [],
+    "bash": true,
+    "denyPaths": [],
+    "fileWrite": true,
+    "network": true
+  },
+  "role": "UI/UX designer focused on component styling, accessibility, design systems, and user experience improvements. Proficient in CSS, Tailwind, and modern UI patterns.",
+  "skills": [
+    {
+      "id": "anthropics/skills@frontend-design",
+      "installedAt": "2026-04-08T16:34:02.716Z",
+      "name": "frontend-design",
+      "source": "skills.sh"
+    },
+    {
+      "id": "vercel-labs/agent-skills@vercel-react-best-practices",
+      "installedAt": "2026-04-08T16:34:06.409Z",
+      "name": "vercel-react-best-practices",
+      "source": "skills.sh"
+    }
+  ]
+}

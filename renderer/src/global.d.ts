@@ -109,12 +109,14 @@ interface Window {
     }) => Promise<{ ok: true }>
     readPendingState: (folderPath: string) => Promise<Record<string, any>>
     writePendingState: (folderPath: string, state: Record<string, any>) => Promise<void>
-    createOcto: (params: { folderPath: string; name: string; role: string; icon?: string; color?: string; permissions?: OctoPermissions; mcpServers?: McpServersConfig }) =>
+
+    createOcto: (params: { folderPath: string; name: string; role: string; prompt?: string; icon?: string; color?: string; permissions?: OctoPermissions; mcpServers?: McpServersConfig }) =>
       Promise<{ ok: true; path: string } | { ok: false; error: string }>
     updateOcto: (params: {
       octoPath: string
       name?: string
       role?: string
+      prompt?: string
       icon?: string
       color?: string
       permissions?: OctoPermissions
@@ -122,6 +124,8 @@ interface Window {
     }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
     deleteOcto: (octoPath: string) =>
       Promise<{ ok: true } | { ok: false; error: string }>
+    readAgentPrompt: (octoPath: string) =>
+      Promise<{ ok: true; path: string } | { ok: false; error: string }>
     sendMessage: (params: {
       folderPath: string
       octoPath: string

@@ -76,6 +76,7 @@ export function createTauriApi(): typeof window.api {
         folderPath: params.folderPath,
         name: params.name,
         role: params.role,
+        prompt: params.prompt ?? null,
         icon: params.icon ?? null,
         color: params.color ?? null,
         permissions: params.permissions ?? null,
@@ -86,12 +87,14 @@ export function createTauriApi(): typeof window.api {
         octoPath: params.octoPath,
         name: params.name ?? null,
         role: params.role ?? null,
+        prompt: params.prompt ?? null,
         icon: params.icon ?? null,
         color: params.color ?? null,
         permissions: params.permissions ?? null,
         mcpServers: params.mcpServers ?? null,
       }),
     deleteOcto: (octoPath: string) => invoke('delete_octo', { octoPath }),
+    readAgentPrompt: (octoPath: string) => invoke('read_agent_prompt', { octoPath }),
 
     // ── Agent Execution ──
     sendMessage: (params) =>
@@ -227,7 +230,6 @@ export function createTauriApi(): typeof window.api {
     // ── Multi-window ──
     newWindow: () => invoke('new_window'),
     getWindowCount: () => invoke('get_window_count'),
-
     // ── Backup / Revert ──
     listBackups: (folderPath: string) => invoke('list_backups', { folderPath }),
     readBackupFile: (params) =>

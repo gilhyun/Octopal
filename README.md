@@ -37,7 +37,7 @@ Octopal is a team workspace of AI agents that runs on top of Claude Code. Create
 
 Built for power users who work on multiple projects simultaneously.
 
-All agent data is stored as `.octo` files in your project folder — everything lives inside the file. As long as you have the `.octo` file, you can pick up the conversation from anywhere.
+All agent data is stored in the `octopal-agents/` folder inside your project — each agent gets its own subfolder with `config.json` and `prompt.md`. As long as you have the folder, you can pick up the conversation from anywhere.
 
 ## Philosophy
 
@@ -50,7 +50,7 @@ Octopal's uniquely simple structure turns familiar concepts into a powerful AI w
 | Concept | Becomes | Description |
 |---------|---------|-------------|
 | 📁 Folder | **Team** | Each folder becomes an independent team with its own agents and context. |
-| 📄 .octo File | **Agent** | A single JSON file defines an agent — its role, memory, and personality. |
+| 📁 octopal-agents/ | **Agents** | Each subfolder defines an agent — its config, prompt, and personality. |
 | 🏢 Workspace | **Company** | Group your folders into a workspace and you have your own AI company. |
 
 No complex setup, no cloud — just your computer and your AI agents.
@@ -59,7 +59,7 @@ No complex setup, no cloud — just your computer and your AI agents.
 
 | | Feature | Description |
 |---|---------|-------------|
-| 🐙 | **Octo Agents** | Define agents as simple `.octo` files. Each file is an independent agent with its own role, personality, and capabilities. |
+| 🐙 | **Octo Agents** | Define agents in `octopal-agents/` subfolders. Each folder is an independent agent with its own config, prompt, and capabilities. |
 | 💬 | **Group Chat** | Agents talk to each other and to you in a natural group chat. @mention to direct, or let the orchestrator route automatically. |
 | 🧠 | **Hidden Orchestrator** | A smart orchestrator reads the context and calls the right agent at the right time. You direct, agents collaborate. |
 | 📁 | **Your Folders, Your Teams** | Each folder is a team, each workspace is a company. Organize agent teams the way you already organize files. |
@@ -69,7 +69,7 @@ No complex setup, no cloud — just your computer and your AI agents.
 ## How It Works
 
 1. **Open Octopal App** — Launch the app and open a workspace. That's your company — ready in seconds.
-2. **Add a Folder** — Add a folder and drop in `.octo` files. Each folder is a team, each file is an agent — alive and ready to work.
+2. **Add a Folder** — Add a folder with an `octopal-agents/` directory. Each folder is a team, each subfolder is an agent — alive and ready to work.
 3. **Create Agents & Chat** — Give each agent a role and start chatting. @mention who you need, or let the orchestrator route the conversation.
 
 ## Features
@@ -99,7 +99,7 @@ No complex setup, no cloud — just your computer and your AI agents.
 ### Workspace
 - Create/rename/delete workspaces
 - Multi-folder management (add/remove folders)
-- `.octo` file change detection (file system watch)
+- `octopal-agents/` change detection (file system watch)
 
 <p align="center">
   <img src="screenshot2.png" alt="Octopal Features" width="800" />
@@ -202,7 +202,7 @@ Octopal/
 │   │       ├── workspace.rs      # Workspace CRUD
 │   │       ├── wiki.rs           # Wiki page CRUD
 │   │       ├── settings.rs       # App settings
-│   │       ├── octo.rs           # .octo file read/write
+│   │       ├── octo.rs           # Agent config read/write (octopal-agents/)
 │   │       ├── backup.rs         # State backup
 │   │       └── file_lock.rs      # File locking
 │   ├── Cargo.toml                # Rust dependencies
@@ -252,7 +252,7 @@ Octopal/
 │    ┌────▼────┐           ┌──────▼──────┐     │
 │    │ File    │           │ Components  │     │
 │    │ System  │           │ ChatPanel   │     │
-│    │ .octo   │           │ Sidebars    │     │
+│    │ Agents  │           │ Sidebars    │     │
 │    │ Wiki    │           │ Modals      │     │
 │    │ State   │           │ Settings    │     │
 │    └────┬────┘           └─────────────┘     │

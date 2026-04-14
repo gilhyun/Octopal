@@ -4,7 +4,7 @@ import { EmojiPicker } from '../EmojiPicker'
 import { AlertTriangle } from 'lucide-react'
 import { McpValidationModal } from './McpValidationModal'
 
-type AgentTab = 'basic' | 'permissions' | 'mcp'
+type AgentTab = 'basic' | 'prompt' | 'permissions' | 'mcp'
 
 interface CreateAgentModalProps {
   folderPath: string
@@ -17,6 +17,7 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
   const [tab, setTab] = useState<AgentTab>('basic')
   const [name, setName] = useState('')
   const [role, setRole] = useState('')
+  const [prompt, setPrompt] = useState('')
   const [icon, setIcon] = useState('')
   const [color, setColor] = useState('')
   const [fileWrite, setFileWrite] = useState(false)
@@ -65,6 +66,7 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
       folderPath,
       name,
       role,
+      prompt: prompt || undefined,
       icon: icon || undefined,
       color: color || undefined,
       permissions,
@@ -125,6 +127,7 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
 
   const tabs: { id: AgentTab; label: string }[] = [
     { id: 'basic', label: t('modals.editAgent.tabBasic') },
+    { id: 'prompt', label: t('modals.editAgent.tabPrompt') },
     { id: 'permissions', label: t('modals.editAgent.tabPermissions') },
     { id: 'mcp', label: t('modals.editAgent.tabMcp') },
   ]
@@ -167,11 +170,28 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
               />
 
               <label className="modal-label">{t('label.role')}</label>
-              <textarea
-                className="modal-textarea"
+              <input
+                className="modal-input"
                 placeholder={t('modals.createAgent.rolePlaceholder')}
                 value={role}
                 onChange={(e) => setRole(e.target.value)}
+              />
+              <div className="modal-hint">{t('modals.editAgent.roleHint')}</div>
+            </>
+          )}
+
+          {tab === 'prompt' && (
+            <>
+              <label className="modal-label" style={{ marginTop: 0 }}>{t('modals.editAgent.promptLabel')}</label>
+              <div className="modal-hint" style={{ marginTop: 0 }}>
+                {t('modals.editAgent.promptHint')}
+              </div>
+              <textarea
+                className="modal-textarea modal-textarea--mono"
+                value={prompt}
+                onChange={(e) => setPrompt(e.target.value)}
+                placeholder={t('modals.editAgent.promptPlaceholder')}
+                rows={12}
               />
             </>
           )}
@@ -234,12 +254,11 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
                 {t('mcp.hint')}
               </div>
               <textarea
-                className="modal-textarea"
+                className="modal-textarea modal-textarea--mono"
                 placeholder={t('mcp.placeholder')}
                 value={mcpJson}
                 onChange={(e) => { setMcpJson(e.target.value); setMcpError(null) }}
                 rows={8}
-                style={{ fontFamily: 'monospace', fontSize: 12 }}
               />
               {mcpError && <div className="modal-error">{mcpError}</div>}
             </>

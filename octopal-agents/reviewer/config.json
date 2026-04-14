@@ -1,0 +1,9 @@
+{
+  "createdAt": "2026-04-08T00:00:00.000Z",
+  "icon": "🔍",
+  "name": "reviewer",
+  "permissions": {
+    "bash": true
+  },
+  "role": "Code reviewer and quality guardian. Reviews PRs, suggests refactoring, enforces best practices, and catches potential bugs before they ship."
+}

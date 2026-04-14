@@ -173,7 +173,7 @@
     U+26F9200D2640, U+26F9200D2642;
 }
 
-/* ── Design Tokens: Octopal Crimson Theme ── */
+/* ── Design Tokens: Octopal Crimson (Original) ── */
 /* Brand color: #a41925 — Deep Crimson */
 :root {
   /* Background layers — subtle crimson undertone */
@@ -190,18 +190,15 @@
   --text-primary: #efe7ea;
   --text-heading: #fff1f4;
   --text-secondary: #b69aa4;
-  /* muted crimson */
   --text-muted: #947a82;
-  /* warm muted */
   --text-dim: #685057;
-  /* decorative only, not for readable text */
 
   /* Accent — Brand Crimson #a41925 */
   --accent: #a41925;
   --accent-hover: #bf2030;
   --accent-glow: rgba(164, 25, 37, 0.15);
 
-  /* Semantic — harmonized with crimson brand #a41925 */
+  /* Semantic — harmonized with crimson brand */
   --danger: #e84455;
   --danger-hover: #f25a6a;
   --danger-text: #ffa0a0;
@@ -237,7 +234,7 @@
   --tl-lane-piping: rgba(74, 173, 171, 0.07);
   --tl-lane-piping-border: rgba(74, 173, 171, 0.12);
 
-  /* Shadows — crimson-tinted for cohesion */
+  /* Shadows — crimson-tinted */
   --shadow-md: 0 12px 32px rgba(14, 6, 8, 0.7);
   --shadow-lg: 0 20px 60px rgba(14, 6, 8, 0.6);
 
@@ -248,13 +245,9 @@
 
   /* Typography scale */
   --font-xs: 11px;
-  /* caption / label */
   --font-sm: 13px;
-  /* body-small */
   --font-base: 14px;
-  /* body */
   --font-lg: 18px;
-  /* heading */
 
   /* Transition */
   --transition: 0.15s ease;
@@ -706,16 +699,19 @@ button {
 
 .agent-modal-tab {
   flex: 1;
-  padding: 8px 0;
+  padding: 8px 4px;
   background: none;
   border: none;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
   color: var(--text-secondary);
-  font-size: var(--font-sm);
+  font-size: var(--font-xs);
   font-weight: 500;
   font-family: inherit;
   cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   transition: color var(--transition), border-color var(--transition);
 }
 
@@ -3996,6 +3992,16 @@ button {
 .modal-textarea {
   min-height: 80px;
   resize: vertical;
+}
+
+/* Monospace textarea for code/prompt editing */
+.modal-textarea--mono {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'JetBrains Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  min-height: 240px;
+  max-height: 50vh;
+  tab-size: 2;
 }
 
 .modal-error {

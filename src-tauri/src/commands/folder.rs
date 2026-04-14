@@ -34,9 +34,10 @@ pub async fn pick_folder(
         Some(path) => {
             let folder_path = path.to_string();
             // Allow the asset protocol to serve files from this folder
-            let _ = app
-                .asset_protocol_scope()
-                .allow_directory(std::path::Path::new(&folder_path), true);
+            let fp = std::path::Path::new(&folder_path);
+            let _ = app.asset_protocol_scope().allow_directory(fp, true);
+            // Explicitly allow .octopal subdir (hidden dirs may be skipped by glob)
+            let _ = app.asset_protocol_scope().allow_directory(&fp.join(".octopal"), true);
             {
                 let mut s = state.app_state.lock().map_err(|e| e.to_string())?;
                 if let Some(ws) = s.workspaces.iter_mut().find(|w| w.id == workspace_id) {
@@ -68,9 +69,13 @@ pub fn remove_folder(
     Ok(result)
 }
 
-/// Set up a filesystem watcher that notifies the frontend when .octo files
-/// in the folder change (created, modified, deleted). Debounced to 150ms so
-/// a single save that fires multiple events collapses into one emit.
+/// The subfolder inside each workspace folder where .octo agent files live.
+const AGENTS_DIR: &str = "octopal-agents";
+
+/// Set up a filesystem watcher that notifies the frontend when agent files
+/// (config.json / prompt.md) in the folder change (created, modified, deleted).
+/// Debounced to 150ms so a single save that fires multiple events collapses
+/// into one emit.
 fn ensure_folder_watcher(folder_path: &str, state: &State<'_, ManagedState>, app: &AppHandle) {
     let mut watchers = match state.folder_watchers.lock() {
         Ok(g) => g,
@@ -82,8 +87,6 @@ fn ensure_folder_watcher(folder_path: &str, state: &State<'_, ManagedState>, app
 
     let folder_clone = folder_path.to_string();
     let app_clone = app.clone();
-    // Leading-edge debounce: when an event arrives, schedule an emit 150ms later
-    // and ignore further events until that emit fires.
     let last_scheduled: Arc<StdMutex<Option<Instant>>> = Arc::new(StdMutex::new(None));
 
     let mut watcher = match notify::recommended_watcher(
@@ -92,16 +95,16 @@ fn ensure_folder_watcher(folder_path: &str, state: &State<'_, ManagedState>, app
                 Ok(e) => e,
                 Err(_) => return,
             };
-            let has_octo = event.paths.iter().any(|p| {
-                p.extension().and_then(|e| e.to_str()) == Some("octo")
+            let has_agent_file = event.paths.iter().any(|p| {
+                let ext = p.extension().and_then(|e| e.to_str());
+                ext == Some("json") || ext == Some("md") || ext == Some("octo")
             });
             let has_history = event.paths.iter().any(|p| {
                 p.file_name().and_then(|n| n.to_str()) == Some("room-history.json")
             });
-            if !has_octo && !has_history {
+            if !has_agent_file && !has_history {
                 return;
             }
-            // Rate-limit: if an emit was scheduled <150ms ago, skip.
             {
                 let mut ls = match last_scheduled.lock() {
                     Ok(g) => g,
@@ -126,17 +129,278 @@ fn ensure_folder_watcher(folder_path: &str, state: &State<'_, ManagedState>, app
         Err(_) => return,
     };
 
-    // Watch root for .octo files + .octopal/ subdir for room-history.json
-    let root_ok = watcher
+    let mut watch_ok = false;
+
+    // Watch octopal-agents/ recursively (each agent is a subfolder now)
+    let agents_dir = Path::new(folder_path).join(AGENTS_DIR);
+    if agents_dir.is_dir() {
+        watch_ok = watcher
+            .watch(&agents_dir, RecursiveMode::Recursive)
+            .is_ok();
+    }
+
+    // Also watch root for legacy .octo files (migration period)
+    if watcher
         .watch(Path::new(folder_path), RecursiveMode::NonRecursive)
-        .is_ok();
+        .is_ok()
+    {
+        watch_ok = true;
+    }
+
+    // Watch .octopal/ subdir for room-history.json
     let octopal_dir = Path::new(folder_path).join(".octopal");
     if octopal_dir.is_dir() {
         let _ = watcher.watch(&octopal_dir, RecursiveMode::NonRecursive);
     }
-    if root_ok {
+    if watch_ok {
         watchers.insert(folder_path.to_string(), watcher);
     }
+}
+
+/// Migrate legacy agent files into the v3 subfolder structure:
+///   `octopal-agents/{name}/config.json` + `prompt.md`
+///
+/// Handles three legacy layouts:
+///   Case 1: Root `.octo` files  →  subfolder
+///   Case 2: Flat `octopal-agents/{name}.json` + `{name}.md`  →  subfolder
+///   Case 3: Root `.octo` files already inside `octopal-agents/`
+///
+/// Migration uses **copy** (originals are preserved for safety).
+fn migrate_octo_files(folder_path: &str) {
+    let root = Path::new(folder_path);
+    let agents_dir = root.join(AGENTS_DIR);
+
+    // ── Case 1 & 3: Collect legacy .octo files from root and octopal-agents/ ──
+    let mut legacy_octos: Vec<std::path::PathBuf> = vec![];
+    for search_dir in [root.to_path_buf(), agents_dir.clone()] {
+        if let Ok(entries) = fs::read_dir(&search_dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|x| x.to_str()) == Some("octo") && path.is_file() {
+                    legacy_octos.push(path);
+                }
+            }
+        }
+    }
+
+    // ── Case 2: Collect flat .json files in octopal-agents/ (not inside a subfolder) ──
+    let mut flat_jsons: Vec<std::path::PathBuf> = vec![];
+    if let Ok(entries) = fs::read_dir(&agents_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file()
+                && path.extension().and_then(|x| x.to_str()) == Some("json")
+                && path.file_name().and_then(|n| n.to_str()) != Some("config.json")
+            {
+                flat_jsons.push(path);
+            }
+        }
+    }
+
+    if legacy_octos.is_empty() && flat_jsons.is_empty() {
+        return;
+    }
+
+    if fs::create_dir_all(&agents_dir).is_err() {
+        eprintln!("[octopal] failed to create {}", agents_dir.display());
+        return;
+    }
+
+    // ── Migrate .octo files ──
+    for src in legacy_octos {
+        let stem = match src.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let sub_dir = agents_dir.join(&stem);
+        let config_dest = sub_dir.join("config.json");
+
+        // Skip if subfolder config already exists
+        if config_dest.exists() {
+            continue;
+        }
+
+        let content = match fs::read_to_string(&src) {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[octopal] failed to read {}: {}", src.display(), e);
+                continue;
+            }
+        };
+        let mut octo: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[octopal] failed to parse {}: {}", src.display(), e);
+                continue;
+            }
+        };
+
+        let role = octo
+            .get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if let Some(obj) = octo.as_object_mut() {
+            obj.remove("history");
+        }
+
+        if fs::create_dir_all(&sub_dir).is_err() {
+            continue;
+        }
+
+        match serde_json::to_string_pretty(&octo) {
+            Ok(json) => {
+                if let Err(e) = fs::write(&config_dest, json) {
+                    eprintln!("[octopal] failed to write {}: {}", config_dest.display(), e);
+                    continue;
+                }
+            }
+            Err(e) => {
+                eprintln!("[octopal] failed to serialize {}: {}", stem, e);
+                continue;
+            }
+        }
+
+        let prompt_dest = sub_dir.join("prompt.md");
+        if !prompt_dest.exists() && !role.is_empty() {
+            let _ = fs::write(&prompt_dest, &role);
+        }
+
+        eprintln!(
+            "[octopal] migrated .octo {} → {}/config.json",
+            src.display(),
+            sub_dir.display()
+        );
+    }
+
+    // ── Migrate flat .json + .md files ──
+    for src in flat_jsons {
+        let stem = match src.file_stem().and_then(|s| s.to_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let sub_dir = agents_dir.join(&stem);
+        let config_dest = sub_dir.join("config.json");
+
+        if config_dest.exists() {
+            continue;
+        }
+
+        // Validate that this is actually an agent file (has "name" field)
+        let content = match fs::read_to_string(&src) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+        let json_val: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        if json_val.get("name").and_then(|v| v.as_str()).is_none() {
+            continue; // Not an agent file
+        }
+
+        if fs::create_dir_all(&sub_dir).is_err() {
+            continue;
+        }
+
+        // Copy .json → config.json
+        if let Err(e) = fs::copy(&src, &config_dest) {
+            eprintln!("[octopal] failed to copy {}: {}", src.display(), e);
+            continue;
+        }
+
+        // Copy companion .md → prompt.md
+        let old_md = agents_dir.join(format!("{}.md", stem));
+        let prompt_dest = sub_dir.join("prompt.md");
+        if old_md.exists() && !prompt_dest.exists() {
+            let _ = fs::copy(&old_md, &prompt_dest);
+        }
+
+        eprintln!(
+            "[octopal] migrated flat {} → {}/config.json",
+            src.display(),
+            sub_dir.display()
+        );
+    }
+}
+
+/// Parse agent config files from a directory.
+///
+/// **v3 (primary)**: Each agent is a subfolder with `config.json` inside.
+///   `octopal-agents/developer/config.json`
+///
+/// **Legacy fallback**: Flat `.json` / `.octo` files in the directory itself
+/// are still picked up during the migration period.
+fn collect_octos_from_dir(dir: &Path, octos: &mut Vec<OctoFile>) {
+    let entries = match fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+
+        // v3 subfolder: {dir}/{agent_name}/config.json
+        if path.is_dir() {
+            let config_path = path.join("config.json");
+            if config_path.is_file() {
+                if let Some(octo) = parse_agent_config(&config_path) {
+                    octos.push(octo);
+                }
+            }
+            continue;
+        }
+
+        // Legacy flat files: {dir}/{name}.json or {dir}/{name}.octo
+        if path.is_file() {
+            let ext = path.extension().and_then(|e| e.to_str());
+            if ext == Some("json") || ext == Some("octo") {
+                if let Some(octo) = parse_agent_config(&path) {
+                    octos.push(octo);
+                }
+            }
+        }
+    }
+}
+
+/// Read a single agent config file and return an `OctoFile` if valid.
+fn parse_agent_config(path: &Path) -> Option<OctoFile> {
+    let content = fs::read_to_string(path).ok()?;
+    let octo: serde_json::Value = serde_json::from_str(&content).ok()?;
+
+    let name = octo.get("name").and_then(|v| v.as_str()).filter(|n| !n.is_empty())?;
+    let role = sanitize_role(
+        octo.get("role")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default(),
+    );
+    let icon = octo
+        .get("icon")
+        .and_then(|v| v.as_str())
+        .unwrap_or("🤖")
+        .to_string();
+    let color = octo
+        .get("color")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let hidden = octo.get("hidden").and_then(|v| v.as_bool());
+    let isolated = octo.get("isolated").and_then(|v| v.as_bool());
+    let permissions = octo
+        .get("permissions")
+        .and_then(|v| serde_json::from_value(v.clone()).ok());
+    let mcp_servers = octo.get("mcpServers").cloned();
+
+    Some(OctoFile {
+        path: path.to_string_lossy().to_string(),
+        name: name.to_string(),
+        role,
+        icon,
+        color,
+        hidden,
+        isolated,
+        permissions,
+        mcp_servers,
+    })
 }
 
 #[tauri::command]
@@ -150,56 +414,25 @@ pub fn list_octos(
         return Ok(vec![]);
     }
 
-    // Start watching this folder for .octo changes (idempotent).
-    ensure_folder_watcher(&folder_path, &state, &app);
-    let mut octos = vec![];
-    let entries = fs::read_dir(dir).map_err(|e| e.to_string())?;
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) == Some("octo") {
-            if let Ok(content) = fs::read_to_string(&path) {
-                if let Ok(octo) = serde_json::from_str::<serde_json::Value>(&content) {
-                    let name = octo
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
-                    let role = sanitize_role(
-                        octo.get("role")
-                            .and_then(|v| v.as_str())
-                            .unwrap_or_default(),
-                    );
-                    let icon = octo
-                        .get("icon")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("🤖")
-                        .to_string();
-                    let color = octo
-                        .get("color")
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string());
-                    let hidden = octo.get("hidden").and_then(|v| v.as_bool());
-                    let isolated = octo.get("isolated").and_then(|v| v.as_bool());
-                    let permissions = octo
-                        .get("permissions")
-                        .and_then(|v| serde_json::from_value(v.clone()).ok());
-                    let mcp_servers = octo.get("mcpServers").cloned();
+    // Auto-migrate legacy .octo files → .json + .md
+    migrate_octo_files(&folder_path);
 
-                    octos.push(OctoFile {
-                        path: path.to_string_lossy().to_string(),
-                        name,
-                        role,
-                        icon,
-                        color,
-                        hidden,
-                        isolated,
-                        permissions,
-                        mcp_servers,
-                    });
-                }
-            }
-        }
-    }
+    // Start watching this folder for agent file changes (idempotent).
+    ensure_folder_watcher(&folder_path, &state, &app);
+
+    let mut octos = vec![];
+
+    // Primary: scan octopal-agents/ subfolder
+    let agents_dir = dir.join(AGENTS_DIR);
+    collect_octos_from_dir(&agents_dir, &mut octos);
+
+    // Fallback: also scan root for any remaining legacy files (migration period)
+    collect_octos_from_dir(dir, &mut octos);
+
+    // Deduplicate by name (prefer octopal-agents/ version)
+    let mut seen = std::collections::HashSet::new();
+    octos.retain(|o| seen.insert(o.name.to_lowercase()));
+
     octos.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     Ok(octos)
 }
@@ -383,3 +616,4 @@ pub fn maybe_rotate_room_history(history_file: &Path) {
         }
     }
 }
+

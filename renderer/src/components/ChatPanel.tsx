@@ -45,8 +45,9 @@ function MessageImage({ attachment, folderPath, onFail }: { attachment: Attachme
   useEffect(() => { onFailRef.current = onFail }, [onFail])
 
   useEffect(() => {
+    console.log('[MessageImage] resolving', { folderPath, path: attachment?.path, type: attachment?.type, id: attachment?.id })
     if (!folderPath || !attachment?.path) {
-      // Nothing to load — let the parent show the error state.
+      console.warn('[MessageImage] ❌ no folderPath or attachment.path', { folderPath, path: attachment?.path })
       setFailed(true)
       onFailRef.current?.()
       return
@@ -54,17 +55,34 @@ function MessageImage({ attachment, folderPath, onFail }: { attachment: Attachme
     let cancelled = false
     window.api.getAbsolutePath({ folderPath, relativePath: attachment.path })
       .then((abs: string) => {
-        if (!cancelled) {
-          setAbsPath(abs)
-          try {
-            setSrc(convertFileSrc(abs))
-          } catch {
-            setFailed(true)
-            onFailRef.current?.()
-          }
+        if (cancelled) return
+        setAbsPath(abs)
+        try {
+          const url = convertFileSrc(abs)
+          console.log('[MessageImage] ✅ resolved', { abs, url })
+          setSrc(url)
+        } catch (e) {
+          console.error('[MessageImage] ❌ convertFileSrc failed, trying base64 fallback', e)
+          // Fallback: read as base64
+          window.api.readFileBase64({ folderPath, relativePath: attachment.path })
+            .then((result: any) => {
+              if (!cancelled && result.ok && result.data) {
+                const dataUrl = `data:${attachment.mimeType};base64,${result.data}`
+                console.log('[MessageImage] ✅ base64 fallback succeeded')
+                setSrc(dataUrl)
+              } else {
+                console.error('[MessageImage] ❌ base64 fallback also failed', result)
+                setFailed(true)
+                onFailRef.current?.()
+              }
+            })
+            .catch(() => {
+              if (!cancelled) { setFailed(true); onFailRef.current?.() }
+            })
         }
       })
-      .catch(() => {
+      .catch((e) => {
+        console.error('[MessageImage] ❌ getAbsolutePath failed', e)
         if (!cancelled) {
           setFailed(true)
           onFailRef.current?.()
@@ -88,9 +106,27 @@ function MessageImage({ attachment, folderPath, onFail }: { attachment: Attachme
       src={src}
       alt={attachment.filename || 'image'}
       loading="lazy"
-      onError={() => {
-        setFailed(true)
-        onFailRef.current?.()
+      onError={(e) => {
+        console.error('[MessageImage] ❌ img onError, trying base64 fallback', { src, absPath, attachment: attachment?.filename }, e)
+        // Try base64 fallback before giving up
+        if (src && !src.startsWith('data:')) {
+          window.api.readFileBase64({ folderPath, relativePath: attachment.path })
+            .then((result: any) => {
+              if (result.ok && result.data) {
+                const dataUrl = `data:${attachment.mimeType};base64,${result.data}`
+                console.log('[MessageImage] ✅ base64 fallback after onError succeeded')
+                setSrc(dataUrl)
+              } else {
+                console.error('[MessageImage] ❌ base64 fallback also failed', result)
+                setFailed(true)
+                onFailRef.current?.()
+              }
+            })
+            .catch(() => { setFailed(true); onFailRef.current?.() })
+        } else {
+          setFailed(true)
+          onFailRef.current?.()
+        }
       }}
       onClick={() => { if (absPath) window.open(`file://${absPath}`, '_blank') }}
     />
@@ -107,10 +143,27 @@ function PastedTextBlock({ attachment, folderPath }: { attachment: Attachment; f
     if (content !== null) { setExpanded(e => !e); return }
     try {
       const abs = await window.api.getAbsolutePath({ folderPath, relativePath: attachment.path })
-      const res = await fetch(convertFileSrc(abs))
-      const text = await res.text()
-      setContent(text)
-      setExpanded(true)
+      try {
+        const res = await fetch(convertFileSrc(abs))
+        if (!res.ok) throw new Error(`fetch status ${res.status}`)
+        const text = await res.text()
+        setContent(text)
+        setExpanded(true)
+        return
+      } catch (fetchErr) {
+        console.warn('[PastedTextBlock] convertFileSrc fetch failed, trying base64 fallback', fetchErr)
+      }
+      // Fallback: read as base64 and decode to text
+      const result = await window.api.readFileBase64({ folderPath, relativePath: attachment.path })
+      if (result.ok && result.data) {
+        // Decode base64 → binary bytes → UTF-8 text
+        const decoded = new TextDecoder().decode(Uint8Array.from(atob(result.data), c => c.charCodeAt(0)))
+        console.log('[PastedTextBlock] ✅ base64 fallback succeeded')
+        setContent(decoded)
+        setExpanded(true)
+      } else {
+        throw new Error('base64 read failed')
+      }
     } catch {
       setContent(t('chat.pastedTextError'))
       setExpanded(true)
@@ -360,12 +413,16 @@ export function ChatPanel({
         .filter(f => f.size <= MAX_FILE_SIZE && isFileAllowed(f))
         .slice(0, remaining)
 
-      const newAttachments: PendingAttachment[] = validFiles.map(f => ({
-        id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        file: f,
-        previewUrl: ALLOWED_IMAGE.includes(f.type) ? URL.createObjectURL(f) : '',
-        type: getFileType(f),
-      }))
+      const newAttachments: PendingAttachment[] = validFiles.map(f => {
+        const previewUrl = ALLOWED_IMAGE.includes(f.type) ? URL.createObjectURL(f) : ''
+        console.debug('[addFiles] attachment:', { name: f.name, type: f.type, size: f.size, isImage: ALLOWED_IMAGE.includes(f.type), previewUrl: previewUrl ? 'blob:...' : '(empty)' })
+        return {
+          id: `att-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file: f,
+          previewUrl,
+          type: getFileType(f),
+        }
+      })
 
       return [...prev, ...newAttachments]
     })
@@ -399,12 +456,15 @@ export function ChatPanel({
             for (const p of paths) {
               try {
                 const result = await window.api.readDroppedFile({ path: p })
+                console.debug('[drop] readDroppedFile result:', { filename: result.filename, mimeType: result.mimeType, dataLen: result.data?.length })
                 // base64 → bytes → File so the existing addFiles flow can
                 // consume it without any branching.
                 const binary = atob(result.data)
                 const bytes = new Uint8Array(binary.length)
                 for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
-                files.push(new File([bytes], result.filename, { type: result.mimeType }))
+                const f = new File([bytes], result.filename, { type: result.mimeType })
+                console.debug('[drop] created File:', { name: f.name, type: f.type, size: f.size })
+                files.push(f)
               } catch (err) {
                 console.error('[drop] failed to read', p, err)
               }
@@ -939,7 +999,7 @@ export function ChatPanel({
                 {m.permissionRequest && m.permissionRequest.granted === false && (
                   <div className="permission-resolved dismissed">{t('chat.permissionDismissed')}</div>
                 )}
-                {Array.isArray(m.attachments) && m.attachments.length > 0 && (
+                {Array.isArray(m.attachments) && m.attachments.length > 0 && (() => { console.log('[Render] attachments for', m.id, JSON.stringify(m.attachments)); return true })() && (
                   <div className="message-images">
                     {m.attachments.map((att, idx) => {
                       // Defensive: skip anything that isn't a usable attachment shape.

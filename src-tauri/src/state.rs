@@ -22,7 +22,7 @@ pub struct Workspace {
     pub folders: Vec<String>,
 }
 
-/// OctoFile — represents a .octo agent file
+/// OctoFile — represents an agent config file (.json or legacy .octo)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OctoFile {
     pub path: String,

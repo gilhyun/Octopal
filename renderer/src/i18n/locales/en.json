@@ -199,10 +199,16 @@
     },
     "editAgent": {
       "title": "Edit agent",
-      "deleteConfirm": "Delete {{name}}? This removes the .octo file permanently.",
+      "deleteConfirm": "Delete {{name}}? This removes the agent folder permanently.",
       "tabBasic": "Basic",
+      "tabPrompt": "Prompt",
       "tabPermissions": "Permissions",
-      "tabMcp": "MCP"
+      "tabMcp": "MCP",
+      "rolePlaceholder": "Full-stack developer specializing in React and TypeScript",
+      "roleHint": "Short description shown to other agents (1-2 sentences).",
+      "promptLabel": "System Prompt",
+      "promptHint": "Full instructions for this agent. Saved as prompt.md — also editable in VS Code or any text editor.",
+      "promptPlaceholder": "You are a developer agent. You write clean code, implement features, fix bugs..."
     },
     "createWorkspace": {
       "title": "New workspace",

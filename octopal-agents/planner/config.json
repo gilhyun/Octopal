@@ -1,0 +1,14 @@
+{
+  "color": "",
+  "createdAt": "2026-04-08T00:00:00.000Z",
+  "icon": "📋",
+  "name": "planner",
+  "permissions": {
+    "allowPaths": [],
+    "bash": true,
+    "denyPaths": [],
+    "fileWrite": true,
+    "network": true
+  },
+  "role": "Product planner and project manager. Organizes tasks, creates roadmaps, writes specs, tracks progress, and keeps the team aligned on priorities."
+}
