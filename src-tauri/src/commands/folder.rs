@@ -442,16 +442,12 @@ pub fn list_octos(
 
     let mut octos = vec![];
 
-    // Primary: scan octopal-agents/ subfolder
+    // Only scan octopal-agents/ subfolder — NOT the project root.
+    // Previously we also scanned the root for legacy .json files, but that
+    // caused package.json ({"name":"octopal",...}) to be mistakenly parsed
+    // as an agent, creating a phantom "octopal" agent with full permissions.
     let agents_dir = dir.join(AGENTS_DIR);
     collect_octos_from_dir(&agents_dir, &mut octos);
-
-    // Fallback: also scan root for any remaining legacy files (migration period)
-    collect_octos_from_dir(dir, &mut octos);
-
-    // Deduplicate by name (prefer octopal-agents/ version)
-    let mut seen = std::collections::HashSet::new();
-    octos.retain(|o| seen.insert(o.name.to_lowercase()));
 
     // If no agents found at all, create a default "assistant" agent
     if octos.is_empty() {
