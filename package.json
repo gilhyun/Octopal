@@ -1,7 +1,7 @@
 {
   "name": "octopal",
   "productName": "Octopal",
-  "version": "0.1.37",
+  "version": "0.1.41",
   "description": "Chat with your .octo agents. Load a folder, talk to agents in a group room.",
   "packageManager": "pnpm@10.8.1",
   "scripts": {
@@ -33,6 +33,7 @@
     "@tauri-apps/cli": "^2.10.1",
     "@tauri-apps/plugin-process": "^2.3.1",
     "@tauri-apps/plugin-updater": "^2",
+    "border-beam": "^1.0.1",
     "canvas-confetti": "^1.9.4",
     "diff": "^5.2.0",
     "i18next": "^26.0.3",

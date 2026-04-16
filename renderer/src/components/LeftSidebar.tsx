@@ -1,7 +1,7 @@
 import { useRef, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { basename } from '../utils'
-import { Plus, FolderOpen, ChevronDown, X, BookOpen, Activity, Settings, PanelLeftClose, LayoutGrid } from 'lucide-react'
+import { Plus, FolderOpen, ChevronDown, X, BookOpen, Activity, Settings, LayoutGrid } from 'lucide-react'
 
 interface LeftSidebarProps {
   activeWorkspace: Workspace | null
@@ -18,7 +18,6 @@ interface LeftSidebarProps {
   removeFolder: (p: string) => void
   pickFolder: () => void
   setShowCreateWorkspace: (v: boolean) => void
-  onCollapse: () => void
 }
 
 export function LeftSidebar({
@@ -36,7 +35,6 @@ export function LeftSidebar({
   removeFolder,
   pickFolder,
   setShowCreateWorkspace,
-  onCollapse,
 }: LeftSidebarProps) {
   const { t } = useTranslation()
   const folders = activeWorkspace?.folders || []
@@ -57,16 +55,8 @@ export function LeftSidebar({
 
   return (
     <aside className="left-sidebar">
-      <div className="sidebar-header drag" data-tauri-drag-region>
-        <div style={{ flex: 1 }} />
-        <button
-          className="sidebar-toggle-btn"
-          onClick={onCollapse}
-          title={t('sidebar.collapseSidebar')}
-        >
-          <PanelLeftClose size={16} />
-        </button>
-      </div>
+      <div className="sidebar-header drag" data-tauri-drag-region />
+
       <div className="workspace-section" ref={menuRef}>
         <button
           className="workspace-switcher"

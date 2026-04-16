@@ -4,7 +4,8 @@ import { basename } from '../utils'
 import { MentionPopup } from './MentionPopup'
 import { AgentAvatar } from './AgentAvatar'
 import type { Attachment, Message, TokenUsage } from '../types'
-import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown, PanelLeftOpen, PanelRightOpen, Code, ChevronDown, ChevronRight, Zap } from 'lucide-react'
+import { Paperclip, Download, FileText, X, Send, Square, ImageOff, ArrowDown, PanelRightOpen, PanelRightClose, Code, ChevronDown, ChevronRight, Zap } from 'lucide-react'
+import { BorderBeam } from 'border-beam'
 import { MarkdownRenderer } from './MarkdownRenderer'
 import { convertFileSrc } from '@tauri-apps/api/core'
 
@@ -380,6 +381,18 @@ export function ChatPanel({
   const [shortcutHintIndex, setShortcutHintIndex] = useState(0)
   const dragCounterRef = useRef(0)
   const initialScrollDoneRef = useRef<string | null>(null)
+
+  // Input-beam onboarding hint: play for a few seconds after the user enters a folder, then fade out.
+  const [inputBeamVisible, setInputBeamVisible] = useState(false)
+  useEffect(() => {
+    if (!activeFolder) {
+      setInputBeamVisible(false)
+      return
+    }
+    setInputBeamVisible(true)
+    const timer = setTimeout(() => setInputBeamVisible(false), 6000)
+    return () => clearTimeout(timer)
+  }, [activeFolder])
 
   // Auto-grow textarea based on content
   const adjustTextareaHeight = useCallback(() => {
@@ -814,36 +827,27 @@ export function ChatPanel({
       onDrop={onDrop}
     >
       <header className="chat-header drag" data-tauri-drag-region>
-        {!leftSidebarOpen && (
-          <button
-            className="sidebar-toggle-btn chat-toggle-btn"
-            onClick={onToggleLeftSidebar}
-            title={t('sidebar.expandSidebar')}
-          >
-            <PanelLeftOpen size={16} />
-          </button>
-        )}
-        <div style={{ flex: 1 }}>
-          <div className="room-title">
+        <div className="room-heading" style={{ flex: 1 }}>
+          <span className="room-title">
             {activeFolder ? basename(activeFolder) : t('chat.noFolder')}
-          </div>
-          <div className="room-meta">
+          </span>
+          <span className="room-meta">
             {activeFolder
               ? t('chat.agentCount', { count: octos.length })
               : activeWorkspace
               ? t('chat.openFolderToStart')
               : t('chat.createWorkspaceToStart')}
-          </div>
+          </span>
         </div>
-        {!rightSidebarOpen && (
-          <button
-            className="sidebar-toggle-btn chat-toggle-btn"
-            onClick={onToggleRightSidebar}
-            title={t('sidebar.expandAgents')}
-          >
-            <PanelRightOpen size={16} />
-          </button>
-        )}
+        <button
+          className="sidebar-toggle-btn chat-toggle-btn"
+          onClick={onToggleRightSidebar}
+          title={rightSidebarOpen ? t('sidebar.collapseAgents') : t('sidebar.expandAgents')}
+        >
+          {rightSidebarOpen
+            ? <PanelRightClose size={16} strokeWidth={1} />
+            : <PanelRightOpen size={16} strokeWidth={1} />}
+        </button>
       </header>
 
       {/* Drag & Drop overlay */}
@@ -1150,25 +1154,34 @@ export function ChatPanel({
           >
             <Paperclip size={18} />
           </button>
-          <textarea
-            ref={textareaRef}
-            className="composer-textarea"
-            placeholder={
-              activeFolder
-                ? t('chat.placeholder')
-                : t('chat.placeholderDisabled')
-            }
-            value={input}
-            onChange={onInputChange}
-            onKeyDown={onKeyDown}
-            onPaste={onPaste}
-            disabled={!activeFolder}
-            rows={1}
-          />
+          <BorderBeam
+            size="md"
+            duration={5}
+            active={inputBeamVisible && !hasPendingAgents && !input.trim() && !!activeFolder}
+            className="composer-beam-wrap"
+          >
+            <textarea
+              ref={textareaRef}
+              className="composer-textarea"
+              placeholder={
+                activeFolder
+                  ? t('chat.placeholder')
+                  : t('chat.placeholderDisabled')
+              }
+              value={input}
+              onChange={onInputChange}
+              onKeyDown={onKeyDown}
+              onPaste={onPaste}
+              disabled={!activeFolder}
+              rows={1}
+            />
+          </BorderBeam>
           {hasPendingAgents && !input.trim() ? (
-            <button className="send stop-btn" onClick={onStopAll} title={t('chat.stopAllAgents')}>
-              <Square size={14} fill="currentColor" />
-            </button>
+            <BorderBeam size="sm" duration={4} active className="stop-beam-wrap">
+              <button className="send stop-btn" onClick={onStopAll} title={t('chat.stopAllAgents')}>
+                <Square size={14} fill="currentColor" />
+              </button>
+            </BorderBeam>
           ) : (
             <button className="send" onClick={handleSend} disabled={!activeFolder}>
               <Send size={16} />

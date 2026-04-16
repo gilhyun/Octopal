@@ -2572,7 +2572,7 @@ dependencies = [
 
 [[package]]
 name = "octopal"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -2587,7 +2587,6 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",
- "tauri-plugin-fs",
  "tauri-plugin-process",
  "tauri-plugin-shell",
  "tauri-plugin-single-instance",

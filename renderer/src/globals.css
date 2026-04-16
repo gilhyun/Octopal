@@ -176,11 +176,11 @@
 /* ── Design Tokens: Octopal Crimson (Original) ── */
 /* Brand color: #c42030 — Crimson Red (send btn + user bubble only) | Theme: Deep Navy #13131a */
 :root {
-  /* Background layers — unified warm dark (#151411) */
-  --bg-base: #151411;
-  --bg-surface: #151411;
-  --bg-elevated: #1e1d1a;
-  --bg-hover: #272520;
+  /* Background layers — deep neutral dark */
+  --bg-base: #090909;
+  --bg-surface: #090909;
+  --bg-elevated: #151515;
+  --bg-hover: #1f1f1f;
 
   /* Borders — warm olive-tinted */
   --border: #302d26;
@@ -354,11 +354,11 @@ button {
 }
 
 .left-sidebar {
-  border-right: 1px solid var(--border);
+  /* borderless — blends into app base */
 }
 
 .right-sidebar {
-  border-left: 1px solid var(--border);
+  /* borderless — blends into app base */
 }
 
 .sidebar-header {
@@ -376,7 +376,7 @@ button {
   width: 26px;
   height: 26px;
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 50%;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
@@ -411,7 +411,7 @@ button {
   border: none;
   border-radius: var(--radius);
   background: transparent;
-  color: var(--text-muted);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: background var(--transition), color var(--transition), box-shadow var(--transition);
   -webkit-app-region: no-drag;
@@ -420,7 +420,7 @@ button {
 
 .sidebar-toggle-btn:hover {
   background: var(--bg-hover);
-  color: var(--text-secondary);
+  color: var(--text-heading);
   box-shadow: 0 0 0 1px var(--border);
 }
 
@@ -428,6 +428,29 @@ button {
   background: var(--bg-active, var(--bg-hover));
   color: var(--text-primary);
   transform: scale(0.92);
+}
+
+/* Thin-stroke icons across sidebars & toggle buttons (trendy look) */
+.left-sidebar svg,
+.right-sidebar svg,
+.sidebar-toggle-btn svg,
+.chat-header svg {
+  stroke-width: 1;
+}
+
+/* Bump icon color so thin strokes still read clearly */
+.sidebar-nav-item svg,
+.project-item svg,
+.sidebar-footer-btn svg,
+.workspace-switcher svg {
+  color: var(--text-heading);
+  opacity: 0.9;
+}
+
+.sidebar-nav-item.active svg,
+.project-item.active svg,
+.sidebar-footer-btn.active svg {
+  opacity: 1;
 }
 
 .chat-toggle-btn {
@@ -970,7 +993,6 @@ button {
 .sidebar-footer {
   flex-shrink: 0;
   padding: 8px;
-  border-top: 1px solid var(--border);
 }
 
 .sidebar-footer-btn {
@@ -2306,6 +2328,12 @@ button {
   min-width: 0;
   min-height: 0;
   position: relative;
+  /* Inset card: floats above the app base with subtle margin and rounded corners */
+  margin: 8px 10px 10px 10px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
 }
 
 .chat-header {
@@ -2317,16 +2345,28 @@ button {
   transition: padding-left 0.2s ease;
 }
 
+.room-heading {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .room-title {
   font-weight: 600;
   color: var(--text-heading);
   font-size: var(--font-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .room-meta {
   font-size: var(--font-xs);
   color: var(--text-secondary);
-  margin-top: 1px;
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .messages {
@@ -2549,8 +2589,8 @@ button {
 }
 
 .message.user .bubble {
-  background: var(--accent);
-  color: #fff;
+  background: #2a2823;
+  color: var(--text-heading);
 }
 
 .bubble {
@@ -3266,9 +3306,9 @@ button {
 }
 
 .scroll-to-bottom:hover {
-  color: var(--text-primary);
+  color: #ffffff;
   background: var(--bg-hover);
-  border-color: var(--accent);
+  border-color: var(--text-muted);
 }
 
 @keyframes spin {
@@ -3323,7 +3363,6 @@ button {
 /* ── Composer ── */
 .composer {
   padding: 12px 20px 20px;
-  border-top: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   gap: 0;
@@ -3368,10 +3407,11 @@ button {
 }
 
 .send {
-  background: var(--accent);
-  color: #fff;
+  background: #2a2823;
+  color: var(--text-heading);
   border: none;
-  padding: 10px 14px;
+  height: 40px;
+  padding: 0 14px;
   border-radius: 10px;
   font-weight: 500;
   cursor: pointer;
@@ -3379,24 +3419,39 @@ button {
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: box-shadow var(--transition), filter var(--transition);
+  flex-shrink: 0;
+  transition: background var(--transition), filter var(--transition);
 }
 
 .send:hover {
-  background: var(--accent-hover);
-  box-shadow: 0 0 16px var(--accent-glow),
-    0 0 24px var(--accent-glow);
-  filter: brightness(1.1);
+  background: #34312b;
+  filter: brightness(1.05);
+}
+
+.send:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .stop-btn {
-  background: #e53935 !important;
+  background: #2a2823 !important;
+  color: var(--text-heading) !important;
 }
 
 .stop-btn:hover {
-  background: #c62828 !important;
-  box-shadow: 0 0 16px rgba(229, 57, 53, 0.4),
-    0 0 24px rgba(229, 57, 53, 0.2) !important;
+  background: #34312b !important;
+}
+
+/* BorderBeam wrappers: preserve the composer-row flex behavior */
+.composer-beam-wrap {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+}
+
+.stop-beam-wrap {
+  display: flex;
+  flex-shrink: 0;
 }
 
 /* ── Attach Button ── */
@@ -3630,7 +3685,7 @@ button {
 }
 
 .token-usage-summary svg {
-  color: var(--accent);
+  color: var(--text-muted);
   flex-shrink: 0;
 }
 
@@ -3639,7 +3694,7 @@ button {
 }
 
 .token-usage-cost {
-  color: var(--accent);
+  color: var(--text-secondary);
   font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
@@ -3698,10 +3753,10 @@ button {
 
 .token-usage-model-inline {
   font-size: 10px;
-  opacity: 0.6;
+  opacity: 0.7;
   font-weight: 500;
-  color: var(--accent, #7c6af7);
-  background: color-mix(in srgb, var(--accent, #7c6af7) 12%, transparent);
+  color: var(--text-secondary);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
   padding: 1px 5px;
   border-radius: 3px;
   white-space: nowrap;

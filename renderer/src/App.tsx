@@ -1600,7 +1600,6 @@ export function App() {
           removeFolder={removeFolder}
           pickFolder={pickFolder}
           setShowCreateWorkspace={setShowCreateWorkspace}
-          onCollapse={() => setLeftSidebarOpen(false)}
         />
       )}
 
