@@ -47,6 +47,18 @@
     "shell:allow-spawn",
     "shell:allow-stdin-write",
     "shell:allow-kill",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        { "name": "binaries/goose", "sidecar": true, "args": true }
+      ]
+    },
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        { "name": "binaries/goose", "sidecar": true, "args": true }
+      ]
+    },
     "process:default",
     "process:allow-exit",
     "process:allow-restart"

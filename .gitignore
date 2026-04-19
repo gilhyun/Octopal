@@ -12,3 +12,10 @@ octopal-agents/
 # Tauri
 src-tauri/target
 src-tauri/gen
+
+# Bundled Goose sidecar binaries (downloaded at build time by
+# scripts/ensure-goose-sidecar.mjs; pinned by scripts/goose-version.json).
+src-tauri/binaries/goose-*
+
+# Goose download cache
+scripts/.cache/

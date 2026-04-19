@@ -96,7 +96,11 @@
       "backupMaxCount": "Max snapshots per project",
       "backupMaxCountDesc": "Older snapshots are sent to the OS trash when this limit is exceeded.",
       "backupMaxAge": "Max age (days)",
-      "backupMaxAgeDesc": "Snapshots older than this are pruned regardless of count."
+      "backupMaxAgeDesc": "Snapshots older than this are pruned regardless of count.",
+      "runtimeTitle": "Runtime",
+      "runtimeDesc": "Which backend spawns your agents. Defaults to the legacy Claude CLI while Goose 2.0 is in beta.",
+      "useLegacyCli": "Use legacy Claude CLI (v0.1.42 path)",
+      "useLegacyCliDesc": "When on, agents spawn via the Claude CLI (requires `claude` installed globally). Turn off to use the bundled Goose 2.0 sidecar — beta. Requires ANTHROPIC_API_KEY in env until the keyring integration ships."
     },
     "about": {
       "title": "About Octopal",
