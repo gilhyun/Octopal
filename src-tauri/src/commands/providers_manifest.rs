@@ -131,6 +131,16 @@ fn merge(mut bundled: ProvidersManifest, overlay: ProvidersManifest) -> Provider
     bundled
 }
 
+/// Renderer-facing: return the current providers manifest for the
+/// Settings → Providers tab. Reads from the cached `ManagedState` field
+/// populated at startup (scope §2.4 "hot-reload explicit non-goal").
+#[tauri::command]
+pub fn get_providers_manifest(
+    state: tauri::State<'_, crate::state::ManagedState>,
+) -> ProvidersManifest {
+    (*state.providers_manifest).clone()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

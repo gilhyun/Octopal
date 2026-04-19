@@ -266,6 +266,8 @@ pub fn run() {
             commands::api_keys::has_api_key_cmd,
             commands::api_keys::keyring_available_cmd,
             commands::api_keys::keyring_status_cmd,
+            commands::api_keys::test_provider_connection,
+            commands::providers_manifest::get_providers_manifest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

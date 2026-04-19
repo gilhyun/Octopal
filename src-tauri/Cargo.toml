@@ -40,6 +40,10 @@ urlencoding = "2"
 # Linux, matching our call-site shape (load/save are sync). On macOS
 # Keychain and Windows Credential Manager the sync API is native.
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent", "sync-secret-service"] }
+# Phase 4: Test Connection button in Settings → Providers hits each
+# provider's free `/models` endpoint (anthropic / openai / google / ollama).
+# `rustls-tls` avoids OpenSSL dep; `json` unused so far but cheap.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

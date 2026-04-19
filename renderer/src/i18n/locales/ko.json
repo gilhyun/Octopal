@@ -18,6 +18,7 @@
     "tabs": {
       "general": "일반",
       "agents": "에이전트",
+      "providers": "프로바이더",
       "appearance": "외관",
       "shortcuts": "단축키",
       "advanced": "고급",
@@ -100,7 +101,42 @@
       "runtimeTitle": "런타임",
       "runtimeDesc": "에이전트를 실행할 백엔드를 고릅니다. Goose 2.0이 베타인 동안은 기존 Claude CLI가 기본값입니다.",
       "useLegacyCli": "Claude CLI 사용 (v0.1.42 경로)",
-      "useLegacyCliDesc": "켜져 있으면 기존 Claude CLI로 에이전트를 실행합니다 (글로벌 `claude` 설치 필요). 끄면 번들된 Goose 2.0 사이드카를 사용합니다 — 베타. keyring 연동 전까지는 env의 ANTHROPIC_API_KEY가 필요합니다."
+      "useLegacyCliDesc": "켜져 있으면 기존 Claude CLI로 에이전트를 실행합니다 (글로벌 `claude` 설치 필요). 끄면 번들된 Goose 2.0 사이드카를 사용합니다. API 키는 설정 → 프로바이더에서 관리합니다."
+    },
+    "providers": {
+      "title": "프로바이더",
+      "desc": "에이전트가 사용할 AI 프로바이더를 설정합니다. 키는 OS 키링(macOS Keychain / Windows 자격 증명 관리자 / Linux Secret Service)에 저장됩니다.",
+      "defaultsTitle": "기본값",
+      "defaultProvider": "기본 프로바이더",
+      "defaultProviderDesc": "에이전트가 자체 프로바이더를 지정하지 않은 경우 사용됩니다.",
+      "defaultModel": "기본 모델",
+      "defaultModelDesc": "Anthropic 별칭(opus/sonnet/haiku)은 실행 시 최신 Octopal 큐레이티드 모델로 해석됩니다.",
+      "plannerModel": "플래너 모델",
+      "plannerModelDesc": "디스패처가 응답 에이전트를 선정할 때 쓰는 모델. v0.2.0-베타에서는 스키마만 저장되고 디스패처는 여전히 Haiku를 하드코딩 사용합니다. Stage 6b-ii 배포 시 저장된 값이 적용됩니다.",
+      "keysTitle": "API 키",
+      "apiKey": "API 키",
+      "hostUrl": "호스트 URL",
+      "keyPlaceholder": "sk-ant-… / sk-… / AIza…",
+      "saveKey": "저장",
+      "replaceKey": "교체",
+      "saveHost": "호스트 저장",
+      "remove": "삭제",
+      "reveal": "값 보기",
+      "hide": "값 숨기기",
+      "testConnection": "연결 테스트",
+      "testOk": "연결됨 · {{ms}} ms",
+      "testFail": "실패: {{error}}",
+      "active": "구성됨",
+      "notSet": "설정 안 됨",
+      "confirmRemove": "{{name}}의 저장된 키를 삭제할까요? OS 키링 항목이 제거됩니다.",
+      "statusKeyring": "OS 키링 연결됨. 키는 이 기기를 벗어나지 않습니다.",
+      "statusEnvFallback": "환경변수 폴백 모드로 실행 중입니다. 키는 OCTOPAL_KEY_<PROVIDER> 환경변수에서 읽히며 OS 키링을 우회합니다. 공유 기기에서는 권장하지 않습니다. ({{envVar}}=env)",
+      "statusUnavailable": "OS 키링을 사용할 수 없습니다. Secret Service 데몬을 설치하거나 OCTOPAL_API_KEY_FALLBACK=env로 실행하세요 (docs/troubleshooting-linux-keyring.md).",
+      "fallbackHint": "Octopal을 실행하는 환경에서 {{envVar}}를 설정하세요.",
+      "manifestUnavailable": "프로바이더 매니페스트를 불러오지 못했습니다. 앱을 재시작하거나 로그를 확인하세요.",
+      "errors": {
+        "emptyKey": "키를 입력해주세요."
+      }
     },
     "about": {
       "title": "Octopal 정보",

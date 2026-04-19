@@ -90,7 +90,50 @@ interface AppSettings {
   }
   providers?: {
     useLegacyClaudeCli: boolean
+    /** Phase 3: default provider ID. Must match a key in providers.json. */
+    defaultProvider?: string
+    /** Phase 3: default model ID or alias (resolved via model_alias on Rust side). */
+    defaultModel?: string
+    /** Phase 3: planner model for dispatcher. Schema-only until 6b-ii. */
+    plannerModel?: string
+    /**
+     * Phase 3: per-provider "is configured" flag. Mirrors keyring state
+     * without doing a keyring read per Settings open. Only the bool is
+     * transported via IPC — never the actual key.
+     */
+    configuredProviders?: Record<string, boolean>
   }
+}
+
+interface ProviderAuthMethod {
+  id: string
+  label: string
+  goose_provider: string
+  detectBinary?: string
+}
+
+interface ProviderEntry {
+  displayName: string
+  /** Either a static array of model IDs or the sentinel string "dynamic". */
+  models: string[] | 'dynamic'
+  authMethods: ProviderAuthMethod[]
+}
+
+/** Shape of get_providers_manifest() — map of provider ID → entry. */
+type ProvidersManifest = Record<string, ProviderEntry>
+
+interface KeyringStatus {
+  /** "keyring" = real OS backend, "env_fallback" = OCTOPAL_API_KEY_FALLBACK=env active. */
+  backend: 'keyring' | 'env_fallback'
+  available: boolean
+  fallback_env_var: string
+}
+
+interface TestConnectionResult {
+  ok: boolean
+  latency_ms: number
+  status: number | null
+  error: string | null
 }
 
 interface Window {
@@ -287,8 +330,21 @@ interface Window {
 
     // Settings
     loadSettings: () => Promise<AppSettings>
-    saveSettings: (settings: AppSettings) => Promise<{ ok: true }>
+    saveSettings: (settings: AppSettings) => Promise<{ ok: true; invalidated?: string[] }>
     getVersion: () => Promise<{ version: string; electron: string; node: string }>
+
+    // Phase 4 — API keys (keyring-backed).
+    // NOTE: no `loadApiKey` — keys stay Rust-internal after save.
+    saveApiKey?: (provider: string, key: string) => Promise<void>
+    deleteApiKey?: (provider: string) => Promise<void>
+    /** Reads the settings flag, not the keyring — safe to call on every UI render. */
+    hasApiKey?: (provider: string) => Promise<boolean>
+    keyringAvailable?: () => Promise<boolean>
+    keyringStatus?: () => Promise<KeyringStatus>
+    /** Hits provider /models endpoint — free, no tokens billed. */
+    testProviderConnection?: (provider: string) => Promise<TestConnectionResult>
+    /** Phase 3 manifest (bundled + optional overlay). Cached on Rust side. */
+    getProvidersManifest?: () => Promise<ProvidersManifest>
 
     // Model probe — detects which explicit Opus version (e.g. claude-opus-4-7)
     // is available to the user's Claude CLI. Returns null until the startup

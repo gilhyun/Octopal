@@ -242,6 +242,124 @@ pub struct KeyringStatus {
     pub fallback_env_var: &'static str,
 }
 
+/// Renderer → Test Connection. Hits the provider's listing endpoint
+/// (free, no tokens billed) to verify the configured key is live.
+/// Uses the currently stored key — caller should have called
+/// `save_api_key_cmd` first if they just changed it.
+///
+/// Endpoints (scope §3.4):
+/// - anthropic: GET https://api.anthropic.com/v1/models
+/// - openai:    GET https://api.openai.com/v1/models
+/// - google:    GET https://generativelanguage.googleapis.com/v1beta/models?key=…
+/// - ollama:    GET http://localhost:11434/api/tags
+///
+/// Returns structured result so the UI can render latency + status.
+/// Error strings are sanitized — only the HTTP status code, never the
+/// raw response body (scope §4.2 log redaction).
+#[derive(serde::Serialize)]
+pub struct TestConnectionResult {
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub status: Option<u16>,
+    pub error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn test_provider_connection(
+    provider: String,
+) -> Result<TestConnectionResult, String> {
+    let start = std::time::Instant::now();
+    let key = match load_api_key(&provider)? {
+        Some(k) => k,
+        None => {
+            return Ok(TestConnectionResult {
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                status: None,
+                error: Some("no key configured".into()),
+            });
+        }
+    };
+
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+    {
+        Ok(c) => c,
+        Err(e) => return Err(format!("http client init: {e}")),
+    };
+
+    let (url, headers): (String, Vec<(&'static str, String)>) = match provider.as_str() {
+        "anthropic" => (
+            "https://api.anthropic.com/v1/models".into(),
+            vec![
+                ("x-api-key", key.clone()),
+                ("anthropic-version", "2023-06-01".into()),
+            ],
+        ),
+        "openai" => (
+            "https://api.openai.com/v1/models".into(),
+            vec![("authorization", format!("Bearer {key}"))],
+        ),
+        "google" => (
+            format!(
+                "https://generativelanguage.googleapis.com/v1beta/models?key={}",
+                urlencoding::encode(&key)
+            ),
+            vec![],
+        ),
+        "ollama" => {
+            // "key" here is reused as host URL for ollama. UI stores
+            // OLLAMA_HOST-style value in the same keyring slot.
+            let host = if key.is_empty() {
+                "http://localhost:11434".into()
+            } else {
+                key.trim_end_matches('/').to_string()
+            };
+            (format!("{host}/api/tags"), vec![])
+        }
+        _ => {
+            return Ok(TestConnectionResult {
+                ok: false,
+                latency_ms: start.elapsed().as_millis() as u64,
+                status: None,
+                error: Some(format!("unsupported provider: {provider}")),
+            });
+        }
+    };
+
+    let mut req = client.get(&url);
+    for (k, v) in headers {
+        req = req.header(k, v);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            let ok = resp.status().is_success();
+            Ok(TestConnectionResult {
+                ok,
+                latency_ms: start.elapsed().as_millis() as u64,
+                status: Some(status),
+                error: if ok {
+                    None
+                } else {
+                    // Only the status code, never the body — ADR §D5.
+                    Some(format!("HTTP {status}"))
+                },
+            })
+        }
+        Err(e) => Ok(TestConnectionResult {
+            ok: false,
+            latency_ms: start.elapsed().as_millis() as u64,
+            status: None,
+            // Format `e` with `{}` (not `{:#?}`) — the reqwest Display
+            // impl gives a one-line summary without inner body bytes.
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
 #[tauri::command]
 pub fn keyring_status_cmd() -> KeyringStatus {
     if env_fallback_active() {

@@ -16,9 +16,11 @@ import {
   Download,
   Check,
   FlaskConical,
+  KeyRound,
 } from 'lucide-react'
+import { ProvidersTab } from './settings/ProvidersTab'
 
-type SettingsTab = 'general' | 'agents' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
+type SettingsTab = 'general' | 'agents' | 'providers' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
 
 // Converts an explicit Claude model name (e.g. `claude-opus-4-7`) into a
 // compact user-facing label (`Opus 4.7`). Falls back to the raw model name
@@ -66,6 +68,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
   const TABS: { id: SettingsTab; label: string; icon: typeof Settings }[] = [
     { id: 'general', label: t('settings.tabs.general'), icon: Settings },
     { id: 'agents', label: t('settings.tabs.agents'), icon: Users },
+    { id: 'providers', label: t('settings.tabs.providers'), icon: KeyRound },
     { id: 'appearance', label: t('settings.tabs.appearance'), icon: Palette },
     { id: 'shortcuts', label: t('settings.tabs.shortcuts'), icon: Keyboard },
     { id: 'advanced', label: t('settings.tabs.advanced'), icon: Wrench },
@@ -404,6 +407,21 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
               <span className="toggle-slider" />
             </label>
           </div>
+        )}
+
+        {tab === 'providers' && (
+          <ProvidersTab
+            providers={
+              settings.providers ?? {
+                useLegacyClaudeCli: true,
+                defaultProvider: 'anthropic',
+                defaultModel: 'claude-sonnet-4-6',
+                plannerModel: 'claude-haiku-4-5-20251001',
+                configuredProviders: {},
+              }
+            }
+            onChange={(patch) => update('providers', patch)}
+          />
         )}
 
         {tab === 'appearance' && (
