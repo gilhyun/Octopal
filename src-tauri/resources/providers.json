@@ -1,0 +1,36 @@
+{
+  "anthropic": {
+    "displayName": "Anthropic",
+    "models": [
+      "claude-opus-4-7",
+      "claude-sonnet-4-6",
+      "claude-haiku-4-5-20251001",
+      "claude-opus-4-6",
+      "claude-sonnet-4-5-20250929"
+    ],
+    "authMethods": [
+      { "id": "api_key", "label": "API Key", "goose_provider": "anthropic" }
+    ]
+  },
+  "openai": {
+    "displayName": "OpenAI",
+    "models": ["gpt-5", "gpt-5-mini", "o3"],
+    "authMethods": [
+      { "id": "api_key", "label": "API Key", "goose_provider": "openai" }
+    ]
+  },
+  "google": {
+    "displayName": "Google",
+    "models": ["gemini-2.5-pro", "gemini-2.5-flash"],
+    "authMethods": [
+      { "id": "api_key", "label": "API Key", "goose_provider": "google" }
+    ]
+  },
+  "ollama": {
+    "displayName": "Ollama (Local)",
+    "models": "dynamic",
+    "authMethods": [
+      { "id": "host_only", "label": "Local host", "goose_provider": "ollama" }
+    ]
+  }
+}

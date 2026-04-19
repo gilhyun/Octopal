@@ -54,6 +54,7 @@
         "description": "Octopal Agent File"
       }
     ],
+    "externalBin": ["binaries/goose"],
     "macOS": {
       "minimumSystemVersion": "10.15"
     },

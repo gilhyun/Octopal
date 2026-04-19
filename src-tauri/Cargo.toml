@@ -34,6 +34,16 @@ base64 = "0.22"
 trash = "5"
 sha2 = "0.10"
 urlencoding = "2"
+# Phase 4: OS-backed API key storage. Native backends only (no
+# default-features) — keeps tokio-dbus off mac/windows builds.
+# `linux-native-sync-persistent` uses dbus-sync → blocking read/write on
+# Linux, matching our call-site shape (load/save are sync). On macOS
+# Keychain and Windows Credential Manager the sync API is native.
+keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native", "linux-native-sync-persistent", "sync-secret-service"] }
+# Phase 4: Test Connection button in Settings → Providers hits each
+# provider's free `/models` endpoint (anthropic / openai / google / ollama).
+# `rustls-tls` avoids OpenSSL dep; `json` unused so far but cheap.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cocoa = "0.26"

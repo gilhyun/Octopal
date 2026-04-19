@@ -121,6 +121,13 @@ export function createTauriApi(): typeof window.api {
       )
       return () => unlisten?.()
     },
+    onTextChunk: (cb) => {
+      let unlisten: UnlistenFn | null = null
+      listen<{ runId: string; delta: string; folderPath?: string; agentName?: string }>('octo:textChunk', cb).then(
+        (u) => (unlisten = u),
+      )
+      return () => unlisten?.()
+    },
     onActivityLog: (cb) => {
       let unlisten: UnlistenFn | null = null
       listen('activity:log', cb).then((u) => (unlisten = u))
@@ -226,6 +233,18 @@ export function createTauriApi(): typeof window.api {
     loadSettings: () => invoke('load_settings'),
     saveSettings: (settings) => invoke('save_settings', { settings }),
     getVersion: () => invoke('get_version'),
+
+    // ── Phase 4: API keys (keyring-backed) ──
+    // No `loadApiKey` — by design. Keys flow Rust-internal only.
+    saveApiKey: (provider, key) =>
+      invoke('save_api_key_cmd', { provider, key }),
+    deleteApiKey: (provider) => invoke('delete_api_key_cmd', { provider }),
+    hasApiKey: (provider) => invoke('has_api_key_cmd', { provider }),
+    keyringAvailable: () => invoke('keyring_available_cmd'),
+    keyringStatus: () => invoke('keyring_status_cmd'),
+    testProviderConnection: (provider) =>
+      invoke('test_provider_connection', { provider }),
+    getProvidersManifest: () => invoke('get_providers_manifest'),
 
     // ── Model probe ──
     getBestOpusModel: () => invoke('get_best_opus_model'),

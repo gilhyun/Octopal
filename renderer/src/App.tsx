@@ -648,6 +648,61 @@ export function App() {
     return unsubscribe
   }, [])
 
+  // Progressive text streaming: Goose ACP emits agent_message_chunk deltas
+  // as the model generates. We append each delta to the pending bubble's
+  // text and clear `activity` so the bubble flips from breadcrumb to
+  // streaming text. Final message text still gets authoritatively set via
+  // sendMessage's return value, so this purely improves the mid-turn UX.
+  useEffect(() => {
+    if (!window.api.onTextChunk) return
+    const unsubscribe = window.api.onTextChunk(({ runId, delta, folderPath: evFolder, agentName: evAgent }) => {
+      const mapping = runMapRef.current.get(runId)
+      if (mapping) {
+        setMessages((prev) => {
+          const list = prev[mapping.folderPath] || []
+          return {
+            ...prev,
+            [mapping.folderPath]: list.map((m) =>
+              m.id === mapping.messageId
+                ? { ...m, text: (m.text || '') + delta, activity: undefined }
+                : m
+            ),
+          }
+        })
+      } else if (evFolder && evAgent) {
+        const remotePendingId = `remote-${runId}`
+        setMessages((prev) => {
+          const list = prev[evFolder] || []
+          const existing = list.find((m) => m.id === remotePendingId)
+          if (existing) {
+            return {
+              ...prev,
+              [evFolder]: list.map((m) =>
+                m.id === remotePendingId
+                  ? { ...m, text: (m.text || '') + delta, activity: undefined }
+                  : m
+              ),
+            }
+          }
+          return {
+            ...prev,
+            [evFolder]: [
+              ...list,
+              {
+                id: remotePendingId,
+                agentName: evAgent,
+                text: delta,
+                ts: Date.now(),
+                pending: true,
+              },
+            ],
+          }
+        })
+      }
+    })
+    return unsubscribe
+  }, [])
+
   // Activity log: collect Write/Edit/Bash/WebFetch events from all agents, per folder.
   useEffect(() => {
     const unsubscribe = window.api.onActivityLog((entry) => {

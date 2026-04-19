@@ -714,6 +714,61 @@ pub async fn send_message(
         format!("{}{}", history_prefix, final_prompt)
     };
 
+    // Goose ACP vs legacy Claude CLI gate.
+    //
+    // Primary source: `settings.providers.use_legacy_claude_cli`. Default is
+    // true in v0.2.0-beta (opt-in), flips to false in v0.2.0 stable, and the
+    // entire branch disappears in v0.3.0 cleanup.
+    //
+    // Dev override: in debug builds, `OCTOPAL_USE_GOOSE=1` forces the Goose
+    // path regardless of settings — avoids having to toggle the UI every
+    // reload. The override block is stripped by `cfg!` in release builds.
+    let legacy = state
+        .settings
+        .lock()
+        .ok()
+        .map(|s| s.providers.use_legacy_claude_cli)
+        .unwrap_or(true);
+    let dev_override = cfg!(debug_assertions)
+        && std::env::var("OCTOPAL_USE_GOOSE").as_deref() == Ok("1");
+    let use_goose = !legacy || dev_override;
+    eprintln!(
+        "[agent:gate] agent={} legacy={} dev_override={} → {}",
+        agent_name,
+        legacy,
+        dev_override,
+        if use_goose { "run_agent_turn" } else { "legacy claude_cli" }
+    );
+    if use_goose {
+        let system_prompt_text = format!(
+            "{}{}\n\nWorking folder: {}",
+            system_parts.join("\n"),
+            cap_line,
+            folder_path
+        );
+        let resolved_model = chosen_alias
+            .as_ref()
+            .map(|alias| crate::commands::model_probe::resolve_model_for_cli(alias, &state))
+            .unwrap_or_default();
+        let permissions: Option<crate::state::OctoPermissions> = perms
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok());
+        let params = crate::commands::goose_acp::RunAgentTurnParams {
+            folder_path: folder_path.clone(),
+            octo_path: octo_path.clone(),
+            agent_name: agent_name.clone(),
+            run_id: run_id.clone(),
+            pending_id: pending_id.clone(),
+            system_prompt: system_prompt_text,
+            user_prompt: prompt.clone(),
+            contextual_prompt: contextual_prompt.clone(),
+            user_ts,
+            model: resolved_model,
+            permissions,
+        };
+        return crate::commands::goose_acp::run_agent_turn(&app, &state, params).await;
+    }
+
     let pool_key = format!("{}::{}", folder_path, agent_name);
     let pool_key_clone = pool_key.clone();
     let claude_args_clone = claude_args.clone();
@@ -1166,9 +1221,13 @@ pub fn stop_agent(run_id: String, state: State<'_, ManagedState>) -> StopResult 
     let mut agents = state.running_agents.lock().unwrap();
     if let Some(pid) = agents.remove(&run_id) {
         state.interrupted_runs.lock().unwrap().insert(run_id);
-        // Remove from process pool so dead process isn't reused
+        // Ask BOTH pools to drop by PID. The pool that spawned this PID
+        // acts; the other is a cheap no-op HashMap scan (scope §4.3).
+        // Neither kills — `kill_pid` below owns the SIGTERM.
         state.process_pool.remove_by_pid(pid);
+        state.goose_acp_pool.remove_by_pid(pid);
         kill_pid(pid);
+        eprintln!("[goose_acp_pool] stop_agent pid={} (may have been legacy)", pid);
         StopResult {
             ok: true,
             stopped: Some(true),
@@ -1192,10 +1251,19 @@ pub fn stop_all_agents(state: State<'_, ManagedState>) -> StopAllResult {
             .unwrap()
             .insert(run_id);
         state.process_pool.remove_by_pid(pid);
+        state.goose_acp_pool.remove_by_pid(pid);
         kill_pid(pid);
     }
-    // Also kill any idle processes in the pool
+    // Also kill any idle processes in both pools.
+    // Legacy: synchronous SIGKILL via child.kill().
+    // Goose: async SIGKILL via tauri-plugin-shell. We fire-and-forget on
+    // a detached task so stop_all_agents stays sync (matches the Tauri
+    // command surface). 0ms grace — this is the "nuke everything" path.
     state.process_pool.kill_all();
+    let goose_pool = state.goose_acp_pool.clone();
+    tauri::async_runtime::spawn(async move {
+        let _ = goose_pool.shutdown_all(0).await;
+    });
     StopAllResult {
         ok: true,
         stopped: count,
