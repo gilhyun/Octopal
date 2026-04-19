@@ -88,6 +88,9 @@ interface AppSettings {
     maxBackupsPerWorkspace: number
     maxAgeDays: number
   }
+  providers?: {
+    useLegacyClaudeCli: boolean
+  }
 }
 
 interface Window {
@@ -148,6 +151,7 @@ interface Window {
       model?: 'sonnet' | 'opus'
     }) => Promise<{ ok: true; output: string; usage?: import('./types').TokenUsage } | { ok: false; error: string }>
     onActivity: (cb: (data: { runId: string; text: string; folderPath?: string; agentName?: string }) => void) => () => void
+    onTextChunk: (cb: (data: { runId: string; delta: string; folderPath?: string; agentName?: string }) => void) => () => void
     onActivityLog: (
       cb: (data: {
         folderPath: string

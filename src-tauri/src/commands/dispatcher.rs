@@ -70,6 +70,33 @@ pub async fn dispatcher_route(
         }));
     }
 
+    // Dispatcher still runs on Claude Haiku — Goose-based routing lands in
+    // Stage 6b-ii (Phase 0 open question: Haiku dependency audit needs
+    // live measurement first). When the agent path is on Goose, short-
+    // circuit to "first available agent" so we don't spawn a Claude Haiku
+    // process just to route. Matches the legacy fallback on line ~290.
+    let legacy = state
+        .settings
+        .lock()
+        .ok()
+        .map(|s| s.providers.use_legacy_claude_cli)
+        .unwrap_or(true);
+    let dev_override = cfg!(debug_assertions)
+        && std::env::var("OCTOPAL_USE_GOOSE").as_deref() == Ok("1");
+    let use_goose = !legacy || dev_override;
+    if use_goose {
+        eprintln!(
+            "[dispatcher:gate] legacy={} dev_override={} → skip Haiku, leader={}",
+            legacy, dev_override, agent_names[0]
+        );
+        return Ok(serde_json::json!({
+            "ok": true,
+            "leader": agent_names[0],
+            "collaborators": [],
+            "model": null
+        }));
+    }
+
     // ── Build recent history summary (last 6 messages) ──
     let history_summary: String = recent_history
         .iter()

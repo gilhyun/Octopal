@@ -112,6 +112,33 @@ pub fn run() {
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(managed)
+        .on_window_event(|window, event| {
+            // Goose ACP pool: 200ms global grace on last-window close
+            // (ADR §6.7 / scope §3.2). SIGTERM → 4ms exit in probes, so the
+            // budget is pure defensive slack. Legacy process_pool is
+            // already cleaned up elsewhere via `stop_all_agents` / drop.
+            if let tauri::WindowEvent::CloseRequested { .. } = event {
+                let app_handle = window.app_handle();
+                // Only fire on the last window — multi-window instances
+                // shouldn't nuke pooled sidecars that other windows are
+                // still using.
+                let still_open = app_handle.webview_windows().len();
+                if still_open > 1 {
+                    return;
+                }
+                let Some(state) = app_handle.try_state::<ManagedState>() else {
+                    return;
+                };
+                let pool = state.goose_acp_pool.clone();
+                tauri::async_runtime::spawn(async move {
+                    let killed = pool.shutdown_all(200).await;
+                    eprintln!(
+                        "[goose_acp_pool] shutdown_all grace=200ms sigkilled={}",
+                        killed
+                    );
+                });
+            }
+        })
         .setup(|app| {
             // Allow asset protocol to access .octopal config directory only
             // (NOT the entire home directory — that triggers macOS permission popups)
@@ -218,6 +245,10 @@ pub fn run() {
             // Model probe (detects newest available Opus, e.g. 4.7)
             commands::model_probe::get_best_opus_model,
             commands::model_probe::reprobe_best_opus_model,
+            // Goose ACP sidecar (Phase 2+)
+            commands::goose_acp::check_goose_sidecar,
+            commands::goose_acp::acp_smoke_test,
+            commands::goose_acp::acp_turn_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

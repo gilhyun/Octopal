@@ -15,6 +15,7 @@ import {
   Wrench,
   Download,
   Check,
+  FlaskConical,
 } from 'lucide-react'
 
 type SettingsTab = 'general' | 'agents' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
@@ -654,6 +655,29 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                 style={{ width: 80 }}
               />
             </div>
+
+            {/* Runtime (Goose ACP vs legacy Claude CLI) */}
+            <h3 className="settings-section-title" style={{ marginTop: 24 }}>
+              <FlaskConical size={16} style={{ marginRight: 6, verticalAlign: 'text-bottom' }} />
+              {t('settings.advanced.runtimeTitle')}
+            </h3>
+            <p className="settings-section-desc">{t('settings.advanced.runtimeDesc')}</p>
+
+            <label className="settings-toggle">
+              <span className="settings-toggle-info">
+                <span className="settings-label">{t('settings.advanced.useLegacyCli')}</span>
+                <span className="settings-desc">{t('settings.advanced.useLegacyCliDesc')}</span>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.providers?.useLegacyClaudeCli !== false}
+                onChange={(e) =>
+                  update('providers', { useLegacyClaudeCli: e.target.checked })
+                }
+                aria-label="Toggle legacy Claude CLI runtime"
+              />
+              <span className="toggle-slider" />
+            </label>
 
           </div>
         )}

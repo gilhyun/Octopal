@@ -96,7 +96,11 @@
       "backupMaxCount": "프로젝트당 최대 스냅샷 수",
       "backupMaxCountDesc": "이 한도를 넘으면 오래된 스냅샷은 OS 휴지통으로 이동합니다.",
       "backupMaxAge": "최대 보관 기간 (일)",
-      "backupMaxAgeDesc": "이 기간을 넘은 스냅샷은 개수에 관계없이 정리됩니다."
+      "backupMaxAgeDesc": "이 기간을 넘은 스냅샷은 개수에 관계없이 정리됩니다.",
+      "runtimeTitle": "런타임",
+      "runtimeDesc": "에이전트를 실행할 백엔드를 고릅니다. Goose 2.0이 베타인 동안은 기존 Claude CLI가 기본값입니다.",
+      "useLegacyCli": "Claude CLI 사용 (v0.1.42 경로)",
+      "useLegacyCliDesc": "켜져 있으면 기존 Claude CLI로 에이전트를 실행합니다 (글로벌 `claude` 설치 필요). 끄면 번들된 Goose 2.0 사이드카를 사용합니다 — 베타. keyring 연동 전까지는 env의 ANTHROPIC_API_KEY가 필요합니다."
     },
     "about": {
       "title": "Octopal 정보",

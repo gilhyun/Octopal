@@ -19,6 +19,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { ensureGooseSidecar } from "./ensure-goose-sidecar.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..");
@@ -104,6 +105,15 @@ if (hasSigningKey) {
   console.log(
     "   (This is fine for local dev. CI/CD sets the key automatically.)\n"
   );
+}
+
+// Ensure bundled Goose sidecar is present before tauri build runs.
+// Host triple only — CI cross-compile jobs pass GOOSE_TARGET_TRIPLE env.
+try {
+  await ensureGooseSidecar();
+} catch (err) {
+  console.error(`❌ Failed to prepare Goose sidecar: ${err.message}`);
+  process.exit(1);
 }
 
 try {

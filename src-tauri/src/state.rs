@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::commands::backup::BackupTracker;
 use crate::commands::file_lock::FileLockManager;
+use crate::commands::goose_acp_pool::GooseAcpPool;
 use crate::commands::process_pool::ProcessPool;
 
 /// Persistent app state (workspaces, folders)
@@ -91,6 +92,8 @@ pub struct AppSettings {
     pub version_control: VersionControlSettings,
     #[serde(default)]
     pub backup: BackupSettings,
+    #[serde(default)]
+    pub providers: ProvidersSettings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +180,27 @@ impl Default for BackupSettings {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProvidersSettings {
+    /// v0.2.0-beta opt-in rollout: true = legacy Claude CLI path (v0.1.42
+    /// behavior), false = Goose ACP sidecar. Flips to default-false in
+    /// v0.2.0 stable; removed entirely in v0.3.0 cleanup PR.
+    #[serde(rename = "useLegacyClaudeCli", default = "default_use_legacy_claude_cli")]
+    pub use_legacy_claude_cli: bool,
+}
+
+fn default_use_legacy_claude_cli() -> bool {
+    true
+}
+
+impl Default for ProvidersSettings {
+    fn default() -> Self {
+        Self {
+            use_legacy_claude_cli: default_use_legacy_claude_cli(),
+        }
+    }
+}
+
 impl Default for AppSettings {
     fn default() -> Self {
         Self {
@@ -202,6 +226,7 @@ impl Default for AppSettings {
             },
             version_control: VersionControlSettings { auto_commit: true },
             backup: BackupSettings::default(),
+            providers: ProvidersSettings::default(),
         }
     }
 }
@@ -235,6 +260,11 @@ pub struct ManagedState {
     /// Persistent Claude CLI process pool — reuses long-running processes
     /// to avoid macOS TCC permission popups on every spawn.
     pub process_pool: Arc<ProcessPool>,
+    /// Persistent `goose acp` sidecar pool (Stage 6c). Parallel lane to
+    /// `process_pool` — whichever runtime spawned the child owns its
+    /// pool entry; `stop_agent` asks both pools to drop by PID, with the
+    /// non-owning side being a cheap no-op.
+    pub goose_acp_pool: Arc<GooseAcpPool>,
     /// Cached result of probing the Claude CLI for the newest Opus model
     /// available on this machine (e.g. `claude-opus-4-7`). Nested Option:
     ///   outer `None`      → probe hasn't finished yet
@@ -286,6 +316,7 @@ impl ManagedState {
             backup_tracker: Arc::new(BackupTracker::new()),
             file_lock_manager: Arc::new(FileLockManager::new()),
             process_pool: Arc::new(ProcessPool::new()),
+            goose_acp_pool: Arc::new(GooseAcpPool::new()),
             best_opus_model: Arc::new(Mutex::new(None)),
         }
     }

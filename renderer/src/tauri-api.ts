@@ -121,6 +121,13 @@ export function createTauriApi(): typeof window.api {
       )
       return () => unlisten?.()
     },
+    onTextChunk: (cb) => {
+      let unlisten: UnlistenFn | null = null
+      listen<{ runId: string; delta: string; folderPath?: string; agentName?: string }>('octo:textChunk', cb).then(
+        (u) => (unlisten = u),
+      )
+      return () => unlisten?.()
+    },
     onActivityLog: (cb) => {
       let unlisten: UnlistenFn | null = null
       listen('activity:log', cb).then((u) => (unlisten = u))
