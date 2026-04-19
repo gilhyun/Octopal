@@ -555,6 +555,23 @@ README gets a one-paragraph "Linux without keyring" subsection under Installatio
 ### 10.4 Model alias map hardcoded
 New Anthropic model (Opus 4.8 when it ships) requires an Octopal release to update the `opus` alias. Users can still pick it via "Custom model ID" (ADR §6.8a escape hatch). Accepted tradeoff.
 
+### 10.5 Claude Pro subscription users stranded on legacy path
+
+**Symptom:** a user with a paid Claude.ai Pro/Max subscription (local `claude` CLI installed + authenticated) but **no Anthropic API credits** can't use the Goose path in v0.2.0-beta. Flipping `use_legacy_claude_cli=false` pushes them to `run_agent_turn`, which hits the `anthropic` provider and needs an `ANTHROPIC_API_KEY`. No key → fast-fail with "Add one in Settings → Providers" — and they literally can't, because their subscription doesn't include API billing.
+
+**Workaround:** keep `use_legacy_claude_cli=true` (the default). Everything stays on the v0.1.42 claude CLI path, which uses their local subscription.
+
+**Why it surfaced only at PR time:** Phase 3+4 scope §1 deliberately dropped `cli_subscription` / `oauth` authMethods from the bundled manifest ("api_key path only"). We designed the schema as forward-compat but the UI has only api_key cards. The assumption was "users who flip the legacy toggle are API-credit users by definition" — turns out that's not safe. Plenty of Octopal early-adopters are Pro subscribers who'd happily try the Goose beta if it worked with their existing auth.
+
+**Research (2026-04-19) for the fix path:**
+- Goose v1.31.0 ships a **`claude-code` provider** (and a recommended-replacement `claude-acp` provider) that spawns the local `claude` CLI binary as subprocess. Verified end-to-end: `env -u ANTHROPIC_API_KEY GOOSE_PROVIDER=claude-code $GOOSE run -t "say READY"` returns `READY`, exit 0.
+- No API key required. No keyring entry required. Only `claude` on `PATH` + authenticated (~/.claude/ tokens).
+- `claude-code` is marked **deprecated** in Goose strings: *"use claude-acp instead. No MCP support."* Real fix should target `claude-acp` eventually (Phase 5c); Phase 5a uses `claude-code` for the fastest-to-ship path (works today with no extra npm install).
+
+**Fix: Stage Phase 5a (separate branch/PR, tracked at [docs/phase-5a-scope.md](./phase-5a-scope.md)).** Blocker-level priority for v0.2.0-beta wide rollout; v0.2.0-beta limited rollout (API-credit users only) can ship with Phase 3+4 alone.
+
+**PR policy:** Phase 3+4 PR description calls this out as a "known limitation" and steers Pro subscribers to keep the legacy toggle on. No auto-detection in Phase 3+4 — a Pro user who toggles legacy=off gets the clear error message pointing them at Settings → Providers, which would be a dead end, BUT the scoped beta users (API credit holders) don't hit this path.
+
 ---
 
 ## Decision point
