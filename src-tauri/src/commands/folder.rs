@@ -409,6 +409,16 @@ fn parse_agent_config(path: &Path) -> Option<OctoFile> {
         .get("permissions")
         .and_then(|v| serde_json::from_value(v.clone()).ok());
     let mcp_servers = octo.get("mcpServers").cloned();
+    // Phase 3: optional per-agent overrides. Legacy .octo files without
+    // these keys produce None; agents with them read through.
+    let provider = octo
+        .get("provider")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    let model = octo
+        .get("model")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
 
     Some(OctoFile {
         path: path.to_string_lossy().to_string(),
@@ -420,6 +430,8 @@ fn parse_agent_config(path: &Path) -> Option<OctoFile> {
         isolated,
         permissions,
         mcp_servers,
+        provider,
+        model,
     })
 }
 
