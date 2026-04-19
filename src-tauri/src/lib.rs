@@ -1,6 +1,12 @@
 mod commands;
 mod state;
 
+/// Public re-export for the `examples/keyring_smoke.rs` binary. Smoke
+/// tests are the only in-tree consumer outside the Tauri entry. Do not
+/// add more re-exports without a concrete external caller — widening
+/// the public surface makes future refactors harder.
+pub use commands::api_keys as keyring_smoke_api;
+
 use state::ManagedState;
 use tauri::Manager;
 
@@ -248,7 +254,18 @@ pub fn run() {
             // Goose ACP sidecar (Phase 2+)
             commands::goose_acp::check_goose_sidecar,
             commands::goose_acp::acp_smoke_test,
+            // DEBUG-ONLY: live pipeline test command. Not compiled into
+            // release builds (see goose_acp::acp_turn_test doc).
+            #[cfg(debug_assertions)]
             commands::goose_acp::acp_turn_test,
+            // Phase 4: API key management (keyring-backed).
+            // NOTE: NO load_api_key_cmd — keys only flow Rust-internal
+            // after save (ADR §D5, scope §3.2 Zero Trust for Renderer).
+            commands::api_keys::save_api_key_cmd,
+            commands::api_keys::delete_api_key_cmd,
+            commands::api_keys::has_api_key_cmd,
+            commands::api_keys::keyring_available_cmd,
+            commands::api_keys::keyring_status_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

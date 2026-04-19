@@ -153,6 +153,10 @@ claude login
 >
 > - **Windows**: _Windows protected your PC_ (SmartScreen) → Click **"More info"** → **"Run anyway"**.
 
+### Linux without a keyring daemon
+
+Octopal stores API keys in the OS keyring (macOS Keychain, Windows Credential Manager, Linux Secret Service). Most Linux desktops ship a Secret Service daemon (`gnome-keyring` / `kwallet`), but minimal WMs, headless setups, and docker containers often don't. See [docs/troubleshooting-linux-keyring.md](docs/troubleshooting-linux-keyring.md) for the install-a-daemon path and the documented env-var fallback (`OCTOPAL_API_KEY_FALLBACK=env`).
+
 ## Getting Started
 
 ```bash

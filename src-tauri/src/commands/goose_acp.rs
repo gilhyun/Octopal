@@ -887,8 +887,9 @@ async fn finalize(result: &mut AcpSmokeResult, client: AcpClient, start: Instant
     result.elapsed_ms = start.elapsed().as_millis() as u64;
 }
 
-// ── acp_turn_test (stage 5 live pipeline proof) ───────────────────────
+// ── acp_turn_test (stage 5 live pipeline proof, DEBUG-ONLY) ────────────
 
+#[cfg(debug_assertions)]
 #[derive(Serialize, Default)]
 pub struct AcpTurnTestResult {
     pub session_id: Option<String>,
@@ -904,31 +905,46 @@ pub struct AcpTurnTestResult {
     pub errors: Vec<String>,
 }
 
-/// Live end-to-end pipeline test: spawn → initialize → new_session →
-/// session/prompt → stream consume → shutdown. Requires a real
-/// `ANTHROPIC_API_KEY` env var (read at command invocation time, not
-/// persisted anywhere).
+/// **DEBUG-ONLY** test command. Gated behind `#[cfg(debug_assertions)]` —
+/// never reaches release builds. Production code path for key reads is
+/// `api_keys::load_api_key()` called from `run_agent_turn` (MISS branch).
+/// Removal tracked under Phase 7 cleanup (reactive-floating-feather.md
+/// §Phase 7 "Dead-code sweep").
 ///
-/// This is the stage-5 manual verification entry point — it exercises
-/// every piece stage 1-5 added:
-///   - sidecar resolution (stage 1)
-///   - JSON-RPC client (stage 2)
-///   - env isolation + mode lock (stage 3)
-///   - event mapper + mpsc channel (stage 4)
-///   - run_turn state machine (stage 5)
+/// Key resolution order in this command:
+///   1. `api_keys::load_api_key("anthropic")` — try keyring first
+///   2. fall back to `ANTHROPIC_API_KEY` env var
 ///
-/// Not intended for production — `agent.rs` will consume `run_turn`
-/// directly in stage 6 via the `use_legacy_claude_cli` flag branch.
+/// Live end-to-end pipeline: spawn → initialize → new_session →
+/// session/prompt → stream consume → shutdown. This is the stage-5
+/// manual verification entry point — it exercises sidecar resolution
+/// (stage 1), JSON-RPC client (stage 2), env isolation + mode lock
+/// (stage 3), event mapper + mpsc channel (stage 4), run_turn state
+/// machine (stage 5).
+///
+/// Not intended for production — `run_agent_turn` (Stage 6a+) is the
+/// real consumer, via the `use_legacy_claude_cli` flag branch.
+#[cfg(debug_assertions)]
 #[tauri::command]
 pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, String> {
     let start = Instant::now();
     let mut result = AcpTurnTestResult::default();
 
-    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+    // Try keyring first (preferred). In debug, fall back to env so local
+    // dev without Settings setup still works. Release builds don't have
+    // this command compiled in at all — see #[cfg(debug_assertions)].
+    let api_key = match crate::commands::api_keys::load_api_key("anthropic") {
+        Ok(Some(k)) => Some(k),
+        Ok(None) => std::env::var("ANTHROPIC_API_KEY").ok(),
+        Err(e) => {
+            eprintln!("[acp_turn_test] keyring read failed: {e}. Falling back to env.");
+            std::env::var("ANTHROPIC_API_KEY").ok()
+        }
+    };
     if api_key.is_none() {
         result
             .errors
-            .push("ANTHROPIC_API_KEY env var not set".into());
+            .push("No Anthropic key found (keyring empty, ANTHROPIC_API_KEY env unset)".into());
         result.elapsed_ms = start.elapsed().as_millis() as u64;
         return Ok(serde_json::to_value(result).unwrap());
     }
@@ -1128,18 +1144,30 @@ pub async fn run_agent_turn(
     state: &State<'_, ManagedState>,
     params: RunAgentTurnParams,
 ) -> Result<SendResult, String> {
-    // ── Resolve env (Stage 6a only — 6b replaces with keyring) ───────
-    let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-    if api_key.is_none() {
+    let provider = "anthropic".to_string();
+
+    // ── Configured-provider check (Phase 4, scope §4.1) ──────────────
+    // Reads the settings flag, NOT the keyring. This means opening the
+    // Settings tab or checking "is the user set up" never triggers a
+    // Keychain prompt. First actual spawn (MISS below) is where the
+    // keyring (and prompt, if "Always Allow" isn't set yet) happens.
+    let configured = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        settings
+            .providers
+            .configured_providers
+            .get(&provider)
+            .copied()
+            .unwrap_or(false)
+    };
+    if !configured {
         return Ok(SendResult {
             ok: false,
             output: None,
-            error: Some(
-                "ANTHROPIC_API_KEY env var not set. Stage 6a reads it \
-                 directly from env; set it before launching the app. \
-                 Stage 6b will read from OS keyring."
-                    .into(),
-            ),
+            error: Some(format!(
+                "No API key configured for provider \"{provider}\". \
+                 Add one in Settings → Providers."
+            )),
             usage: None,
         });
     }
@@ -1158,11 +1186,15 @@ pub async fn run_agent_turn(
         params.model.clone()
     };
 
-    let provider = "anthropic".to_string();
-    let cfg = GooseSpawnConfig {
+    // Phase 4 invariant (scope §4.1): keyring is read **only on MISS
+    // path**. HIT path reuses a pooled sidecar that already has the key
+    // in its env from when it was spawned. Building cfg with api_key =
+    // None here is intentional — the MISS branch below fills it before
+    // calling spawn_initialized.
+    let mut cfg = GooseSpawnConfig {
         provider: provider.clone(),
         model: model.clone(),
-        api_key,
+        api_key: None,
         ollama_host: None,
         xdg,
         permissions: params.permissions.clone(),
@@ -1204,7 +1236,23 @@ pub async fn run_agent_turn(
     // Drift (hash mismatch) is treated as a MISS plus explicit shutdown of
     // the stale entry. Dead entries (process already exited) are silently
     // discarded — the old PID is meaningless without its handle.
+    //
+    // Keyring read is deferred into the spawn branches (scope §4.1) so
+    // HIT path never touches the keyring. `fill_api_key` is the single
+    // function doing that read — search for it when auditing prompts.
     let pool = state.goose_acp_pool.clone();
+    let fill_api_key = |cfg: &mut GooseSpawnConfig| -> Result<(), String> {
+        let key = crate::commands::api_keys::load_api_key(&cfg.provider)?
+            .ok_or_else(|| {
+                format!(
+                    "No API key configured for provider \"{}\". \
+                     Add one in Settings → Providers.",
+                    cfg.provider
+                )
+            })?;
+        cfg.api_key = Some(key);
+        Ok(())
+    };
     let client = match pool.take(&pool_key) {
         Some(entry) if entry.config_hash == expected_hash => {
             eprintln!("[goose_acp_pool] HIT key={}", pool_key);
@@ -1222,10 +1270,12 @@ pub async fn run_agent_turn(
             stale.client.shutdown().await;
             eprintln!("[goose_acp_pool] evict pid={} key={}", old_pid, pool_key);
             eprintln!("[goose_acp_pool] spawn key={} (after drift)", pool_key);
+            fill_api_key(&mut cfg)?;
             spawn_initialized(app, &cfg).await?
         }
         None => {
             eprintln!("[goose_acp_pool] MISS key={} → spawn", pool_key);
+            fill_api_key(&mut cfg)?;
             spawn_initialized(app, &cfg).await?
         }
     };
