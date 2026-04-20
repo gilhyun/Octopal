@@ -97,12 +97,26 @@ interface AppSettings {
     /** Phase 3: planner model for dispatcher. Schema-only until 6b-ii. */
     plannerModel?: string
     /**
-     * Phase 3: per-provider "is configured" flag. Mirrors keyring state
-     * without doing a keyring read per Settings open. Only the bool is
-     * transported via IPC — never the actual key.
+     * Phase 5a: per-provider auth mode. `api_key` (Phase 4 keyring path),
+     * `cli_subscription` (Phase 5a Claude CLI subprocess), or `none`.
+     *
+     * Legacy bool shape (`true|false`) from Phase 3+4 still deserializes
+     * on Rust side (true → api_key, false → none). Renderer should
+     * always write the enum form going forward.
      */
-    configuredProviders?: Record<string, boolean>
+    configuredProviders?: Record<string, AuthMode>
   }
+}
+
+/** Matches `crate::state::AuthMode` in Rust. */
+type AuthMode = 'none' | 'api_key' | 'cli_subscription'
+
+/** Matches `ClaudeDetection` from `commands::cli_subscription`. */
+interface ClaudeDetection {
+  found: boolean
+  path: string | null
+  version: string | null
+  error: string | null
 }
 
 interface ProviderAuthMethod {
@@ -345,6 +359,16 @@ interface Window {
     testProviderConnection?: (provider: string) => Promise<TestConnectionResult>
     /** Phase 3 manifest (bundled + optional overlay). Cached on Rust side. */
     getProvidersManifest?: () => Promise<ProvidersManifest>
+
+    // Phase 5a — Claude CLI subscription path.
+    /** Probes PATH for `claude` + runs `claude --version`. Zero tokens. */
+    detectClaude?: () => Promise<ClaudeDetection>
+    /** Write auth mode for a provider. Invalidates the pool on change. */
+    setAuthMode?: (provider: string, mode: AuthMode) => Promise<void>
+    /** Demote provider auth mode to `none`. Does not touch the keyring. */
+    clearAuthMode?: (provider: string) => Promise<void>
+    /** Read current auth mode for a provider (`none` if no entry). */
+    getAuthMode?: (provider: string) => Promise<AuthMode>
 
     // Model probe — detects which explicit Opus version (e.g. claude-opus-4-7)
     // is available to the user's Claude CLI. Returns null until the startup

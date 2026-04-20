@@ -246,6 +246,15 @@ export function createTauriApi(): typeof window.api {
       invoke('test_provider_connection', { provider }),
     getProvidersManifest: () => invoke('get_providers_manifest'),
 
+    // ── Phase 5a — Claude CLI subscription ──
+    detectClaude: () => invoke('detect_claude'),
+    setAuthMode: (provider, mode) =>
+      invoke('set_auth_mode_cmd', { provider, mode }),
+    clearAuthMode: (provider) =>
+      invoke('clear_auth_mode_cmd', { provider }),
+    getAuthMode: (provider) =>
+      invoke('get_auth_mode_cmd', { provider }),
+
     // ── Model probe ──
     getBestOpusModel: () => invoke('get_best_opus_model'),
     reprobeBestOpusModel: () => invoke('reprobe_best_opus_model'),

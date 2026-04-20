@@ -1151,30 +1151,46 @@ pub async fn run_agent_turn(
     // Settings tab or checking "is the user set up" never triggers a
     // Keychain prompt. First actual spawn (MISS below) is where the
     // keyring (and prompt, if "Always Allow" isn't set yet) happens.
-    // Commit A keeps Phase 3+4 semantics: only `AuthMode::ApiKey` is
-    // routable here. `CliSubscription` migrates over in Commit C, which
-    // also adds pool-key discrimination so the switch doesn't reuse a
-    // sidecar that was spawned with a different auth mechanism.
-    let configured = {
+    // Phase 5a Commits A/B: read the enum but only route `ApiKey`.
+    // `CliSubscription` flips the UI in Commit B but its end-to-end
+    // routing (GOOSE_PROVIDER=claude-code + PATH inheritance + pool
+    // key discrimination) lands in Commit C. Anything else here would
+    // spawn a sidecar with the wrong env and stall the first turn.
+    let auth_mode = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         settings
             .providers
             .configured_providers
             .get(&provider)
             .copied()
-            .map(|mode| mode == crate::state::AuthMode::ApiKey)
-            .unwrap_or(false)
+            .unwrap_or(crate::state::AuthMode::None)
     };
-    if !configured {
-        return Ok(SendResult {
-            ok: false,
-            output: None,
-            error: Some(format!(
-                "No API key configured for provider \"{provider}\". \
-                 Add one in Settings → Providers."
-            )),
-            usage: None,
-        });
+    match auth_mode {
+        crate::state::AuthMode::ApiKey => { /* fall through to spawn */ }
+        crate::state::AuthMode::CliSubscription => {
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some(format!(
+                    "Claude CLI subscription selected for \"{provider}\" but Goose routing \
+                     for this mode is not wired in this build. This state is intentional \
+                     between Phase 5a Commit B (UI) and Commit C (routing). \
+                     Temporarily switch to API key mode in Settings → Providers to send."
+                )),
+                usage: None,
+            });
+        }
+        crate::state::AuthMode::None => {
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some(format!(
+                    "No authentication configured for provider \"{provider}\". \
+                     Add one in Settings → Providers."
+                )),
+                usage: None,
+            });
+        }
     }
 
     // XDG roots under ~/.octopal/ — matches plan §9 "Goose data" paths.

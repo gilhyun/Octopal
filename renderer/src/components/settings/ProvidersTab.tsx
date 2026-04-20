@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, Info, KeyRound, Loader2 } from 'lucide-react'
 import { ProviderCard } from './ProviderCard'
+import { AnthropicProviderCard } from './AnthropicProviderCard'
 
 /**
  * Settings → Providers tab (Phase 4, scope §3.4).
@@ -35,10 +36,14 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
   const [status, setStatus] = useState<KeyringStatus | null>(null)
   const [loading, setLoading] = useState(true)
 
-  // Local configured_providers mirror — source of truth is the settings
-  // flag returned by hasApiKey(). We don't trust `providers.configuredProviders`
+  // Local hasKey mirror — source of truth is the settings flag returned
+  // by hasApiKey(). We don't trust `providers.configuredProviders`
   // directly because it could be stale after an out-of-band keyring change.
-  const [configured, setConfigured] = useState<Record<string, boolean>>({})
+  const [hasKey, setHasKey] = useState<Record<string, boolean>>({})
+  // Phase 5a: the full enum mode per provider. Driving the Anthropic
+  // card's 4-state flow requires distinguishing api_key vs
+  // cli_subscription vs none — the bool above can't.
+  const [authModes, setAuthModes] = useState<Record<string, AuthMode>>({})
 
   useEffect(() => {
     let cancelled = false
@@ -52,16 +57,22 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
         setManifest(m)
         setStatus(s)
         if (m) {
-          // Probe each provider in parallel — hasApiKey just reads a
-          // settings flag (cheap, no Keychain prompt per scope §3.2).
+          // Probe each provider in parallel — both reads are
+          // settings-only on the Rust side (no keyring round-trip per
+          // scope §3.2). One yields bool (has a key in keyring), the
+          // other the full AuthMode (which the anthropic card needs).
           const entries = await Promise.all(
             Object.keys(m).map(async (pid) => {
-              const has = (await window.api.hasApiKey?.(pid)) ?? false
-              return [pid, has] as const
+              const [has, mode] = await Promise.all([
+                window.api.hasApiKey?.(pid) ?? Promise.resolve(false),
+                window.api.getAuthMode?.(pid) ?? Promise.resolve<AuthMode>('none'),
+              ])
+              return [pid, has, mode] as const
             }),
           )
           if (cancelled) return
-          setConfigured(Object.fromEntries(entries))
+          setHasKey(Object.fromEntries(entries.map(([pid, has]) => [pid, has])))
+          setAuthModes(Object.fromEntries(entries.map(([pid, , mode]) => [pid, mode])))
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -74,16 +85,21 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
 
   const refreshConfigured = useCallback(
     async (provider: string) => {
-      const has = (await window.api.hasApiKey?.(provider)) ?? false
-      setConfigured((prev) => ({ ...prev, [provider]: has }))
+      const [has, mode] = await Promise.all([
+        window.api.hasApiKey?.(provider) ?? Promise.resolve(false),
+        window.api.getAuthMode?.(provider) ?? Promise.resolve<AuthMode>('none'),
+      ])
+      setHasKey((prev) => ({ ...prev, [provider]: has }))
+      setAuthModes((prev) => ({ ...prev, [provider]: mode }))
       // Also mirror into the parent's providers.configuredProviders so
-      // the AppSettings save cycle carries the truthful flag. (The Rust
-      // save_api_key_cmd already flipped the persisted flag; this keeps
-      // the form's local state in sync.)
+      // the AppSettings save cycle carries the truthful mode. The Rust
+      // command already persisted the flip; this keeps the form's local
+      // state in sync so a subsequent save doesn't overwrite with stale
+      // values.
       onChange({
         configuredProviders: {
           ...(providers.configuredProviders ?? {}),
-          [provider]: has,
+          [provider]: mode,
         },
       })
     },
@@ -234,13 +250,29 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
           const primaryAuth = entry.authMethods[0]
           if (!primaryAuth) return null
           const envVarName = `OCTOPAL_KEY_${pid.toUpperCase()}`
+          // Anthropic routes to the 4-state Phase 5a card (scope §5.1).
+          // Other providers keep the simple Phase 4 card — they only
+          // have one auth path in Goose v1.31.0 (scope §3.1).
+          if (pid === 'anthropic') {
+            return (
+              <AnthropicProviderCard
+                key={pid}
+                displayName={entry.displayName}
+                hasKey={hasKey[pid] ?? false}
+                authMode={authModes[pid] ?? 'none'}
+                envFallback={status?.backend === 'env_fallback'}
+                envVarName={envVarName}
+                onChanged={() => refreshConfigured(pid)}
+              />
+            )
+          }
           const isHostOnly = primaryAuth.id === 'host_only'
           return (
             <ProviderCard
               key={pid}
               providerId={pid}
               displayName={entry.displayName}
-              hasKey={configured[pid] ?? false}
+              hasKey={hasKey[pid] ?? false}
               envFallback={status?.backend === 'env_fallback'}
               envVarName={envVarName}
               keyLabel={

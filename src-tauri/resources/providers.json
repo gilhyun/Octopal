@@ -9,7 +9,8 @@
       "claude-sonnet-4-5-20250929"
     ],
     "authMethods": [
-      { "id": "api_key", "label": "API Key", "goose_provider": "anthropic" }
+      { "id": "api_key", "label": "API Key", "goose_provider": "anthropic" },
+      { "id": "cli_subscription", "label": "Claude CLI subscription", "goose_provider": "claude-code", "detectBinary": "claude" }
     ]
   },
   "openai": {

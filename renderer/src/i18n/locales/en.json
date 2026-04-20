@@ -134,6 +134,20 @@
       "statusUnavailable": "OS keyring unavailable. Install a Secret Service daemon, or set OCTOPAL_API_KEY_FALLBACK=env (see docs/troubleshooting-linux-keyring.md).",
       "fallbackHint": "Set {{envVar}} in the environment that launches Octopal.",
       "manifestUnavailable": "Provider manifest couldn't be loaded. Restart the app or check logs.",
+      "activeCli": "Claude CLI",
+      "modeApiKey": "API key",
+      "modeCliSubscription": "Claude CLI subscription",
+      "cliDetecting": "Checking for Claude CLI…",
+      "cliSubscriptionTitle": "Claude Pro/Max subscription",
+      "cliReady": "Your Claude CLI is installed. Octopal can route through it instead of an API key.",
+      "cliReadyWithVersion": "Claude CLI {{version}} detected. Octopal can route through it instead of an API key.",
+      "cliAmbiguous": "We found `claude` at {{path}} but couldn't verify it's authenticated. Run `claude` in a terminal to sign in, then retry.",
+      "activateCli": "Activate Claude CLI subscription",
+      "neitherHint": "No Anthropic credentials configured. Paste an API key above, or",
+      "cliInstallLink": "install the Claude CLI",
+      "cliTestOk": "Claude CLI responds. You should be able to send messages now.",
+      "cliTestAmbiguous": "Found `claude` at {{path}} but probe failed: {{error}}",
+      "cliTestMissing": "`claude` is no longer on PATH. Reinstall the Claude CLI.",
       "errors": {
         "emptyKey": "Key cannot be empty."
       }

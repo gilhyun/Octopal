@@ -268,6 +268,11 @@ pub fn run() {
             commands::api_keys::keyring_status_cmd,
             commands::api_keys::test_provider_connection,
             commands::providers_manifest::get_providers_manifest,
+            // Phase 5a: CLI subscription path (claude-code provider).
+            commands::cli_subscription::detect_claude,
+            commands::cli_subscription::set_auth_mode_cmd,
+            commands::cli_subscription::clear_auth_mode_cmd,
+            commands::cli_subscription::get_auth_mode_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
