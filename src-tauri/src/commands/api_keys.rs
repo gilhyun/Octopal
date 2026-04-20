@@ -46,7 +46,7 @@
 
 use tauri::State;
 
-use crate::state::ManagedState;
+use crate::state::{AuthMode, ManagedState};
 
 const SERVICE: &str = "com.octopal.api_keys";
 const FALLBACK_ENV_VAR: &str = "OCTOPAL_API_KEY_FALLBACK";
@@ -145,7 +145,7 @@ pub async fn save_api_key_cmd(
         settings
             .providers
             .configured_providers
-            .insert(provider.clone(), true);
+            .insert(provider.clone(), AuthMode::ApiKey);
     }
     state.save_settings()?;
 
@@ -180,7 +180,7 @@ pub async fn delete_api_key_cmd(
         settings
             .providers
             .configured_providers
-            .insert(provider.clone(), false);
+            .insert(provider.clone(), AuthMode::None);
     }
     state.save_settings()?;
 
@@ -212,11 +212,16 @@ pub fn has_api_key_cmd(
     }
 
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
+    // `has_api_key` semantics for renderer: true iff the ApiKey path is
+    // wired. `CliSubscription` is a separate flow with its own renderer
+    // state; surfacing it as "hasApiKey" would mis-render the Phase 4
+    // card. Commit B adds a dedicated `authModeFor(provider)` query.
     Ok(settings
         .providers
         .configured_providers
         .get(&provider)
         .copied()
+        .map(|mode| mode == AuthMode::ApiKey)
         .unwrap_or(false))
 }
 

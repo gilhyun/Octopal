@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -193,6 +194,70 @@ impl Default for BackupSettings {
     }
 }
 
+/// Auth mechanism configured for a provider.
+///
+/// Phase 5a replaces the Phase 3+4 `bool` flag with this enum so the
+/// Anthropic card can represent the Pro/Max subscription path. Prior
+/// shape (`"anthropic": true|false`) still deserializes — `true` →
+/// `ApiKey`, `false` → `None`. See scope §4.1 + §4.2.
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthMode {
+    None,
+    ApiKey,
+    CliSubscription,
+}
+
+impl AuthMode {
+    /// Any auth mode except `None` counts as configured. Phase 3+4
+    /// callers that branched on `bool` now branch on this — semantics
+    /// stay identical for legacy data (true → ApiKey → true).
+    pub fn is_configured(self) -> bool {
+        !matches!(self, AuthMode::None)
+    }
+}
+
+impl Default for AuthMode {
+    fn default() -> Self {
+        AuthMode::None
+    }
+}
+
+/// Custom deserializer so existing on-disk `settings.json` files from
+/// Phase 3+4 (bool shape) still load. No migration pass, no settings
+/// version bump — the normalization happens on every load. Users who
+/// re-save settings get the enum shape written back; users who never
+/// touch settings keep the bool shape in-file with identical behavior.
+impl<'de> Deserialize<'de> for AuthMode {
+    fn deserialize<D>(d: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct V;
+        impl<'de> serde::de::Visitor<'de> for V {
+            type Value = AuthMode;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("bool or one of \"none\" | \"api_key\" | \"cli_subscription\"")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<AuthMode, E> {
+                Ok(if v { AuthMode::ApiKey } else { AuthMode::None })
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<AuthMode, E> {
+                match v {
+                    "none" => Ok(AuthMode::None),
+                    "api_key" => Ok(AuthMode::ApiKey),
+                    "cli_subscription" => Ok(AuthMode::CliSubscription),
+                    other => Err(E::custom(format!("unknown AuthMode: {other}"))),
+                }
+            }
+            fn visit_string<E: serde::de::Error>(self, v: String) -> Result<AuthMode, E> {
+                self.visit_str(&v)
+            }
+        }
+        d.deserialize_any(V)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersSettings {
     /// v0.2.0-beta opt-in rollout: true = legacy Claude CLI path (v0.1.42
@@ -224,17 +289,18 @@ pub struct ProvidersSettings {
     #[serde(rename = "plannerModel", default = "default_planner_model")]
     pub planner_model: String,
 
-    /// Phase 3: Per-provider presence flag. **NOT the key itself** — the
-    /// actual key is in OS keyring under service=`com.octopal.api_keys`,
-    /// account=`<provider>`. This flag is `true` iff `save_api_key(provider)`
-    /// has been called and not later deleted (Phase 4). The UI checks this
-    /// to render card empty/filled state without a keyring round-trip
+    /// Per-provider auth mode. **NOT the key itself** — the actual key
+    /// (when applicable) is in OS keyring under service=`com.octopal.api_keys`,
+    /// account=`<provider>`. This flag indicates how the provider
+    /// authenticates: `ApiKey` (keyring-backed, Phase 4), `CliSubscription`
+    /// (Claude Pro/Max via local `claude` binary, Phase 5a), or `None`.
+    /// UI checks this to render card state without a keyring round-trip
     /// (which would trigger macOS Keychain prompts on every Settings open).
     ///
-    /// Phase 3 ships this field unused-for-now; Phase 4 wires the flip on
-    /// `save_api_key_cmd` / `delete_api_key_cmd`.
+    /// Accepts legacy bool shape (Phase 3+4 `true|false`) via
+    /// `AuthMode`'s custom Deserialize — true → `ApiKey`, false → `None`.
     #[serde(rename = "configuredProviders", default)]
-    pub configured_providers: std::collections::BTreeMap<String, bool>,
+    pub configured_providers: std::collections::BTreeMap<String, AuthMode>,
 }
 
 fn default_use_legacy_claude_cli() -> bool {
@@ -536,8 +602,8 @@ mod migration_tests {
     #[test]
     fn providers_settings_roundtrips_with_configured_map() {
         let mut cfg = std::collections::BTreeMap::new();
-        cfg.insert("anthropic".to_string(), true);
-        cfg.insert("openai".to_string(), false);
+        cfg.insert("anthropic".to_string(), AuthMode::ApiKey);
+        cfg.insert("openai".to_string(), AuthMode::None);
         let original = ProvidersSettings {
             use_legacy_claude_cli: false,
             default_provider: "anthropic".into(),
@@ -548,7 +614,156 @@ mod migration_tests {
         let s = serde_json::to_string(&original).unwrap();
         let back: ProvidersSettings = serde_json::from_str(&s).unwrap();
         assert_eq!(back.default_model, "claude-opus-4-7");
-        assert_eq!(back.configured_providers.get("anthropic"), Some(&true));
-        assert_eq!(back.configured_providers.get("openai"), Some(&false));
+        assert_eq!(
+            back.configured_providers.get("anthropic"),
+            Some(&AuthMode::ApiKey)
+        );
+        assert_eq!(
+            back.configured_providers.get("openai"),
+            Some(&AuthMode::None)
+        );
+    }
+
+    // ── Phase 5a AuthMode migration (scope §4.2) ──────────────────────
+    //
+    // On-disk settings.json from Phase 3+4 has the bool shape. Phase 5a
+    // must read both shapes and normalize to `AuthMode`. Users who never
+    // re-save settings after upgrading will keep the bool shape in-file
+    // with identical behavior (true → ApiKey, false → None).
+
+    #[test]
+    fn auth_mode_reads_legacy_bool_true_as_api_key() {
+        let json = r#"{"anthropic": true}"#;
+        let m: std::collections::BTreeMap<String, AuthMode> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(m.get("anthropic"), Some(&AuthMode::ApiKey));
+    }
+
+    #[test]
+    fn auth_mode_reads_legacy_bool_false_as_none() {
+        let json = r#"{"openai": false}"#;
+        let m: std::collections::BTreeMap<String, AuthMode> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(m.get("openai"), Some(&AuthMode::None));
+    }
+
+    #[test]
+    fn auth_mode_reads_snake_case_variants() {
+        let json = r#"{
+            "a": "none",
+            "b": "api_key",
+            "c": "cli_subscription"
+        }"#;
+        let m: std::collections::BTreeMap<String, AuthMode> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(m.get("a"), Some(&AuthMode::None));
+        assert_eq!(m.get("b"), Some(&AuthMode::ApiKey));
+        assert_eq!(m.get("c"), Some(&AuthMode::CliSubscription));
+    }
+
+    #[test]
+    fn auth_mode_roundtrip_writes_snake_case() {
+        // Post-migration on-disk shape: snake_case strings. If a user
+        // upgrades to 5a and re-saves settings, the bool flips to the
+        // enum string form. Must roundtrip losslessly.
+        let mut cfg = std::collections::BTreeMap::new();
+        cfg.insert("anthropic".to_string(), AuthMode::CliSubscription);
+        cfg.insert("openai".to_string(), AuthMode::ApiKey);
+        cfg.insert("google".to_string(), AuthMode::None);
+
+        let s = serde_json::to_string(&cfg).unwrap();
+        assert!(s.contains("\"cli_subscription\""), "got: {s}");
+        assert!(s.contains("\"api_key\""));
+        assert!(s.contains("\"none\""));
+
+        let back: std::collections::BTreeMap<String, AuthMode> =
+            serde_json::from_str(&s).unwrap();
+        assert_eq!(back, cfg);
+    }
+
+    #[test]
+    fn auth_mode_missing_key_defaults_to_empty_map() {
+        // providers block present but configuredProviders absent — should
+        // round-trip as empty map via #[serde(default)] on the field.
+        let json = r#"{
+            "general": {"restoreLastWorkspace": true, "launchAtLogin": false, "language": "en"},
+            "agents": {"defaultPermissions": {"fileWrite": false, "bash": false, "network": false}},
+            "appearance": {"chatFontSize": 14},
+            "shortcuts": {"textExpansions": []},
+            "advanced": {"defaultAgentModel": "opus", "autoModelSelection": false},
+            "versionControl": {"autoCommit": true},
+            "providers": {"useLegacyClaudeCli": false}
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert!(s.providers.configured_providers.is_empty());
+    }
+
+    #[test]
+    fn auth_mode_mixed_bool_and_enum_normalizes() {
+        // Real migration edge case: user hand-edited settings.json or
+        // hit a partial write where some keys are bool and some are
+        // already enum strings. All entries should land as AuthMode.
+        let json = r#"{
+            "anthropic": true,
+            "openai": "api_key",
+            "google": false,
+            "ollama": "cli_subscription"
+        }"#;
+        let m: std::collections::BTreeMap<String, AuthMode> =
+            serde_json::from_str(json).unwrap();
+        assert_eq!(m.get("anthropic"), Some(&AuthMode::ApiKey));
+        assert_eq!(m.get("openai"), Some(&AuthMode::ApiKey));
+        assert_eq!(m.get("google"), Some(&AuthMode::None));
+        assert_eq!(m.get("ollama"), Some(&AuthMode::CliSubscription));
+    }
+
+    #[test]
+    fn auth_mode_unknown_string_errors() {
+        let json = r#"{"anthropic": "oauth"}"#;
+        let err = serde_json::from_str::<std::collections::BTreeMap<String, AuthMode>>(json)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown AuthMode"), "got: {err}");
+    }
+
+    #[test]
+    fn auth_mode_is_configured_matches_legacy_bool_semantics() {
+        // Behavior parity check: the Phase 3+4 bool semantics were
+        // "configured iff true". After migration, is_configured() must
+        // match for all legacy inputs.
+        assert!(!AuthMode::None.is_configured());
+        assert!(AuthMode::ApiKey.is_configured());
+        assert!(AuthMode::CliSubscription.is_configured());
+    }
+
+    #[test]
+    fn full_settings_with_legacy_bool_configured_providers_loads() {
+        // End-to-end: a real Phase 3+4 settings.json (bool shape) loaded
+        // through AppSettings deserialization yields AuthMode-normalized
+        // state. This is the migration-gate test §4.2 calls out.
+        let json = r#"{
+            "general": {"restoreLastWorkspace": true, "launchAtLogin": false, "language": "en"},
+            "agents": {"defaultPermissions": {"fileWrite": false, "bash": false, "network": false}},
+            "appearance": {"chatFontSize": 14},
+            "shortcuts": {"textExpansions": []},
+            "advanced": {"defaultAgentModel": "opus", "autoModelSelection": false},
+            "versionControl": {"autoCommit": true},
+            "providers": {
+                "useLegacyClaudeCli": false,
+                "defaultProvider": "anthropic",
+                "defaultModel": "claude-sonnet-4-6",
+                "plannerModel": "claude-haiku-4-5-20251001",
+                "configuredProviders": {"anthropic": true, "openai": false}
+            }
+        }"#;
+        let s: AppSettings = serde_json::from_str(json).unwrap();
+        assert_eq!(
+            s.providers.configured_providers.get("anthropic"),
+            Some(&AuthMode::ApiKey)
+        );
+        assert_eq!(
+            s.providers.configured_providers.get("openai"),
+            Some(&AuthMode::None)
+        );
     }
 }

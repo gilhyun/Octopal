@@ -1151,6 +1151,10 @@ pub async fn run_agent_turn(
     // Settings tab or checking "is the user set up" never triggers a
     // Keychain prompt. First actual spawn (MISS below) is where the
     // keyring (and prompt, if "Always Allow" isn't set yet) happens.
+    // Commit A keeps Phase 3+4 semantics: only `AuthMode::ApiKey` is
+    // routable here. `CliSubscription` migrates over in Commit C, which
+    // also adds pool-key discrimination so the switch doesn't reuse a
+    // sidecar that was spawned with a different auth mechanism.
     let configured = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         settings
@@ -1158,6 +1162,7 @@ pub async fn run_agent_turn(
             .configured_providers
             .get(&provider)
             .copied()
+            .map(|mode| mode == crate::state::AuthMode::ApiKey)
             .unwrap_or(false)
     };
     if !configured {
