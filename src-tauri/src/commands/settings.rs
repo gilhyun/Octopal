@@ -30,19 +30,25 @@ pub async fn save_settings(
     // Scope §4.4: keyring rotation (save_api_key_cmd / delete_api_key_cmd)
     // lands here via `settings.providers.configured_providers[provider]`
     // flip; this diff is what catches it.
-    let prev_configured = state
-        .settings
-        .lock()
-        .map_err(|e| e.to_string())?
-        .providers
-        .configured_providers
-        .clone();
+    let (prev_configured, prev_api_key_stored) = {
+        let s = state.settings.lock().map_err(|e| e.to_string())?;
+        (
+            s.providers.configured_providers.clone(),
+            s.providers.api_key_stored.clone(),
+        )
+    };
 
     let next_configured = settings.providers.configured_providers.clone();
 
     {
         let mut s = state.settings.lock().map_err(|e| e.to_string())?;
         *s = settings;
+        // Phase 5a: `api_key_stored` is Rust-internal state maintained
+        // by `save_api_key_cmd` / `delete_api_key_cmd`. The renderer's
+        // AppSettings type doesn't know about it; a naive `*s = settings`
+        // would drop the field to empty every time the user saves any
+        // other setting. Preserve it explicitly.
+        s.providers.api_key_stored = prev_api_key_stored;
     }
     state.save_settings()?;
 

@@ -289,18 +289,49 @@ pub struct ProvidersSettings {
     #[serde(rename = "plannerModel", default = "default_planner_model")]
     pub planner_model: String,
 
-    /// Per-provider auth mode. **NOT the key itself** — the actual key
-    /// (when applicable) is in OS keyring under service=`com.octopal.api_keys`,
-    /// account=`<provider>`. This flag indicates how the provider
-    /// authenticates: `ApiKey` (keyring-backed, Phase 4), `CliSubscription`
-    /// (Claude Pro/Max via local `claude` binary, Phase 5a), or `None`.
-    /// UI checks this to render card state without a keyring round-trip
-    /// (which would trigger macOS Keychain prompts on every Settings open).
+    /// Per-provider active auth mode. Separate from `api_key_stored`
+    /// below: a user can have a stored API key AND active
+    /// `CliSubscription` mode simultaneously. Flipping the mode never
+    /// touches the keyring, so the stored key is always recoverable by
+    /// flipping back.
     ///
     /// Accepts legacy bool shape (Phase 3+4 `true|false`) via
     /// `AuthMode`'s custom Deserialize — true → `ApiKey`, false → `None`.
     #[serde(rename = "configuredProviders", default)]
     pub configured_providers: std::collections::BTreeMap<String, AuthMode>,
+
+    /// Per-provider "key is present in OS keyring" mirror. Maintained
+    /// by `save_api_key_cmd` / `delete_api_key_cmd` only; intentionally
+    /// *not* touched by `set_auth_mode_cmd`. This is what drives the
+    /// UI's "show the API-key radio even when CLI subscription is the
+    /// active mode" behavior — without this separation, flipping to
+    /// `CliSubscription` would hide the saved key from the Settings
+    /// tab and trap users in cli-only mode (scope §5a bugfix 2026-04-21).
+    ///
+    /// Absence of an entry means "no key stored" — same semantics as
+    /// `false`. Migration from Phase 3+4 settings.json is handled by
+    /// `ProvidersSettings::normalize_after_load()` at startup: any
+    /// legacy `configured_providers[p] == ApiKey` backfills
+    /// `api_key_stored[p] = true`. Direct CliSubscription-only setups
+    /// (no keyring entry ever written) stay absent as expected.
+    #[serde(rename = "apiKeyStored", default)]
+    pub api_key_stored: std::collections::BTreeMap<String, bool>,
+}
+
+impl ProvidersSettings {
+    /// Backfill `api_key_stored` from `configured_providers` for
+    /// entries loaded from a pre-Phase-5a settings.json. Idempotent:
+    /// safe to call every load. Only *adds* missing entries — never
+    /// clears or overwrites, so a user who saved a key in ApiKey mode
+    /// then flipped to CliSubscription keeps their `api_key_stored`
+    /// bit after restart.
+    pub fn normalize_after_load(&mut self) {
+        for (provider, mode) in &self.configured_providers {
+            if *mode == AuthMode::ApiKey && !self.api_key_stored.contains_key(provider) {
+                self.api_key_stored.insert(provider.clone(), true);
+            }
+        }
+    }
 }
 
 fn default_use_legacy_claude_cli() -> bool {
@@ -327,6 +358,7 @@ impl Default for ProvidersSettings {
             default_model: default_default_model(),
             planner_model: default_planner_model(),
             configured_providers: std::collections::BTreeMap::new(),
+            api_key_stored: std::collections::BTreeMap::new(),
         }
     }
 }
@@ -432,7 +464,7 @@ impl ManagedState {
         };
 
         let settings_file = state_dir.join("settings.json");
-        let settings = if settings_file.exists() {
+        let mut settings: AppSettings = if settings_file.exists() {
             fs::read_to_string(&settings_file)
                 .ok()
                 .and_then(|s| serde_json::from_str(&s).ok())
@@ -440,6 +472,12 @@ impl ManagedState {
         } else {
             AppSettings::default()
         };
+        // Phase 5a migration: ensure `api_key_stored` tracks keyring
+        // presence independently of the active auth mode. Loaded
+        // Phase 3+4 settings have no such field; derive it from the
+        // legacy configured_providers so `has_api_key_cmd` keeps
+        // reporting correctly after a flip to CliSubscription.
+        settings.providers.normalize_after_load();
 
         // Phase 3: load bundled providers.json + optional overlay. Parse
         // failure on the bundle is a programmer error (compile-time
@@ -604,12 +642,15 @@ mod migration_tests {
         let mut cfg = std::collections::BTreeMap::new();
         cfg.insert("anthropic".to_string(), AuthMode::ApiKey);
         cfg.insert("openai".to_string(), AuthMode::None);
+        let mut stored = std::collections::BTreeMap::new();
+        stored.insert("anthropic".to_string(), true);
         let original = ProvidersSettings {
             use_legacy_claude_cli: false,
             default_provider: "anthropic".into(),
             default_model: "claude-opus-4-7".into(),
             planner_model: "claude-haiku-4-5-20251001".into(),
             configured_providers: cfg,
+            api_key_stored: stored,
         };
         let s = serde_json::to_string(&original).unwrap();
         let back: ProvidersSettings = serde_json::from_str(&s).unwrap();
@@ -734,6 +775,213 @@ mod migration_tests {
         assert!(!AuthMode::None.is_configured());
         assert!(AuthMode::ApiKey.is_configured());
         assert!(AuthMode::CliSubscription.is_configured());
+    }
+
+    // ── Phase 5a bugfix (2026-04-21): api_key_stored independence ────
+    //
+    // Regression guard: before this fix, `has_api_key_cmd` conflated
+    // "key stored in keyring" with "ApiKey is the active mode", which
+    // hid stored keys from the Settings UI after a flip to
+    // `CliSubscription` and trapped users in cli-only mode.
+
+    #[test]
+    fn normalize_backfills_api_key_stored_from_legacy_configured() {
+        // Phase 3+4 shape: only configured_providers present, no
+        // api_key_stored. After normalize the stored flag is derived.
+        let json = r#"{
+            "useLegacyClaudeCli": false,
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-6",
+            "plannerModel": "claude-haiku-4-5-20251001",
+            "configuredProviders": {"anthropic": true, "openai": false}
+        }"#;
+        let mut p: ProvidersSettings = serde_json::from_str(json).unwrap();
+        assert!(p.api_key_stored.is_empty(), "loaded without normalize");
+        p.normalize_after_load();
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+        // openai was false (= None) — no backfill.
+        assert!(!p.api_key_stored.contains_key("openai"));
+    }
+
+    #[test]
+    fn normalize_backfills_from_phase5a_enum_shape() {
+        // A user who re-saved settings after upgrading has enum form.
+        // Normalize still fills api_key_stored for ApiKey entries.
+        let json = r#"{
+            "useLegacyClaudeCli": false,
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-6",
+            "plannerModel": "claude-haiku-4-5-20251001",
+            "configuredProviders": {"anthropic": "api_key"}
+        }"#;
+        let mut p: ProvidersSettings = serde_json::from_str(json).unwrap();
+        p.normalize_after_load();
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+    }
+
+    #[test]
+    fn normalize_does_not_backfill_cli_subscription_entries() {
+        // Directly-activated CLI subscription (user never saved a key)
+        // should NOT cause api_key_stored to be set. Otherwise
+        // has_api_key_cmd would lie.
+        let json = r#"{
+            "useLegacyClaudeCli": false,
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-6",
+            "plannerModel": "claude-haiku-4-5-20251001",
+            "configuredProviders": {"anthropic": "cli_subscription"}
+        }"#;
+        let mut p: ProvidersSettings = serde_json::from_str(json).unwrap();
+        p.normalize_after_load();
+        assert!(!p.api_key_stored.contains_key("anthropic"));
+    }
+
+    #[test]
+    fn normalize_preserves_explicit_api_key_stored_under_cli_mode() {
+        // The critical invariant: a user saved an API key, then flipped
+        // to CliSubscription. On restart, configured_providers is
+        // CliSubscription but api_key_stored[anthropic] is still true
+        // (persisted by save_api_key_cmd, never cleared). Normalize
+        // must leave that flag alone.
+        let json = r#"{
+            "useLegacyClaudeCli": false,
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-6",
+            "plannerModel": "claude-haiku-4-5-20251001",
+            "configuredProviders": {"anthropic": "cli_subscription"},
+            "apiKeyStored": {"anthropic": true}
+        }"#;
+        let mut p: ProvidersSettings = serde_json::from_str(json).unwrap();
+        p.normalize_after_load();
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+        assert_eq!(
+            p.configured_providers.get("anthropic"),
+            Some(&AuthMode::CliSubscription)
+        );
+    }
+
+    #[test]
+    fn normalize_is_idempotent() {
+        // Calling normalize twice must be a no-op after the first call.
+        let json = r#"{
+            "useLegacyClaudeCli": false,
+            "defaultProvider": "anthropic",
+            "defaultModel": "claude-sonnet-4-6",
+            "plannerModel": "claude-haiku-4-5-20251001",
+            "configuredProviders": {"anthropic": true}
+        }"#;
+        let mut p: ProvidersSettings = serde_json::from_str(json).unwrap();
+        p.normalize_after_load();
+        let after_once = p.api_key_stored.clone();
+        p.normalize_after_load();
+        assert_eq!(p.api_key_stored, after_once);
+    }
+
+    #[test]
+    fn api_key_stored_roundtrips_through_serde() {
+        let mut p = ProvidersSettings::default();
+        p.configured_providers
+            .insert("anthropic".to_string(), AuthMode::CliSubscription);
+        p.api_key_stored.insert("anthropic".to_string(), true);
+
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains("\"apiKeyStored\""));
+        let back: ProvidersSettings = serde_json::from_str(&s).unwrap();
+        assert_eq!(back.api_key_stored.get("anthropic"), Some(&true));
+        assert_eq!(
+            back.configured_providers.get("anthropic"),
+            Some(&AuthMode::CliSubscription)
+        );
+    }
+
+    // ── Scenario tests covering the user-facing bug repro ─────────────
+    //
+    // These simulate the Tauri command effects on ProvidersSettings
+    // directly — the commands are thin wrappers around these mutations,
+    // and testing state transitions here is faster than plumbing a full
+    // `ManagedState` fixture.
+
+    fn simulate_save_api_key(p: &mut ProvidersSettings, provider: &str) {
+        p.configured_providers
+            .insert(provider.to_string(), AuthMode::ApiKey);
+        p.api_key_stored.insert(provider.to_string(), true);
+    }
+
+    fn simulate_set_auth_mode(p: &mut ProvidersSettings, provider: &str, mode: AuthMode) {
+        p.configured_providers.insert(provider.to_string(), mode);
+        // Intentional: api_key_stored untouched.
+    }
+
+    fn simulate_delete_api_key(p: &mut ProvidersSettings, provider: &str) {
+        p.configured_providers
+            .insert(provider.to_string(), AuthMode::None);
+        p.api_key_stored.insert(provider.to_string(), false);
+    }
+
+    #[test]
+    fn scenario_save_then_flip_to_cli_preserves_api_key_stored() {
+        // User saves key → Anthropic card shows radios (api_only).
+        // User clicks "CLI subscription" radio → set_auth_mode flips
+        // configured_providers but NOT api_key_stored. has_api_key_cmd
+        // must still return true so the card keeps showing both radios.
+        let mut p = ProvidersSettings::default();
+        simulate_save_api_key(&mut p, "anthropic");
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+        assert_eq!(
+            p.configured_providers.get("anthropic"),
+            Some(&AuthMode::ApiKey)
+        );
+
+        simulate_set_auth_mode(&mut p, "anthropic", AuthMode::CliSubscription);
+        // ← the fix: api_key_stored unchanged.
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+        assert_eq!(
+            p.configured_providers.get("anthropic"),
+            Some(&AuthMode::CliSubscription)
+        );
+    }
+
+    #[test]
+    fn scenario_flip_back_to_api_key_still_has_stored_key() {
+        // Continuation: user flips back to API key via radio. The
+        // stored keyring entry survived (never deleted), so sending
+        // a message would load the key successfully.
+        let mut p = ProvidersSettings::default();
+        simulate_save_api_key(&mut p, "anthropic");
+        simulate_set_auth_mode(&mut p, "anthropic", AuthMode::CliSubscription);
+        simulate_set_auth_mode(&mut p, "anthropic", AuthMode::ApiKey);
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&true));
+        assert_eq!(
+            p.configured_providers.get("anthropic"),
+            Some(&AuthMode::ApiKey)
+        );
+    }
+
+    #[test]
+    fn scenario_delete_clears_both_flags() {
+        // Delete is the only path that clears api_key_stored. Even if
+        // the active mode was CliSubscription, deleting the key must
+        // clear both so a later ApiKey selection doesn't try to load
+        // a nonexistent keyring entry.
+        let mut p = ProvidersSettings::default();
+        simulate_save_api_key(&mut p, "anthropic");
+        simulate_set_auth_mode(&mut p, "anthropic", AuthMode::CliSubscription);
+        simulate_delete_api_key(&mut p, "anthropic");
+        assert_eq!(p.api_key_stored.get("anthropic"), Some(&false));
+        assert_eq!(
+            p.configured_providers.get("anthropic"),
+            Some(&AuthMode::None)
+        );
+    }
+
+    #[test]
+    fn scenario_cli_only_user_never_gets_false_has_api_key() {
+        // A user who came in fresh, saw cli_only state, clicked
+        // Activate — never saved a key. api_key_stored stays absent
+        // (interpreted as false by has_api_key_cmd).
+        let mut p = ProvidersSettings::default();
+        simulate_set_auth_mode(&mut p, "anthropic", AuthMode::CliSubscription);
+        assert!(!p.api_key_stored.contains_key("anthropic"));
     }
 
     #[test]

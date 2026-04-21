@@ -146,6 +146,13 @@ pub async fn save_api_key_cmd(
             .providers
             .configured_providers
             .insert(provider.clone(), AuthMode::ApiKey);
+        // Phase 5a: tracked separately from auth_mode. A later flip
+        // to CliSubscription preserves this flag so the Settings UI
+        // keeps showing the radio (see scope §5a bugfix 2026-04-21).
+        settings
+            .providers
+            .api_key_stored
+            .insert(provider.clone(), true);
     }
     state.save_settings()?;
 
@@ -181,6 +188,14 @@ pub async fn delete_api_key_cmd(
             .providers
             .configured_providers
             .insert(provider.clone(), AuthMode::None);
+        // Symmetric with save_api_key_cmd: clearing the keyring entry
+        // must clear the stored-key flag too. Otherwise the next
+        // `run_agent_turn` would try to load a key that no longer
+        // exists and surface an opaque keyring error.
+        settings
+            .providers
+            .api_key_stored
+            .insert(provider.clone(), false);
     }
     state.save_settings()?;
 
@@ -212,16 +227,17 @@ pub fn has_api_key_cmd(
     }
 
     let settings = state.settings.lock().map_err(|e| e.to_string())?;
-    // `has_api_key` semantics for renderer: true iff the ApiKey path is
-    // wired. `CliSubscription` is a separate flow with its own renderer
-    // state; surfacing it as "hasApiKey" would mis-render the Phase 4
-    // card. Commit B adds a dedicated `authModeFor(provider)` query.
+    // Semantics: true iff a key is stored in the keyring, independent
+    // of which auth mode is active. This is what the Settings UI
+    // needs to decide whether to offer an "API key" radio choice
+    // alongside "CLI subscription" for Anthropic. Previously this
+    // read `configured_providers[p] == ApiKey`, which hid the stored
+    // key after a flip to CliSubscription (scope §5a bugfix).
     Ok(settings
         .providers
-        .configured_providers
+        .api_key_stored
         .get(&provider)
         .copied()
-        .map(|mode| mode == AuthMode::ApiKey)
         .unwrap_or(false))
 }
 
