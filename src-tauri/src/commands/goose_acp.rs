@@ -134,8 +134,13 @@ async fn dev_fallback_check() -> Result<Value, String> {
 ///
 /// Values based on Goose's own provider modules (see `goose --help` provider
 /// list + source). Returns `None` for providers that don't take a key
-/// (Ollama = host URL only, `claude-code` / `gemini-cli` / `chatgpt-codex` =
-/// piggyback on the user's CLI subscription, no key plumbed through env).
+/// (Ollama = host URL only, `claude-code` / `claude-acp` / `gemini-cli` /
+/// `chatgpt-codex` = piggyback on the user's CLI subscription, no key
+/// plumbed through env).
+///
+/// Phase 5a (scope §6.2): `claude-code` is the routing target for
+/// `AuthMode::CliSubscription` on Anthropic. `claude-acp` is listed here
+/// for Phase 5c forward-compat — also subprocess-piggybacks, so no env var.
 fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
     match goose_provider {
         "anthropic" => Some("ANTHROPIC_API_KEY"),
@@ -143,10 +148,44 @@ fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
         "google" => Some("GOOGLE_API_KEY"),
         "databricks" => Some("DATABRICKS_TOKEN"),
         // CLI-subscription providers + Ollama: no API key env
-        "claude-code" | "gemini-cli" | "gemini-oauth" | "chatgpt-codex" | "ollama" => None,
+        "claude-code" | "claude-acp" | "gemini-cli" | "gemini-oauth" | "chatgpt-codex"
+        | "ollama" => None,
         // Unknown provider: don't guess. Caller falls back to no key injection
         // and the agent will surface the provider's own "missing credentials"
         // error in the stream.
+        _ => None,
+    }
+}
+
+/// Map an Octopal (UI provider, auth mode) pair to the Goose-facing provider
+/// id. Pure function — the entire point is to keep routing decisions
+/// testable without spawning a sidecar.
+///
+/// Phase 5a scope:
+/// - `(anthropic, ApiKey)` → `anthropic` (unchanged Phase 4 path)
+/// - `(anthropic, CliSubscription)` → `claude-code` (new — subprocess-piggyback)
+/// - Other `(p, ApiKey)` pass through (openai/google/databricks/ollama)
+/// - `(_, None)` → None — caller surfaces the "not configured" error
+/// - `(non-anthropic, CliSubscription)` → None — Phase 5b+ territory
+/// - Unknown `(p, ApiKey)` → None — caller surfaces "unsupported provider"
+///
+/// Distinct from `provider_api_key_env` (which maps goose-id → env-var-name):
+/// this one maps UI-id → goose-id. Both are needed because the UI provider
+/// is the *identity* the user picks in Settings, while the goose provider is
+/// the *implementation* we hand to the sidecar.
+pub(crate) fn resolve_goose_provider(
+    ui_provider: &str,
+    auth_mode: crate::state::AuthMode,
+) -> Option<&'static str> {
+    use crate::state::AuthMode;
+    match (ui_provider, auth_mode) {
+        (_, AuthMode::None) => None,
+        ("anthropic", AuthMode::ApiKey) => Some("anthropic"),
+        ("anthropic", AuthMode::CliSubscription) => Some("claude-code"),
+        ("openai", AuthMode::ApiKey) => Some("openai"),
+        ("google", AuthMode::ApiKey) => Some("google"),
+        ("databricks", AuthMode::ApiKey) => Some("databricks"),
+        ("ollama", AuthMode::ApiKey) => Some("ollama"),
         _ => None,
     }
 }
@@ -248,6 +287,30 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
         if let Some(host) = cfg.ollama_host.as_deref() {
             env.insert("OLLAMA_HOST".into(), host.to_string());
         }
+    }
+
+    // Phase 5a (scope §6.3): propagate parent PATH so Goose providers that
+    // spawn their own subprocesses can resolve them. The `claude-code`
+    // provider shells out to the user's `claude` binary via PATH lookup —
+    // strip PATH and Goose emits "could not resolve command 'claude'"
+    // (verified in scope §3.2 probe).
+    //
+    // Technically std::process::Command (which tauri-plugin-shell wraps)
+    // inherits PATH from the parent by default, so this is a *redundant*
+    // explicit pass — but writing it out makes the invariant auditable
+    // (future refactor that adds `.env_clear()` won't silently break
+    // claude-code) and costs nothing in other modes (anthropic/openai
+    // ignore PATH). Keeps `build_goose_env` free of auth_mode awareness.
+    //
+    // Not fully sufficient on its own for macOS app-bundle launches: when
+    // Octopal starts from Finder/Dock, the parent PATH is just the
+    // LaunchServices minimum (`/usr/bin:/bin:/usr/sbin:/sbin`), which
+    // misses homebrew/nvm/asdf install locations. Scope §10.3 tracks that
+    // gap for Phase 5b; for Phase 5a users who installed `claude` via the
+    // canonical installer (which puts it in `~/.local/bin` → symlinked or
+    // shimmed into a standard path) this is enough.
+    if let Ok(path) = std::env::var("PATH") {
+        env.insert("PATH".into(), path);
     }
 
     env
@@ -1144,6 +1207,12 @@ pub async fn run_agent_turn(
     state: &State<'_, ManagedState>,
     params: RunAgentTurnParams,
 ) -> Result<SendResult, String> {
+    // `provider` is the **UI-facing** provider id (what the user picks in
+    // Settings → Providers, what the keyring is keyed on). Distinct from
+    // `goose_provider` below, which is the **implementation** we hand to
+    // the sidecar. For Anthropic with ApiKey mode they happen to be equal
+    // (both "anthropic"); for CliSubscription mode they diverge:
+    // ui=anthropic, goose=claude-code (scope §6.1).
     let provider = "anthropic".to_string();
 
     // ── Configured-provider check (Phase 4, scope §4.1) ──────────────
@@ -1151,11 +1220,6 @@ pub async fn run_agent_turn(
     // Settings tab or checking "is the user set up" never triggers a
     // Keychain prompt. First actual spawn (MISS below) is where the
     // keyring (and prompt, if "Always Allow" isn't set yet) happens.
-    // Phase 5a Commits A/B: read the enum but only route `ApiKey`.
-    // `CliSubscription` flips the UI in Commit B but its end-to-end
-    // routing (GOOSE_PROVIDER=claude-code + PATH inheritance + pool
-    // key discrimination) lands in Commit C. Anything else here would
-    // spawn a sidecar with the wrong env and stall the first turn.
     let auth_mode = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         settings
@@ -1165,33 +1229,48 @@ pub async fn run_agent_turn(
             .copied()
             .unwrap_or(crate::state::AuthMode::None)
     };
-    match auth_mode {
-        crate::state::AuthMode::ApiKey => { /* fall through to spawn */ }
-        crate::state::AuthMode::CliSubscription => {
-            return Ok(SendResult {
-                ok: false,
-                output: None,
-                error: Some(format!(
-                    "Claude CLI subscription selected for \"{provider}\" but Goose routing \
-                     for this mode is not wired in this build. This state is intentional \
-                     between Phase 5a Commit B (UI) and Commit C (routing). \
-                     Temporarily switch to API key mode in Settings → Providers to send."
-                )),
-                usage: None,
-            });
-        }
-        crate::state::AuthMode::None => {
-            return Ok(SendResult {
-                ok: false,
-                output: None,
-                error: Some(format!(
+
+    // Phase 5a Commit C-1 (scope §6.1): resolve the UI provider + auth mode
+    // to the goose-facing provider id that gets `GOOSE_PROVIDER`. None means
+    // we can't route this turn — surface the specific reason (not
+    // configured vs unsupported) so the UI shows a helpful error instead of
+    // a mysterious "sidecar timed out" later.
+    let goose_provider = match resolve_goose_provider(&provider, auth_mode) {
+        Some(gp) => gp.to_string(),
+        None => {
+            let error_msg = match auth_mode {
+                crate::state::AuthMode::None => format!(
                     "No authentication configured for provider \"{provider}\". \
                      Add one in Settings → Providers."
-                )),
+                ),
+                crate::state::AuthMode::CliSubscription => format!(
+                    "Claude CLI subscription mode is only supported for the \
+                     Anthropic provider in this build. Switch to API key mode \
+                     in Settings → Providers, or select Anthropic."
+                ),
+                crate::state::AuthMode::ApiKey => format!(
+                    "Provider \"{provider}\" is not supported in this build."
+                ),
+            };
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some(error_msg),
                 usage: None,
             });
         }
-    }
+    };
+    eprintln!(
+        "[resolve] agent={} provider={} auth={} → goose_provider={}",
+        params.agent_name,
+        provider,
+        match auth_mode {
+            crate::state::AuthMode::ApiKey => "api_key",
+            crate::state::AuthMode::CliSubscription => "cli_subscription",
+            crate::state::AuthMode::None => "none",
+        },
+        goose_provider
+    );
 
     // XDG roots under ~/.octopal/ — matches plan §9 "Goose data" paths.
     let app_data_root = dirs::home_dir()
@@ -1211,9 +1290,11 @@ pub async fn run_agent_turn(
     // path**. HIT path reuses a pooled sidecar that already has the key
     // in its env from when it was spawned. Building cfg with api_key =
     // None here is intentional — the MISS branch below fills it before
-    // calling spawn_initialized.
+    // calling spawn_initialized (only for ApiKey mode; CliSubscription
+    // never touches the keyring and spawns with api_key=None, which
+    // build_goose_env correctly omits from env).
     let mut cfg = GooseSpawnConfig {
-        provider: provider.clone(),
+        provider: goose_provider.clone(),
         model: model.clone(),
         api_key: None,
         ollama_host: None,
@@ -1261,19 +1342,27 @@ pub async fn run_agent_turn(
     // Keyring read is deferred into the spawn branches (scope §4.1) so
     // HIT path never touches the keyring. `fill_api_key` is the single
     // function doing that read — search for it when auditing prompts.
+    //
+    // Phase 5a (scope §6.1): takes `ui_provider` explicitly, not
+    // `cfg.provider`, because `cfg.provider` is now the *goose-facing* id
+    // ("claude-code" under CliSubscription) and the keyring is keyed by
+    // UI provider ("anthropic"). Passing `cfg.provider` would miss the
+    // stored key. The closure is also only called for `AuthMode::ApiKey`
+    // below — `CliSubscription` skips it and spawns with `api_key=None`,
+    // which `build_goose_env` correctly omits from env.
     let pool = state.goose_acp_pool.clone();
-    let fill_api_key = |cfg: &mut GooseSpawnConfig| -> Result<(), String> {
-        let key = crate::commands::api_keys::load_api_key(&cfg.provider)?
+    let fill_api_key = |cfg: &mut GooseSpawnConfig, ui_provider: &str| -> Result<(), String> {
+        let key = crate::commands::api_keys::load_api_key(ui_provider)?
             .ok_or_else(|| {
                 format!(
-                    "No API key configured for provider \"{}\". \
-                     Add one in Settings → Providers.",
-                    cfg.provider
+                    "No API key configured for provider \"{ui_provider}\". \
+                     Add one in Settings → Providers."
                 )
             })?;
         cfg.api_key = Some(key);
         Ok(())
     };
+    let needs_api_key = auth_mode == crate::state::AuthMode::ApiKey;
     let client = match pool.take(&pool_key) {
         Some(entry) if entry.config_hash == expected_hash => {
             eprintln!("[goose_acp_pool] HIT key={}", pool_key);
@@ -1291,12 +1380,16 @@ pub async fn run_agent_turn(
             stale.client.shutdown().await;
             eprintln!("[goose_acp_pool] evict pid={} key={}", old_pid, pool_key);
             eprintln!("[goose_acp_pool] spawn key={} (after drift)", pool_key);
-            fill_api_key(&mut cfg)?;
+            if needs_api_key {
+                fill_api_key(&mut cfg, &provider)?;
+            }
             spawn_initialized(app, &cfg).await?
         }
         None => {
             eprintln!("[goose_acp_pool] MISS key={} → spawn", pool_key);
-            fill_api_key(&mut cfg)?;
+            if needs_api_key {
+                fill_api_key(&mut cfg, &provider)?;
+            }
             spawn_initialized(app, &cfg).await?
         }
     };
@@ -1741,5 +1834,206 @@ mod tests {
             deny_paths: None,
         };
         assert_eq!(permissions_to_mode_id(Some(&perms)), "auto");
+    }
+
+    // ── Phase 5a Commit C-1: provider_api_key_env arm table ───────────
+    //
+    // The fn has two semantic groups:
+    // 1. API-key providers → return the env var name Goose reads
+    // 2. CLI-subscription / Ollama providers + unknown → return None
+    //
+    // Group membership is the routing contract — if someone ever adds a
+    // provider to the wrong group the child process gets the wrong env
+    // (or misses one), which manifests as an obscure auth failure. These
+    // tests pin the membership so refactors surface a compile-time
+    // match-exhaustiveness issue OR a failing assertion, not a runtime
+    // regression found months later.
+
+    #[test]
+    fn provider_api_key_env_api_key_providers_return_env_name() {
+        assert_eq!(
+            provider_api_key_env("anthropic"),
+            Some("ANTHROPIC_API_KEY")
+        );
+        assert_eq!(provider_api_key_env("openai"), Some("OPENAI_API_KEY"));
+        assert_eq!(provider_api_key_env("google"), Some("GOOGLE_API_KEY"));
+        assert_eq!(
+            provider_api_key_env("databricks"),
+            Some("DATABRICKS_TOKEN")
+        );
+    }
+
+    #[test]
+    fn provider_api_key_env_cli_subscription_providers_return_none() {
+        // All CLI-subscription-style providers (auth via spawned binary)
+        // + Ollama (auth via host URL) must NOT get an api key env.
+        //
+        // `claude-acp` is included here pre-emptively: Phase 5a routes to
+        // `claude-code`, but §6.2 pins `claude-acp` behavior for Phase 5c
+        // (see also scope §3.3). Listing it now means the Phase 5c flip
+        // is a UI change, not an auth bug.
+        for cli_prov in [
+            "claude-code",
+            "claude-acp",
+            "gemini-cli",
+            "gemini-oauth",
+            "chatgpt-codex",
+            "ollama",
+        ] {
+            assert!(
+                provider_api_key_env(cli_prov).is_none(),
+                "provider={cli_prov} must return None — CLI-sub / Ollama providers \
+                 don't take a key via env",
+            );
+        }
+    }
+
+    #[test]
+    fn provider_api_key_env_unknown_provider_returns_none() {
+        // Unknown providers fall through to None rather than guessing at
+        // an env var name. The downstream effect is "sidecar spawns, Goose
+        // itself emits missing-credentials error" — correct surface.
+        assert!(provider_api_key_env("mystery-provider-2026").is_none());
+        assert!(provider_api_key_env("").is_none());
+    }
+
+    // ── Phase 5a Commit C-1: resolve_goose_provider matrix ────────────
+    //
+    // This is the single pure function that decides which goose provider a
+    // turn spawns under. Matrix test covers every (ui, auth_mode) combo
+    // the Phase 5a UI can produce + two rejection edges (non-anthropic
+    // CliSubscription, unknown provider ApiKey).
+
+    #[test]
+    fn resolve_goose_provider_authmode_matrix() {
+        use crate::state::AuthMode;
+        // (ui, mode) → expected goose id
+        let cases: &[(&str, AuthMode, Option<&'static str>)] = &[
+            // None always resolves to None regardless of ui provider.
+            ("anthropic", AuthMode::None, None),
+            ("openai", AuthMode::None, None),
+            ("unknown", AuthMode::None, None),
+            // ApiKey mode for supported providers passes through.
+            ("anthropic", AuthMode::ApiKey, Some("anthropic")),
+            ("openai", AuthMode::ApiKey, Some("openai")),
+            ("google", AuthMode::ApiKey, Some("google")),
+            ("databricks", AuthMode::ApiKey, Some("databricks")),
+            ("ollama", AuthMode::ApiKey, Some("ollama")),
+            // CliSubscription: Phase 5a routes ONLY anthropic → claude-code.
+            // Other providers' CLI flows are Phase 5b+ territory.
+            ("anthropic", AuthMode::CliSubscription, Some("claude-code")),
+            ("openai", AuthMode::CliSubscription, None),
+            ("google", AuthMode::CliSubscription, None),
+            // Unknown providers resolve to None so the caller surfaces a
+            // specific error ("not supported in this build") rather than
+            // spawning a sidecar that then fails with a cryptic goose error.
+            ("mystery", AuthMode::ApiKey, None),
+        ];
+
+        for &(ui, mode, expected) in cases {
+            assert_eq!(
+                resolve_goose_provider(ui, mode),
+                expected,
+                "ui={ui} mode={mode:?} expected={expected:?}",
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_goose_provider_anthropic_cli_subscription_uses_claude_code() {
+        // Pinning the specific 5a decision point: Anthropic + CliSubscription
+        // MUST go to `claude-code`, not `claude-acp` (which would require
+        // a separate npm install — scope §3.3).
+        use crate::state::AuthMode;
+        assert_eq!(
+            resolve_goose_provider("anthropic", AuthMode::CliSubscription),
+            Some("claude-code"),
+        );
+    }
+
+    // ── Phase 5a Commit C-1: build_goose_env PATH propagation ─────────
+
+    #[test]
+    fn env_builder_preserves_parent_path() {
+        // §6.3: `claude-code` spawns `claude` via PATH lookup; if the child
+        // env is missing PATH, Goose emits "could not resolve command
+        // 'claude'" (scope §3.2 probe). We pass PATH through explicitly so
+        // the invariant doesn't depend on std::process::Command's inherit
+        // semantics (which a future refactor with `.env_clear()` would
+        // silently break).
+        let tmp = std::env::temp_dir().join("octopal-env-path-test");
+        let cfg = GooseSpawnConfig {
+            provider: "claude-code".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: None,
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+        };
+        let env = build_goose_env(&cfg);
+        let parent_path =
+            std::env::var("PATH").expect("test harness must have PATH set");
+        assert_eq!(
+            env.get("PATH").map(|s| s.as_str()),
+            Some(parent_path.as_str()),
+            "PATH must be propagated to the child env verbatim",
+        );
+    }
+
+    #[test]
+    fn env_builder_cli_subscription_shape() {
+        // End-to-end env shape for the CliSubscription path: provider
+        // reported to goose is `claude-code`, no ANTHROPIC_API_KEY, and
+        // PATH is present.
+        let tmp = std::env::temp_dir().join("octopal-env-cli-sub-shape");
+        let cfg = GooseSpawnConfig {
+            provider: "claude-code".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: None, // always None for CliSubscription — it's the contract
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+        };
+        let env = build_goose_env(&cfg);
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(|s| s.as_str()),
+            Some("claude-code"),
+        );
+        assert!(
+            env.get("ANTHROPIC_API_KEY").is_none(),
+            "CliSubscription must not inject ANTHROPIC_API_KEY",
+        );
+        assert!(
+            env.get("PATH").is_some(),
+            "PATH must be present for claude subprocess resolution",
+        );
+        // XDG still enforced — cli_subscription doesn't exempt isolation.
+        assert!(env.get("XDG_CONFIG_HOME").is_some());
+    }
+
+    #[test]
+    fn env_builder_api_key_mode_still_injects_key_and_path() {
+        // Regression guard: ApiKey mode should be unchanged by the Phase 5a
+        // PATH addition. Key still injected, PATH still there (since we
+        // inject it universally), ollama_host absent.
+        let tmp = std::env::temp_dir().join("octopal-env-api-key-regression");
+        let cfg = GooseSpawnConfig {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: Some("sk-ant-fake".into()),
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+        };
+        let env = build_goose_env(&cfg);
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(|s| s.as_str()),
+            Some("sk-ant-fake"),
+        );
+        assert!(env.get("PATH").is_some());
+        assert!(env.get("OLLAMA_HOST").is_none());
     }
 }
