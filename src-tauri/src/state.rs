@@ -215,6 +215,24 @@ impl AuthMode {
     pub fn is_configured(self) -> bool {
         !matches!(self, AuthMode::None)
     }
+
+    /// snake_case string form used in pool keys, log lines, and any
+    /// other place we want a stable textual representation. Must match
+    /// the `#[serde(rename_all = "snake_case")]` output so keys stay
+    /// greppable across logs and on-disk serde output.
+    ///
+    /// Added in Phase 5a Commit C-2 (scope §4.3): the pool key gains an
+    /// `auth_mode` segment so an `ApiKey` ↔ `CliSubscription` flip
+    /// produces a different key, guaranteeing a fresh sidecar spawn. A
+    /// single helper here keeps the segment value defined once rather
+    /// than duplicated at every call site.
+    pub fn as_pool_key_segment(self) -> &'static str {
+        match self {
+            AuthMode::None => "none",
+            AuthMode::ApiKey => "api_key",
+            AuthMode::CliSubscription => "cli_subscription",
+        }
+    }
 }
 
 impl Default for AuthMode {

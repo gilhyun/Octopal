@@ -1260,16 +1260,10 @@ pub async fn run_agent_turn(
             });
         }
     };
+    let auth_mode_segment = auth_mode.as_pool_key_segment();
     eprintln!(
         "[resolve] agent={} provider={} auth={} → goose_provider={}",
-        params.agent_name,
-        provider,
-        match auth_mode {
-            crate::state::AuthMode::ApiKey => "api_key",
-            crate::state::AuthMode::CliSubscription => "cli_subscription",
-            crate::state::AuthMode::None => "none",
-        },
-        goose_provider
+        params.agent_name, provider, auth_mode_segment, goose_provider
     );
 
     // XDG roots under ~/.octopal/ — matches plan §9 "Goose data" paths.
@@ -1303,13 +1297,17 @@ pub async fn run_agent_turn(
         cwd: std::path::PathBuf::from(&params.folder_path),
     };
 
-    // ── Pool key + config hash (scope §2.1) ──────────────────────────
+    // ── Pool key + config hash (scope §2.1 + §4.3) ───────────────────
     // Hash excludes api_key by design (rotation goes through
-    // invalidate_pool_for_provider; see scope §2.3).
+    // invalidate_pool_for_provider; see scope §2.3). Phase 5a C-2 adds
+    // `auth_mode` to both hash and key — flipping ApiKey ↔ CliSubscription
+    // must never hit a pooled sidecar spawned under the other auth
+    // (different GOOSE_PROVIDER, different child binary behavior).
     let expected_hash = crate::commands::goose_acp_pool::GooseAcpPool::hash_config(
         &params.folder_path,
         &params.agent_name,
         &provider,
+        auth_mode_segment,
         &model,
         &params.system_prompt,
     );
@@ -1317,6 +1315,7 @@ pub async fn run_agent_turn(
         &params.folder_path,
         &params.agent_name,
         &provider,
+        auth_mode_segment,
         &model,
         expected_hash,
     );

@@ -162,12 +162,27 @@ impl GooseAcpPool {
         killed
     }
 
-    /// Stable hash over the 5 cache-relevant fields. API key is NOT here
+    /// Stable hash over the 6 cache-relevant fields. API key is NOT here
     /// (scope §2.1) — rotation goes through `invalidate_pool_for_provider`.
+    ///
+    /// Phase 5a Commit C-2 (scope §4.3) adds `auth_mode` to the hash: a
+    /// user flipping `AuthMode::ApiKey ↔ CliSubscription` spawns an
+    /// entirely different sidecar (GOOSE_PROVIDER=anthropic with
+    /// ANTHROPIC_API_KEY vs GOOSE_PROVIDER=claude-code with none), so the
+    /// pool MUST NOT silently reuse across the flip. Belt-and-suspenders
+    /// with `set_auth_mode_cmd`'s explicit `invalidate_pool_for_provider`
+    /// call — if invalidation is ever skipped, the hash drift still
+    /// forces a fresh spawn rather than masking the switch.
+    ///
+    /// Expect `auth_mode` to be one of the strings produced by
+    /// `AuthMode::as_pool_key_segment()` (`"none"`, `"api_key"`,
+    /// `"cli_subscription"`). The function itself doesn't validate —
+    /// arbitrary strings just produce arbitrary hashes.
     pub fn hash_config(
         folder: &str,
         agent: &str,
         provider: &str,
+        auth_mode: &str,
         model: &str,
         system_prompt: &str,
     ) -> u64 {
@@ -175,6 +190,7 @@ impl GooseAcpPool {
         folder.hash(&mut h);
         agent.hash(&mut h);
         provider.hash(&mut h);
+        auth_mode.hash(&mut h);
         model.hash(&mut h);
         system_prompt.hash(&mut h);
         h.finish()
@@ -185,8 +201,20 @@ impl GooseAcpPool {
     /// hex, 16 chars) — we fold it into the key so two agents with
     /// identical (folder, agent, provider, model) but different prompts
     /// don't collide.
-    pub fn key_for(folder: &str, agent: &str, provider: &str, model: &str, sp_hash: u64) -> String {
-        format!("{folder}::{agent}::{provider}::{model}::{sp_hash:016x}")
+    ///
+    /// Phase 5a Commit C-2: the key now includes an `auth_mode` segment
+    /// between `provider` and `model` so flipping ApiKey ↔ CliSubscription
+    /// is visible in the key string (greppable in `[goose_acp_pool] …
+    /// ::cli_subscription::…` log lines, scope §8 G1-5a).
+    pub fn key_for(
+        folder: &str,
+        agent: &str,
+        provider: &str,
+        auth_mode: &str,
+        model: &str,
+        sp_hash: u64,
+    ) -> String {
+        format!("{folder}::{agent}::{provider}::{auth_mode}::{model}::{sp_hash:016x}")
     }
 
     /// Dev-only: used exclusively by tests and `cargo check --features debug`
@@ -231,29 +259,134 @@ mod tests {
 
     #[test]
     fn hash_config_same_input_same_output() {
-        let h1 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-sonnet-4-6", "SP");
-        let h2 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-sonnet-4-6", "SP");
+        let h1 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+        );
+        let h2 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+        );
         assert_eq!(h1, h2);
     }
 
     #[test]
     fn hash_config_model_change_drifts() {
-        let h1 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-sonnet-4-6", "SP");
-        let h2 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-opus-4-7", "SP");
+        let h1 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+        );
+        let h2 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-opus-4-7", "SP",
+        );
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn hash_config_system_prompt_change_drifts() {
-        let h1 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-sonnet-4-6", "SP1");
-        let h2 = GooseAcpPool::hash_config("/p", "dev", "anthropic", "claude-sonnet-4-6", "SP2");
+        let h1 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP1",
+        );
+        let h2 = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP2",
+        );
         assert_ne!(h1, h2);
+    }
+
+    // ── Phase 5a Commit C-2: auth_mode is part of the hash ──────────
+
+    #[test]
+    fn hash_config_auth_mode_change_drifts() {
+        // The user-repro scenario: flip Anthropic from ApiKey to
+        // CliSubscription with everything else held constant. Hashes must
+        // diverge so an existing pool entry looks stale (drift → evict +
+        // respawn with the new GOOSE_PROVIDER). Symmetric in both
+        // directions — flipping back also drifts.
+        let h_api = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+        );
+        let h_cli = GooseAcpPool::hash_config(
+            "/p",
+            "dev",
+            "anthropic",
+            "cli_subscription",
+            "claude-sonnet-4-6",
+            "SP",
+        );
+        assert_ne!(
+            h_api, h_cli,
+            "ApiKey and CliSubscription must hash differently — same entry would \
+             reuse a sidecar spawned under the wrong auth"
+        );
+
+        // `none` also drifts from both; covers the edge where a user
+        // temporarily clears config then re-adds it.
+        let h_none = GooseAcpPool::hash_config(
+            "/p", "dev", "anthropic", "none", "claude-sonnet-4-6", "SP",
+        );
+        assert_ne!(h_none, h_api);
+        assert_ne!(h_none, h_cli);
+    }
+
+    #[test]
+    fn hash_config_same_auth_mode_same_otherwise_yields_same_hash() {
+        // Stability pin: adding a new field to the hash (future refactor)
+        // must not accidentally randomize identical inputs. Belt to the
+        // `hash_config_same_input_same_output` suspenders, but explicitly
+        // covering the C-2 auth_mode arm.
+        let h1 = GooseAcpPool::hash_config(
+            "/p",
+            "dev",
+            "anthropic",
+            "cli_subscription",
+            "claude-sonnet-4-6",
+            "SP",
+        );
+        let h2 = GooseAcpPool::hash_config(
+            "/p",
+            "dev",
+            "anthropic",
+            "cli_subscription",
+            "claude-sonnet-4-6",
+            "SP",
+        );
+        assert_eq!(h1, h2);
     }
 
     #[test]
     fn key_for_has_stable_shape() {
-        let k = GooseAcpPool::key_for("/p", "dev", "anthropic", "claude-sonnet-4-6", 0xdeadbeef);
-        assert_eq!(k, "/p::dev::anthropic::claude-sonnet-4-6::00000000deadbeef");
+        // §8 G1-5a expects `::cli_subscription::` in the key — pin the
+        // segment order: folder::agent::provider::auth_mode::model::sp.
+        let k = GooseAcpPool::key_for(
+            "/p",
+            "dev",
+            "anthropic",
+            "cli_subscription",
+            "claude-sonnet-4-6",
+            0xdeadbeef,
+        );
+        assert_eq!(
+            k, "/p::dev::anthropic::cli_subscription::claude-sonnet-4-6::00000000deadbeef",
+        );
+    }
+
+    #[test]
+    fn key_for_auth_mode_segment_visible_in_string() {
+        // Grep-anchored: given a log line with the pool key, an operator
+        // must be able to tell the auth mode without cross-referencing
+        // settings. Both mode variants must produce distinct, visible
+        // substrings.
+        let k_api = GooseAcpPool::key_for(
+            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", 0,
+        );
+        let k_cli = GooseAcpPool::key_for(
+            "/p",
+            "dev",
+            "anthropic",
+            "cli_subscription",
+            "claude-sonnet-4-6",
+            0,
+        );
+        assert!(k_api.contains("::api_key::"));
+        assert!(k_cli.contains("::cli_subscription::"));
+        assert_ne!(k_api, k_cli);
     }
 
     // ── G3: pool deduplication (the merge-gate invariant) ────────────
@@ -298,11 +431,13 @@ mod tests {
             "/my/folder",
             "dev",
             "anthropic",
+            "api_key",
             "claude-sonnet-4-6",
             GooseAcpPool::hash_config(
                 "/my/folder",
                 "dev",
                 "anthropic",
+                "api_key",
                 "claude-sonnet-4-6",
                 "you are a developer",
             ),
@@ -341,7 +476,8 @@ mod tests {
         // spawners race and both put() to the same key, the older entry
         // must be returned — silent drop would leak the older sidecar.
         let pool = FakePool::new();
-        let k = "x::y::anthropic::m::0000000000000000".to_string();
+        // Key format after C-2: folder::agent::provider::auth_mode::model::sp.
+        let k = "x::y::anthropic::api_key::m::0000000000000000".to_string();
         let first = pool.put(k.clone(), (1, 0, "anthropic".into()));
         assert!(first.is_none());
 
@@ -354,9 +490,9 @@ mod tests {
     fn invalidate_for_agent_prefix_filter() {
         // Same agent name across two folders must stay isolated.
         let pool = FakePool::new();
-        let sp = GooseAcpPool::hash_config("/a", "dev", "anthropic", "m", "sp");
-        let k_a = GooseAcpPool::key_for("/a", "dev", "anthropic", "m", sp);
-        let k_b = GooseAcpPool::key_for("/b", "dev", "anthropic", "m", sp);
+        let sp = GooseAcpPool::hash_config("/a", "dev", "anthropic", "api_key", "m", "sp");
+        let k_a = GooseAcpPool::key_for("/a", "dev", "anthropic", "api_key", "m", sp);
+        let k_b = GooseAcpPool::key_for("/b", "dev", "anthropic", "api_key", "m", sp);
 
         pool.put(k_a.clone(), (1, 0, "anthropic".into()));
         pool.put(k_b.clone(), (2, 0, "anthropic".into()));
