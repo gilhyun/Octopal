@@ -7,6 +7,10 @@ mod state;
 /// the public surface makes future refactors harder.
 pub use commands::api_keys as keyring_smoke_api;
 
+/// Public re-export for `examples/binary_discovery_smoke.rs` — proves
+/// Phase 5a-finalize §3.1 candidate-dir heuristic on the dev machine.
+pub use commands::binary_discovery as binary_discovery_smoke_api;
+
 use state::ManagedState;
 use tauri::Manager;
 
