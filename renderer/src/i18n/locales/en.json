@@ -257,12 +257,22 @@
       "tabBasic": "Basic",
       "tabPrompt": "Prompt",
       "tabPermissions": "Permissions",
+      "tabModel": "Model",
       "tabMcp": "MCP",
       "rolePlaceholder": "Full-stack developer specializing in React and TypeScript",
       "roleHint": "Short description shown to other agents (1-2 sentences).",
       "promptLabel": "System Prompt",
       "promptHint": "Full instructions for this agent. Saved as prompt.md — also editable in VS Code or any text editor.",
       "promptPlaceholder": "You are a developer agent. You write clean code, implement features, fix bugs..."
+    },
+    "agentModel": {
+      "title": "Provider & model",
+      "hint": "Pin a specific provider and model for this agent, or leave both as workspace defaults to inherit Settings → Providers.",
+      "provider": "Provider",
+      "model": "Model",
+      "useWorkspaceDefault": "Use workspace default",
+      "workspaceDefault": "(workspace default)",
+      "effectiveHint": "This agent will run as provider={{provider}}, model={{model}}."
     },
     "createWorkspace": {
       "title": "New workspace",

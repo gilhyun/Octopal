@@ -3,8 +3,9 @@ import { useTranslation, Trans } from 'react-i18next'
 import { EmojiPicker } from '../EmojiPicker'
 import { AlertTriangle } from 'lucide-react'
 import { McpValidationModal } from './McpValidationModal'
+import { AgentModelTab } from './AgentModelTab'
 
-type AgentTab = 'basic' | 'prompt' | 'permissions' | 'mcp'
+type AgentTab = 'basic' | 'prompt' | 'permissions' | 'model' | 'mcp'
 
 interface CreateAgentModalProps {
   folderPath: string
@@ -31,6 +32,12 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
   const [limitReached, setLimitReached] = useState<number | null>(null)
   const [showMcpValidation, setShowMcpValidation] = useState(false)
   const [pendingMcpServers, setPendingMcpServers] = useState<McpServersConfig | null>(null)
+  // Phase 6 §5.2 — new agents default to "Use workspace default" for both
+  // provider and model. Users explicitly opt out by toggling the checkbox
+  // in the Model tab. `undefined` here ⇒ field omitted from the
+  // create_octo payload ⇒ inherits at turn time.
+  const [provider, setProvider] = useState<string | undefined>(undefined)
+  const [model, setModel] = useState<string | undefined>(undefined)
 
   const create = async () => {
     setError(null)
@@ -71,6 +78,10 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
       color: color || undefined,
       permissions,
       mcpServers,
+      // Phase 6 — undefined ⇒ omit from request, agent inherits
+      // workspace default at turn time.
+      provider,
+      model,
     })
     if (res.ok) {
       // If MCP servers were configured, run validation before closing
@@ -129,6 +140,7 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
     { id: 'basic', label: t('modals.editAgent.tabBasic') },
     { id: 'prompt', label: t('modals.editAgent.tabPrompt') },
     { id: 'permissions', label: t('modals.editAgent.tabPermissions') },
+    { id: 'model', label: t('modals.editAgent.tabModel') },
     { id: 'mcp', label: t('modals.editAgent.tabMcp') },
   ]
 
@@ -245,6 +257,15 @@ export function CreateAgentModal({ folderPath, onClose, onCreated }: CreateAgent
                 onChange={(e) => setDenyPaths(e.target.value)}
               />
             </>
+          )}
+
+          {tab === 'model' && (
+            <AgentModelTab
+              provider={provider}
+              model={model}
+              onProviderChange={setProvider}
+              onModelChange={setModel}
+            />
           )}
 
           {tab === 'mcp' && (

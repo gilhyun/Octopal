@@ -2,8 +2,9 @@ import { useState, useEffect } from 'react'
 import { useTranslation } from 'react-i18next'
 import { EmojiPicker } from '../EmojiPicker'
 import { McpValidationModal } from './McpValidationModal'
+import { AgentModelTab } from './AgentModelTab'
 
-type AgentTab = 'basic' | 'prompt' | 'permissions' | 'mcp'
+type AgentTab = 'basic' | 'prompt' | 'permissions' | 'model' | 'mcp'
 
 interface EditAgentModalProps {
   agent: OctoFile
@@ -37,6 +38,11 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [error, setError] = useState<string | null>(null)
   const [showMcpValidation, setShowMcpValidation] = useState(false)
   const [pendingMcpServers, setPendingMcpServers] = useState<McpServersConfig | null>(null)
+  // Phase 6 §5.1 — per-agent provider/model. `undefined` ⇒ inherit
+  // workspace default at turn time (rendered as "Use workspace default"
+  // checkbox). Initial values come from the agent's stored config.
+  const [provider, setProvider] = useState<string | undefined>(agent.provider)
+  const [model, setModel] = useState<string | undefined>(agent.model)
 
   // Load prompt.md content on mount
   useEffect(() => {
@@ -84,6 +90,16 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
       color,
       permissions,
       mcpServers,
+      // Phase 6 — 3-state forwarding:
+      //   undefined → don't touch (inherits previous value if any)
+      //   ""        → REMOVE the field (user clicked "Use workspace default")
+      //   "<value>" → set
+      // Local state uses `undefined` for inherit, so we map to "" on
+      // the wire when the user previously had a value but cleared it.
+      // For agents that never had the field, `agent.provider` is
+      // already undefined and we keep it that way (no wire write).
+      provider: provider === undefined && agent.provider !== undefined ? '' : provider,
+      model: model === undefined && agent.model !== undefined ? '' : model,
     })
     if (res.ok) {
       // If MCP servers were configured, run validation
@@ -119,6 +135,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
     { id: 'basic', label: t('modals.editAgent.tabBasic') },
     { id: 'prompt', label: t('modals.editAgent.tabPrompt') },
     { id: 'permissions', label: t('modals.editAgent.tabPermissions') },
+    { id: 'model', label: t('modals.editAgent.tabModel') },
     { id: 'mcp', label: t('modals.editAgent.tabMcp') },
   ]
 
@@ -239,6 +256,15 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
                 onChange={(e) => setDenyPaths(e.target.value)}
               />
             </>
+          )}
+
+          {tab === 'model' && (
+            <AgentModelTab
+              provider={provider}
+              model={model}
+              onProviderChange={setProvider}
+              onModelChange={setModel}
+            />
           )}
 
           {tab === 'mcp' && (

@@ -798,6 +798,36 @@ button {
   accent-color: var(--accent);
 }
 
+/* Phase 6: inline variant of perm-toggle used in the Model tab next
+   to label rows. Same checkbox styling but smaller padding and no
+   background — sits beside the field label rather than as a primary
+   row element. */
+.perm-toggle--inline {
+  background: transparent;
+  border: none;
+  padding: 4px 6px;
+  font-size: var(--font-xs);
+}
+
+.perm-toggle--inline:hover {
+  border-color: transparent;
+  color: var(--text-primary);
+}
+
+/* Header row in the Model tab — label on the left, "Use workspace
+   default" checkbox on the right. */
+.modal-field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.modal-field-row .modal-label {
+  margin: 0;
+}
+
 .btn-danger {
   padding: 8px 16px;
   border-radius: var(--radius-md);

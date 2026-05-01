@@ -257,12 +257,22 @@
       "tabBasic": "기본 정보",
       "tabPrompt": "프롬프트",
       "tabPermissions": "권한",
+      "tabModel": "모델",
       "tabMcp": "MCP",
       "rolePlaceholder": "React, TypeScript 전문 풀스택 개발자",
       "roleHint": "다른 에이전트에게 보여지는 짧은 소개 (1-2문장).",
       "promptLabel": "시스템 프롬프트",
       "promptHint": "에이전트의 전체 지시사항. prompt.md 파일로 저장되며 VS Code 등에서도 편집 가능합니다.",
       "promptPlaceholder": "당신은 개발자 에이전트입니다. 깔끔한 코드를 작성하고, 기능을 구현하고, 버그를 수정합니다..."
+    },
+    "agentModel": {
+      "title": "프로바이더 & 모델",
+      "hint": "이 에이전트만의 프로바이더/모델을 지정하거나, 둘 다 워크스페이스 기본값을 상속하도록 둘 수 있습니다.",
+      "provider": "프로바이더",
+      "model": "모델",
+      "useWorkspaceDefault": "워크스페이스 기본값 사용",
+      "workspaceDefault": "(워크스페이스 기본값)",
+      "effectiveHint": "이 에이전트는 provider={{provider}}, model={{model}}로 실행됩니다."
     },
     "createWorkspace": {
       "title": "새 워크스페이스",
