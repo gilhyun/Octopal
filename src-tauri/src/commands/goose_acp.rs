@@ -1262,7 +1262,27 @@ pub async fn run_agent_turn(
     // the sidecar. For Anthropic with ApiKey mode they happen to be equal
     // (both "anthropic"); for CliSubscription mode they diverge:
     // ui=anthropic, goose=claude-code (scope §6.1).
-    let provider = "anthropic".to_string();
+    //
+    // Phase 6 §4.1: provider is no longer hardcoded — read the per-agent
+    // `AgentBinding` from config.json and fall back to
+    // `settings.providers.default_provider`. An agent without the field
+    // (legacy or unconfigured) inherits the workspace default; an agent
+    // with `"provider": "openai"` routes via OpenAI even when the
+    // workspace default is Anthropic.
+    let binding = crate::commands::agent_config::AgentBinding::read_or_default(
+        std::path::Path::new(&params.octo_path),
+    );
+    let (provider, settings_default_model_for_resolution) = {
+        let settings = state.settings.lock().map_err(|e| e.to_string())?;
+        let resolved_provider = binding
+            .provider
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(settings.providers.default_provider.as_str())
+            .to_string();
+        // Take a string copy so the lock can drop before any await.
+        (resolved_provider, settings.providers.default_model.clone())
+    };
 
     // ── Configured-provider check (Phase 4, scope §4.1) ──────────────
     // Reads the settings flag, NOT the keyring. This means opening the
@@ -1323,11 +1343,33 @@ pub async fn run_agent_turn(
         .map_err(|e| format!("mkdir .octopal: {e}"))?;
     let xdg = GooseXdgRoots::under(&app_data_root);
 
-    let model = if params.model.is_empty() {
-        "claude-sonnet-4-6".to_string()
-    } else {
-        params.model.clone()
-    };
+    // Phase 6 §4.1 model resolution. Priority (most → least specific):
+    //   1. binding.model      (per-agent config.json override)
+    //   2. params.model       (caller suggestion — usually a dispatcher
+    //                          override; ignored when empty)
+    //   3. settings.providers.default_model
+    //   4. "claude-sonnet-4-6" (built-in fallback for the very-first-run
+    //                           case where settings haven't been
+    //                           normalized yet)
+    let model = binding
+        .model
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            if params.model.is_empty() {
+                None
+            } else {
+                Some(params.model.clone())
+            }
+        })
+        .unwrap_or_else(|| {
+            if settings_default_model_for_resolution.is_empty() {
+                "claude-sonnet-4-6".to_string()
+            } else {
+                settings_default_model_for_resolution.clone()
+            }
+        });
 
     // Phase 4 invariant (scope §4.1): keyring is read **only on MISS
     // path**. HIT path reuses a pooled sidecar that already has the key
