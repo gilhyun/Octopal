@@ -246,6 +246,18 @@ pub struct GooseSpawnConfig {
     pub permissions: Option<OctoPermissions>,
     /// The cwd the agent sees via ACP. Usually the workspace folder.
     pub cwd: PathBuf,
+    /// Phase 5a-finalize §3.3: absolute path of the CLI-subscription
+    /// binary, when applicable. Pinned into the child env via the
+    /// matching `*_COMMAND` variable so Goose's subprocess spawn uses
+    /// the discovered path instead of falling back to PATH lookup.
+    ///
+    /// - `None` for `AuthMode::ApiKey` and Ollama (those don't spawn
+    ///   a subprocess CLI).
+    /// - `Some(path)` for `AuthMode::CliSubscription` — populated by
+    ///   `run_agent_turn` via [`crate::commands::binary_discovery::discover_binary`]
+    ///   on the spawn (MISS / drift) path. HIT path doesn't need it
+    ///   because the existing sidecar already has it baked into its env.
+    pub cli_command: Option<PathBuf>,
 }
 
 /// Build the env map passed to `goose acp`. Pure function — no I/O.
@@ -289,29 +301,58 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
         }
     }
 
-    // Phase 5a (scope §6.3): propagate parent PATH so Goose providers that
-    // spawn their own subprocesses can resolve them. The `claude-code`
-    // provider shells out to the user's `claude` binary via PATH lookup —
-    // strip PATH and Goose emits "could not resolve command 'claude'"
-    // (verified in scope §3.2 probe).
+    // Phase 5a-finalize §3.3: pin the CLI-subscription binary's absolute
+    // path into Goose's env via the matching `*_COMMAND` override. Goose
+    // reads these and skips PATH lookup, which is exactly what we want
+    // on macOS app-bundle launches where LaunchServices stripped nvm
+    // dirs from PATH (5a §10.3 / 5a-finalize §1.1).
     //
-    // Technically std::process::Command (which tauri-plugin-shell wraps)
-    // inherits PATH from the parent by default, so this is a *redundant*
-    // explicit pass — but writing it out makes the invariant auditable
-    // (future refactor that adds `.env_clear()` won't silently break
-    // claude-code) and costs nothing in other modes (anthropic/openai
-    // ignore PATH). Keeps `build_goose_env` free of auth_mode awareness.
+    // Provider → env var mapping (verified by Goose v1.31.0 strings dump):
+    //   claude-code  → CLAUDE_CODE_COMMAND
+    //   claude-acp   → CLAUDE_CODE_COMMAND  (claude-acp also spawns claude)
+    //   chatgpt-codex → CODEX_COMMAND
+    //   gemini-cli / gemini-oauth → GEMINI_CLI_COMMAND
     //
-    // Not fully sufficient on its own for macOS app-bundle launches: when
-    // Octopal starts from Finder/Dock, the parent PATH is just the
-    // LaunchServices minimum (`/usr/bin:/bin:/usr/sbin:/sbin`), which
-    // misses homebrew/nvm/asdf install locations. Scope §10.3 tracks that
-    // gap for Phase 5b; for Phase 5a users who installed `claude` via the
-    // canonical installer (which puts it in `~/.local/bin` → symlinked or
-    // shimmed into a standard path) this is enough.
-    if let Ok(path) = std::env::var("PATH") {
-        env.insert("PATH".into(), path);
+    // Other providers (`anthropic`, `openai`, `ollama`, …) don't spawn a
+    // subprocess CLI — `cli_command` should be None for them and this
+    // block is a no-op.
+    if let Some(abs_path) = &cfg.cli_command {
+        let env_var = match cfg.provider.as_str() {
+            "claude-code" | "claude-acp" => Some("CLAUDE_CODE_COMMAND"),
+            "chatgpt-codex" => Some("CODEX_COMMAND"),
+            "gemini-cli" | "gemini-oauth" => Some("GEMINI_CLI_COMMAND"),
+            _ => None,
+        };
+        if let Some(v) = env_var {
+            env.insert(v.into(), abs_path.to_string_lossy().into_owned());
+        }
     }
+
+    // Phase 5a-finalize §3.1: child PATH is the *augmented* candidate-dir
+    // value, not just the parent inherited PATH. Two reasons it must
+    // include the augmentation:
+    //
+    // 1. macOS app-bundle launches inherit a minimal LaunchServices PATH
+    //    (`/usr/bin:/bin:/usr/sbin:/sbin`). Goose providers that fall
+    //    back to PATH lookup despite our `*_COMMAND` override (or future
+    //    providers we don't have an override for yet) would fail to find
+    //    nvm/asdf/homebrew binaries.
+    //
+    // 2. Even when our `*_COMMAND` pin works, shebang scripts re-resolve
+    //    their interpreter via PATH at exec time. Codex CLI's
+    //    `#!/usr/bin/env node` will fail with "env: node: No such file
+    //    or directory" if PATH doesn't have a node binary — which under
+    //    LaunchServices it won't, since user's node is typically in
+    //    nvm or homebrew.
+    //
+    // Replaces the C-1 `std::env::var("PATH")` block which only forwarded
+    // parent PATH (insufficient under LaunchServices). The augmented value
+    // includes the parent PATH at the front (preserving its order) plus
+    // the heuristic fallbacks.
+    env.insert(
+        "PATH".into(),
+        crate::commands::binary_discovery::augmented_path_value(),
+    );
 
     env
 }
@@ -891,6 +932,7 @@ pub async fn acp_smoke_test(app: AppHandle) -> Result<Value, String> {
         xdg,
         permissions: None,
         cwd: sandbox.clone(),
+        cli_command: None,
     };
 
     let env = build_goose_env(&cfg);
@@ -1026,6 +1068,7 @@ pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, Stri
         xdg,
         permissions: None,
         cwd: sandbox.clone(),
+        cli_command: None,
     };
 
     let (client, session_id) = match spawn_agent(&app, cfg).await {
@@ -1295,6 +1338,7 @@ pub async fn run_agent_turn(
         xdg,
         permissions: params.permissions.clone(),
         cwd: std::path::PathBuf::from(&params.folder_path),
+        cli_command: None,
     };
 
     // ── Pool key + config hash (scope §2.1 + §4.3) ───────────────────
@@ -1361,7 +1405,44 @@ pub async fn run_agent_turn(
         cfg.api_key = Some(key);
         Ok(())
     };
+    // Phase 5a-finalize §3.3: counterpart to fill_api_key for the
+    // CliSubscription path. Resolves the provider's UI-facing CLI name
+    // (claude / codex / …) into an absolute binary path via the
+    // augmented discovery (binary_discovery::discover_binary). The
+    // resolved path goes into cfg.cli_command and ends up in the child
+    // env as CLAUDE_CODE_COMMAND / CODEX_COMMAND / GEMINI_CLI_COMMAND
+    // via build_goose_env.
+    let fill_cli_command = |cfg: &mut GooseSpawnConfig, binary: &str| -> Result<(), String> {
+        let abs = crate::commands::binary_discovery::discover_binary(binary).ok_or_else(
+            || {
+                format!(
+                    "Could not find `{binary}` on PATH or known install dirs \
+                     (nvm, asdf, homebrew, ~/.local/bin, ~/.cargo/bin). \
+                     Install it (or use API key mode in Settings → Providers)."
+                )
+            },
+        )?;
+        eprintln!(
+            "[binary_discovery] discovered {binary} at {}",
+            abs.display()
+        );
+        cfg.cli_command = Some(abs);
+        Ok(())
+    };
     let needs_api_key = auth_mode == crate::state::AuthMode::ApiKey;
+    let needs_cli_command = auth_mode == crate::state::AuthMode::CliSubscription;
+    // Map UI provider → CLI binary name to discover. Phase 5a-finalize
+    // §3.4 expands this with OpenAI; for now (D-3) only Anthropic has a
+    // CliSubscription route, so any other provider here is a programmer
+    // error reflected in the resolver step above (it would have already
+    // returned None).
+    let cli_binary_for = |ui_provider: &str| -> Option<&'static str> {
+        match ui_provider {
+            "anthropic" => Some("claude"),
+            // D-4 will add: ("openai", _) => Some("codex"),
+            _ => None,
+        }
+    };
     let client = match pool.take(&pool_key) {
         Some(entry) if entry.config_hash == expected_hash => {
             eprintln!("[goose_acp_pool] HIT key={}", pool_key);
@@ -1382,12 +1463,30 @@ pub async fn run_agent_turn(
             if needs_api_key {
                 fill_api_key(&mut cfg, &provider)?;
             }
+            if needs_cli_command {
+                let binary = cli_binary_for(&provider).ok_or_else(|| {
+                    format!(
+                        "CliSubscription routing reached spawn for unsupported \
+                         provider \"{provider}\" — resolver should have rejected earlier."
+                    )
+                })?;
+                fill_cli_command(&mut cfg, binary)?;
+            }
             spawn_initialized(app, &cfg).await?
         }
         None => {
             eprintln!("[goose_acp_pool] MISS key={} → spawn", pool_key);
             if needs_api_key {
                 fill_api_key(&mut cfg, &provider)?;
+            }
+            if needs_cli_command {
+                let binary = cli_binary_for(&provider).ok_or_else(|| {
+                    format!(
+                        "CliSubscription routing reached spawn for unsupported \
+                         provider \"{provider}\" — resolver should have rejected earlier."
+                    )
+                })?;
+                fill_cli_command(&mut cfg, binary)?;
             }
             spawn_initialized(app, &cfg).await?
         }
@@ -1724,6 +1823,7 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
         assert_eq!(env.get("GOOSE_PROVIDER").map(|s| s.as_str()), Some("anthropic"));
@@ -1746,6 +1846,7 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
         assert_eq!(
@@ -1771,6 +1872,7 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
         assert!(env.get("ANTHROPIC_API_KEY").is_none());
@@ -1953,13 +2055,13 @@ mod tests {
     // ── Phase 5a Commit C-1: build_goose_env PATH propagation ─────────
 
     #[test]
-    fn env_builder_preserves_parent_path() {
-        // §6.3: `claude-code` spawns `claude` via PATH lookup; if the child
-        // env is missing PATH, Goose emits "could not resolve command
-        // 'claude'" (scope §3.2 probe). We pass PATH through explicitly so
-        // the invariant doesn't depend on std::process::Command's inherit
-        // semantics (which a future refactor with `.env_clear()` would
-        // silently break).
+    fn env_builder_path_includes_parent_dirs() {
+        // 5a-finalize §3.1 update: child PATH is now the *augmented*
+        // candidate-dir value, not the verbatim parent PATH (D-3
+        // change). The C-1 invariant — "parent PATH dirs reach the
+        // child" — is preserved as a substring relation: every dir
+        // from parent PATH must appear inside the augmented PATH at
+        // its original position. Heuristic dirs append after.
         let tmp = std::env::temp_dir().join("octopal-env-path-test");
         let cfg = GooseSpawnConfig {
             provider: "claude-code".into(),
@@ -1969,15 +2071,160 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
+        let aug_path = env
+            .get("PATH")
+            .expect("PATH must be set on child env")
+            .as_str();
         let parent_path =
             std::env::var("PATH").expect("test harness must have PATH set");
+        for dir in parent_path.split(':').filter(|s| !s.is_empty()) {
+            assert!(
+                aug_path.contains(dir),
+                "augmented PATH should preserve parent dir {dir:?}",
+            );
+        }
+    }
+
+    // ── Phase 5a-finalize Commit D-3: cli_command → *_COMMAND env ─────
+
+    #[test]
+    fn env_builder_claude_code_with_cli_command_injects_command_env() {
+        // CliSubscription path: cfg.cli_command carries the absolute
+        // path of the discovered claude binary. build_goose_env must
+        // emit CLAUDE_CODE_COMMAND with that exact value so Goose
+        // skips PATH lookup. This is the workaround for macOS
+        // LaunchServices PATH stripping (§1.1).
+        let tmp = std::env::temp_dir().join("octopal-env-claude-cmd-test");
+        let claude_path =
+            std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/claude");
+        let cfg = GooseSpawnConfig {
+            provider: "claude-code".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: None,
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+            cli_command: Some(claude_path.clone()),
+        };
+        let env = build_goose_env(&cfg);
         assert_eq!(
-            env.get("PATH").map(|s| s.as_str()),
-            Some(parent_path.as_str()),
-            "PATH must be propagated to the child env verbatim",
+            env.get("CLAUDE_CODE_COMMAND").map(|s| s.as_str()),
+            Some(claude_path.to_string_lossy().as_ref()),
+            "CLAUDE_CODE_COMMAND should pin the discovered absolute path",
         );
+        assert!(env.get("CODEX_COMMAND").is_none());
+        assert!(env.get("GEMINI_CLI_COMMAND").is_none());
+        // Still no API key — CliSubscription invariant.
+        assert!(env.get("ANTHROPIC_API_KEY").is_none());
+    }
+
+    #[test]
+    fn env_builder_chatgpt_codex_with_cli_command_injects_codex_env() {
+        // Phase 5a-finalize §3.4 forward-prep: D-4 wires OpenAI to this
+        // provider, but build_goose_env's *_COMMAND mapping already
+        // covers chatgpt-codex (single source of truth for the
+        // provider→env var map). Pin the behavior now so D-4 just
+        // wires the resolver; no env-builder churn.
+        let tmp = std::env::temp_dir().join("octopal-env-codex-cmd-test");
+        let codex_path =
+            std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/codex");
+        let cfg = GooseSpawnConfig {
+            provider: "chatgpt-codex".into(),
+            model: "gpt-5".into(),
+            api_key: None,
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+            cli_command: Some(codex_path.clone()),
+        };
+        let env = build_goose_env(&cfg);
+        assert_eq!(
+            env.get("CODEX_COMMAND").map(|s| s.as_str()),
+            Some(codex_path.to_string_lossy().as_ref()),
+        );
+        assert!(env.get("CLAUDE_CODE_COMMAND").is_none());
+        assert!(env.get("OPENAI_API_KEY").is_none());
+    }
+
+    #[test]
+    fn env_builder_no_cli_command_means_no_command_env_emitted() {
+        // ApiKey mode (or any non-CliSubscription provider): cfg.cli_command
+        // = None must emit zero `*_COMMAND` env vars. Otherwise stray
+        // env from a prior turn could leak into a fresh ApiKey spawn.
+        let tmp = std::env::temp_dir().join("octopal-env-no-cmd-test");
+        let cfg = GooseSpawnConfig {
+            provider: "anthropic".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: Some("sk-ant-fake".into()),
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+            cli_command: None, // explicit
+        };
+        let env = build_goose_env(&cfg);
+        assert!(env.get("CLAUDE_CODE_COMMAND").is_none());
+        assert!(env.get("CODEX_COMMAND").is_none());
+        assert!(env.get("GEMINI_CLI_COMMAND").is_none());
+    }
+
+    #[test]
+    fn env_builder_claude_acp_routes_to_claude_code_command() {
+        // claude-acp also spawns `claude` underneath (just via the
+        // npm adapter). It shares the CLAUDE_CODE_COMMAND override.
+        // Phase 5c will pick this up; pinning the mapping now means
+        // D-3's *_COMMAND switch survives the eventual claude-acp
+        // transition without further build_goose_env edits.
+        let tmp = std::env::temp_dir().join("octopal-env-claude-acp-test");
+        let claude_path = std::path::PathBuf::from("/usr/local/bin/claude");
+        let cfg = GooseSpawnConfig {
+            provider: "claude-acp".into(),
+            model: "claude-sonnet-4-6".into(),
+            api_key: None,
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+            cli_command: Some(claude_path.clone()),
+        };
+        let env = build_goose_env(&cfg);
+        assert_eq!(
+            env.get("CLAUDE_CODE_COMMAND").map(|s| s.as_str()),
+            Some(claude_path.to_string_lossy().as_ref()),
+        );
+    }
+
+    #[test]
+    fn env_builder_unknown_provider_with_cli_command_is_silent_noop() {
+        // Defense in depth: an unknown provider with cli_command set
+        // (which shouldn't happen — resolver gates this) must NOT
+        // accidentally inject the path under some default env var.
+        // Silent no-op = safe failure; Goose surfaces "provider not
+        // configured" instead of running the binary unexpectedly.
+        let tmp = std::env::temp_dir().join("octopal-env-unknown-cmd-test");
+        let cfg = GooseSpawnConfig {
+            provider: "mystery-provider".into(),
+            model: "x".into(),
+            api_key: None,
+            ollama_host: None,
+            xdg: xdg(&tmp),
+            permissions: None,
+            cwd: tmp.clone(),
+            cli_command: Some(std::path::PathBuf::from("/tmp/anything")),
+        };
+        let env = build_goose_env(&cfg);
+        // None of the known *_COMMAND keys appear.
+        for key in ["CLAUDE_CODE_COMMAND", "CODEX_COMMAND", "GEMINI_CLI_COMMAND"] {
+            assert!(
+                env.get(key).is_none(),
+                "unknown provider must not synthesize {key}",
+            );
+        }
     }
 
     #[test]
@@ -1994,6 +2241,7 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
         assert_eq!(
@@ -2026,6 +2274,7 @@ mod tests {
             xdg: xdg(&tmp),
             permissions: None,
             cwd: tmp.clone(),
+            cli_command: None,
         };
         let env = build_goose_env(&cfg);
         assert_eq!(
