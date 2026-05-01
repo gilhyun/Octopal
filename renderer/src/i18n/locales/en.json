@@ -229,7 +229,9 @@
     "mcpConfigured": "MCP configured",
     "clickToMention": "Click to mention, right-click to edit",
     "limit": "Agent limit",
-    "limitMsg": "You can create up to <strong>{{max}}</strong> agents per folder.<br />Delete an existing agent and try again."
+    "limitMsg": "You can create up to <strong>{{max}}</strong> agents per folder.<br />Delete an existing agent and try again.",
+    "modelOverrideTitle": "Pinned to provider={{provider}}, model={{model}}",
+    "workspaceDefault": "(default)"
   },
   "modals": {
     "welcome": {

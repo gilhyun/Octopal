@@ -93,7 +93,25 @@ export function RightSidebar({
                     </span>
                   )}
                 </div>
-                <div className="agent-role">{r.role || 'agent'}</div>
+                <div className="agent-role">
+                  {r.role || 'agent'}
+                  {/* Phase 6 §5.3: surface non-default provider/model so the
+                      user can see at a glance which agent runs on which
+                      backend. Only shown when at least one field is
+                      overridden — agents inheriting workspace defaults
+                      stay clean (the most common case). */}
+                  {(r.provider || r.model) && (
+                    <span
+                      className="agent-model-badge"
+                      title={t('agents.modelOverrideTitle', {
+                        provider: r.provider ?? t('agents.workspaceDefault'),
+                        model: r.model ?? t('agents.workspaceDefault'),
+                      })}
+                    >
+                      {r.model || r.provider}
+                    </span>
+                  )}
+                </div>
               </div>
               <button
                 className="agent-edit-btn"

@@ -229,7 +229,9 @@
     "mcpConfigured": "MCP 설정됨",
     "clickToMention": "클릭하여 멘션, 우클릭하여 편집",
     "limit": "에이전트 제한",
-    "limitMsg": "폴더당 최대 <strong>{{max}}명</strong>의 에이전트만 생성할 수 있습니다.<br />기존 에이전트를 삭제한 후 다시 시도해주세요."
+    "limitMsg": "폴더당 최대 <strong>{{max}}명</strong>의 에이전트만 생성할 수 있습니다.<br />기존 에이전트를 삭제한 후 다시 시도해주세요.",
+    "modelOverrideTitle": "provider={{provider}}, model={{model}}로 고정됨",
+    "workspaceDefault": "(기본값)"
   },
   "modals": {
     "welcome": {
