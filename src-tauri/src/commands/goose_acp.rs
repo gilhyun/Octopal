@@ -182,7 +182,13 @@ pub(crate) fn resolve_goose_provider(
         (_, AuthMode::None) => None,
         ("anthropic", AuthMode::ApiKey) => Some("anthropic"),
         ("anthropic", AuthMode::CliSubscription) => Some("claude-code"),
+        // Phase 5a-finalize §3.4: OpenAI's CliSubscription routes to
+        // `chatgpt-codex` (current Goose v1.31.0 OpenAI subscription
+        // path; supersedes deprecated `codex` provider). Same pattern
+        // as Anthropic's `claude-code` choice over `claude-acp`:
+        // zero-install, no extra npm adapter required.
         ("openai", AuthMode::ApiKey) => Some("openai"),
+        ("openai", AuthMode::CliSubscription) => Some("chatgpt-codex"),
         ("google", AuthMode::ApiKey) => Some("google"),
         ("databricks", AuthMode::ApiKey) => Some("databricks"),
         ("ollama", AuthMode::ApiKey) => Some("ollama"),
@@ -1439,7 +1445,7 @@ pub async fn run_agent_turn(
     let cli_binary_for = |ui_provider: &str| -> Option<&'static str> {
         match ui_provider {
             "anthropic" => Some("claude"),
-            // D-4 will add: ("openai", _) => Some("codex"),
+            "openai" => Some("codex"),
             _ => None,
         }
     };
@@ -2020,10 +2026,12 @@ mod tests {
             ("google", AuthMode::ApiKey, Some("google")),
             ("databricks", AuthMode::ApiKey, Some("databricks")),
             ("ollama", AuthMode::ApiKey, Some("ollama")),
-            // CliSubscription: Phase 5a routes ONLY anthropic → claude-code.
-            // Other providers' CLI flows are Phase 5b+ territory.
+            // CliSubscription:
+            //   anthropic → claude-code (Phase 5a)
+            //   openai    → chatgpt-codex (Phase 5a-finalize D-4)
+            //   others    → None (5b+ territory)
             ("anthropic", AuthMode::CliSubscription, Some("claude-code")),
-            ("openai", AuthMode::CliSubscription, None),
+            ("openai", AuthMode::CliSubscription, Some("chatgpt-codex")),
             ("google", AuthMode::CliSubscription, None),
             // Unknown providers resolve to None so the caller surfaces a
             // specific error ("not supported in this build") rather than
@@ -2038,6 +2046,21 @@ mod tests {
                 "ui={ui} mode={mode:?} expected={expected:?}",
             );
         }
+    }
+
+    #[test]
+    fn resolve_goose_provider_openai_cli_subscription_uses_chatgpt_codex() {
+        // Phase 5a-finalize §3.4 single-fact pin: OpenAI's
+        // CliSubscription path MUST route to `chatgpt-codex`, NOT to
+        // the deprecated `codex` provider and NOT to `codex-acp`
+        // (which requires a separate npm install — same caveat as
+        // claude-acp). Mirror of
+        // `resolve_goose_provider_anthropic_cli_subscription_uses_claude_code`.
+        use crate::state::AuthMode;
+        assert_eq!(
+            resolve_goose_provider("openai", AuthMode::CliSubscription),
+            Some("chatgpt-codex"),
+        );
     }
 
     #[test]
