@@ -363,6 +363,13 @@ interface Window {
     // Phase 5a — Claude CLI subscription path.
     /** Probes PATH for `claude` + runs `claude --version`. Zero tokens. */
     detectClaude?: () => Promise<ClaudeDetection>
+    /**
+     * Phase 5a-finalize §3.2 — generic CLI tool probe. Same shape as
+     * detectClaude but takes the binary name (must match
+     * `^[A-Za-z0-9_-]+$`, length ≤ 64). Used by ProviderCardWithCli
+     * with `providers.json::authMethods[].detectBinary`.
+     */
+    detectBinary?: (name: string) => Promise<ClaudeDetection>
     /** Write auth mode for a provider. Invalidates the pool on change. */
     setAuthMode?: (provider: string, mode: AuthMode) => Promise<void>
     /** Demote provider auth mode to `none`. Does not touch the keyring. */

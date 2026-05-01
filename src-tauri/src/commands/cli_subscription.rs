@@ -1,28 +1,35 @@
-//! Claude CLI subscription path (Phase 5a, scope §5/§7).
+//! CLI subscription path — both Phase 5a (Anthropic via `claude-code`)
+//! and 5a-finalize (OpenAI via `chatgpt-codex`).
 //!
-//! This module owns three Tauri surfaces:
+//! This module owns these Tauri surfaces:
 //!
-//! 1. **`detect_claude`** — probes the user's `PATH` for the `claude`
-//!    binary and runs `claude --version` with a short timeout. Called
-//!    on Anthropic card mount to pick between the four card states.
-//! 2. **`set_auth_mode_cmd`** — writes the chosen `AuthMode` to
+//! 1. **`detect_binary`** (5a-finalize §3.2) — probes for any
+//!    whitelisted CLI tool by name + runs `--version`. Driven by
+//!    providers.json `authMethods[].detectBinary` so each provider
+//!    card can probe its own tool (`claude`, `codex`, …).
+//! 2. **`detect_claude`** — back-compat alias for `detect_binary("claude")`.
+//!    Kept so existing renderer call sites and 5a tests keep working.
+//! 3. **`set_auth_mode_cmd`** — writes the chosen `AuthMode` to
 //!    `configured_providers[provider]`, persists settings, and
 //!    invalidates the pool. No keyring interaction.
-//! 3. **`clear_auth_mode_cmd`** — demotes to `AuthMode::None` without
+//! 4. **`clear_auth_mode_cmd`** — demotes to `AuthMode::None` without
 //!    touching the stored API key. Symmetric with `set_auth_mode_cmd`.
+//! 5. **`get_auth_mode_cmd`** — read current mode, used after card
+//!    flips for in-memory state refresh.
 //!
 //! # Why a separate module
 //!
 //! Phase 4 `api_keys.rs` is keyring-only. The CLI subscription path is
-//! deliberately keyring-free — auth flows through the `claude` binary's
-//! own token store under `~/.claude/`. Keeping the two split prevents
-//! accidentally coupling keyring side-effects to auth-mode flips.
+//! deliberately keyring-free — auth flows through the spawned binary's
+//! own token store (claude → `~/.claude/`, codex → `~/.codex/`).
+//! Keeping the two split prevents accidentally coupling keyring side-
+//! effects to auth-mode flips.
 //!
 //! # Test Connection
 //!
-//! The renderer reuses `detect_claude` as the "test connection" action
-//! for CLI subscription mode — running `claude --version` is a zero-token
-//! probe. A real `claude -p "ok"` query would burn the user's Pro quota
+//! The renderer reuses `detect_binary` as the "test connection" action
+//! for CLI subscription mode — running `<tool> --version` is a zero-token
+//! probe. A real `<tool> -p "ok"` query would burn the user's Pro quota
 //! on every click (scope §5.3). Do **not** add a query-based probe here
 //! without an ADR revision.
 
@@ -31,6 +38,7 @@ use tauri::State;
 use tokio::process::Command;
 use tokio::time::timeout;
 
+use crate::commands::binary_discovery::{discover_binary, is_valid_binary_name};
 use crate::state::{AuthMode, ManagedState};
 
 /// Result of a `claude` binary probe.
@@ -80,34 +88,7 @@ impl ClaudeDetection {
     }
 }
 
-/// PATH lookup without pulling in the `which` crate. The `PATH` is the
-/// standard OS env var (Windows `Path`/`PATH` both resolve), split by
-/// `:` on POSIX and `;` on Windows. We stop at the first hit that's a
-/// file (not necessarily executable — the `--version` probe that
-/// follows would fail for a non-exec hit, producing the "ambiguous"
-/// path so the UI can surface it).
-fn resolve_on_path(name: &str) -> Option<std::path::PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&path) {
-        let candidate = dir.join(name);
-        if candidate.is_file() {
-            return Some(candidate);
-        }
-        // Windows executable extensions. On POSIX this is a cheap no-op.
-        #[cfg(windows)]
-        {
-            for ext in ["exe", "cmd", "bat"] {
-                let with_ext = candidate.with_extension(ext);
-                if with_ext.is_file() {
-                    return Some(with_ext);
-                }
-            }
-        }
-    }
-    None
-}
-
-/// Timeout for `claude --version`. Generous because on first run the
+/// Timeout for `<binary> --version`. Generous because on first run the
 /// binary may be doing a self-update check; short enough that a hung
 /// binary doesn't block the Settings tab indefinitely.
 const VERSION_TIMEOUT_SECS: u64 = 10;
@@ -149,17 +130,49 @@ async fn probe_version(bin: &std::path::Path) -> ClaudeDetection {
     }
 }
 
-/// Tauri command: detect the Claude CLI.
+/// Tauri command: detect any whitelisted CLI tool.
 ///
-/// Safe to call on every Settings open — no side effects, no keyring.
-/// The renderer also reuses this as the "Test Connection" action for
-/// CLI subscription mode (same probe, different copy).
+/// Phase 5a-finalize §3.2 generalization of `detect_claude`. The
+/// renderer dispatches based on `providers.json::authMethods[].detectBinary`
+/// — Anthropic's card calls `detect_binary("claude")`, OpenAI's calls
+/// `detect_binary("codex")`, future providers extend the manifest
+/// without code changes here.
+///
+/// Safety contract:
+/// - `name` is validated by [`is_valid_binary_name`] (alphanumeric +
+///   `_`/`-`, length ≤ 64). Invalid names short-circuit to `not_found`
+///   rather than erroring; the UI just shows "binary missing" copy.
+/// - Discovery uses [`discover_binary`] which scans parent PATH plus
+///   known install dirs (nvm, asdf, homebrew, ~/.local/bin, ~/.cargo/bin).
+///   Solves the macOS LaunchServices PATH gap that 5a Commit C-3
+///   manual verification surfaced (scope §1.1).
+/// - Then runs `<bin> --version` with [`VERSION_TIMEOUT_SECS`] timeout.
+///   Zero tokens consumed; never invokes `<bin>` with model-query args.
 #[tauri::command]
-pub async fn detect_claude() -> ClaudeDetection {
-    let Some(bin) = resolve_on_path("claude") else {
+pub async fn detect_binary(name: String) -> ClaudeDetection {
+    // Validation barrier first (defense in depth — discover_binary
+    // also validates, but rejecting at the command boundary lets us
+    // log "renderer asked for invalid name" if we ever add audit
+    // logging without burying it inside the helper).
+    if !is_valid_binary_name(&name) {
+        return ClaudeDetection::not_found();
+    }
+    let Some(bin) = discover_binary(&name) else {
         return ClaudeDetection::not_found();
     };
     probe_version(&bin).await
+}
+
+/// Back-compat shim for `detect_binary("claude")`. Kept so:
+/// - 5a renderer code (`window.api.detectClaude()`) keeps working
+///   without churn during the 5a-finalize transition
+/// - 5a tests in this module continue to exercise the same surface
+///
+/// New renderer code should call `detect_binary` directly with the
+/// `detectBinary` value from providers.json.
+#[tauri::command]
+pub async fn detect_claude() -> ClaudeDetection {
+    detect_binary("claude".to_string()).await
 }
 
 /// Write the auth mode for a provider, persist settings, and invalidate
@@ -293,64 +306,53 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn detect_claude_missing_binary_returns_not_found() {
-        // Point PATH at a directory that can't contain claude.
-        let guard = EnvGuard::new("PATH", Some("/var/empty"));
-        let result = detect_claude().await;
+    async fn detect_binary_missing_returns_not_found() {
+        // Use a synthetic name no nvm/asdf/homebrew dir could possibly
+        // contain. We can't just point PATH at /var/empty anymore — D-2
+        // discovery augments with known install dirs (nvm etc.) so a
+        // CI box with claude installed via nvm would find it even
+        // under a stripped PATH. Synthetic name removes that race.
+        let result = detect_binary("octopal-definitely-absent-zzz".to_string()).await;
         assert!(!result.found);
         assert!(result.path.is_none());
         assert!(result.error.is_none(), "absent ≠ ambiguous: {result:?}");
-        drop(guard);
     }
 
     #[tokio::test]
-    async fn resolve_on_path_skips_nonexistent_entries() {
-        let guard = EnvGuard::new("PATH", Some("/nonexistent-a:/nonexistent-b"));
-        assert!(resolve_on_path("sh").is_none());
-        drop(guard);
-    }
-
-    // ── env mutation helper ───────────────────────────────────────────
-    //
-    // set_var / remove_var aren't thread-safe under Rust's aliasing
-    // rules but this test module serializes via #[tokio::test] on a
-    // single-threaded runtime by default. Using the same mutex-guarded
-    // approach as api_keys.rs would force all detection tests onto one
-    // lock, which isn't needed here — the PATH tests only mutate during
-    // the `detect_claude_missing_binary_returns_not_found` and
-    // `resolve_on_path_skips_nonexistent_entries` cases and restore on
-    // drop. The `probe_version_*` tests don't touch env.
-
-    static ENV_MUTEX: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    struct EnvGuard {
-        key: String,
-        prev: Option<String>,
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    impl EnvGuard {
-        fn new(key: &str, value: Option<&str>) -> Self {
-            let lock = ENV_MUTEX.lock().unwrap();
-            let prev = std::env::var(key).ok();
-            match value {
-                Some(v) => std::env::set_var(key, v),
-                None => std::env::remove_var(key),
-            }
-            Self {
-                key: key.to_string(),
-                prev,
-                _lock: lock,
-            }
+    async fn detect_binary_rejects_invalid_name_as_not_found() {
+        // Validation barrier: path traversal / shell metacharacters all
+        // short-circuit to not_found rather than reaching discover_binary.
+        // This is defense-in-depth; discover_binary also validates, but
+        // catching at the command boundary keeps audit traces clean.
+        for bad in ["../claude", "/usr/bin/sh", "claude;rm -rf /", ""] {
+            let result = detect_binary(bad.to_string()).await;
+            assert!(
+                !result.found,
+                "bad name {bad:?} must short-circuit to not_found",
+            );
+            assert!(result.path.is_none());
         }
     }
 
-    impl Drop for EnvGuard {
-        fn drop(&mut self) {
-            match self.prev.take() {
-                Some(v) => std::env::set_var(&self.key, v),
-                None => std::env::remove_var(&self.key),
-            }
-        }
+    #[tokio::test]
+    async fn detect_claude_alias_resolves_to_detect_binary_claude() {
+        // Back-compat: detect_claude() must produce equivalent output
+        // to detect_binary("claude"). Both call sites in 5a renderer
+        // code rely on this — D-2 swapped the implementation but kept
+        // the contract.
+        let from_alias = detect_claude().await;
+        let from_generic = detect_binary("claude".to_string()).await;
+        assert_eq!(from_alias.found, from_generic.found);
+        assert_eq!(from_alias.path, from_generic.path);
+        // version + error may legitimately differ across two
+        // back-to-back invocations if the binary is doing self-update
+        // probes — but `found` and `path` are deterministic.
     }
+
+    // Env-mutation harness removed in D-2: the only tests that used
+    // it (`detect_claude_missing_binary_returns_not_found`,
+    // `resolve_on_path_skips_nonexistent_entries`) were replaced with
+    // synthetic-name-based variants that don't need PATH manipulation.
+    // `binary_discovery::tests::EnvGuard` covers the PATH-mutating
+    // path tests for the underlying lookup module.
 }

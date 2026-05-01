@@ -248,6 +248,11 @@ export function createTauriApi(): typeof window.api {
 
     // ── Phase 5a — Claude CLI subscription ──
     detectClaude: () => invoke('detect_claude'),
+    // Phase 5a-finalize §3.2 — generic binary detection for any
+    // CLI-subscription provider. Driven by providers.json's
+    // `authMethods[].detectBinary`. detectClaude above is a
+    // back-compat alias the Anthropic card still uses.
+    detectBinary: (name) => invoke('detect_binary', { name }),
     setAuthMode: (provider, mode) =>
       invoke('set_auth_mode_cmd', { provider, mode }),
     clearAuthMode: (provider) =>
