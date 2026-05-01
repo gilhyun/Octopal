@@ -489,42 +489,79 @@ pub async fn send_message(
     claude_args.push("--mcp-config".to_string());
     claude_args.push(mcp_config.to_string());
 
+    // Phase 6: read the agent's per-agent provider/model binding. Legacy
+    // path (this function) is anthropic-only — if `binding.provider` is
+    // set to anything else, log a warning and proceed with anthropic
+    // (the user's intended provider only routes via Goose, which is the
+    // goose_acp.rs path). The `binding.model` value, if present and a
+    // valid alias, takes precedence over the caller-supplied `model`
+    // suggestion below.
+    let binding =
+        crate::commands::agent_config::AgentBinding::read_or_default(Path::new(&octo_path));
+    if let Some(p) = binding.provider.as_deref() {
+        if p != "anthropic" {
+            eprintln!(
+                "[agent:legacy] agent={} has provider={} but legacy claude path \
+                 is anthropic-only — falling back to anthropic. Switch off \
+                 `useLegacyClaudeCli` in settings to route through Goose.",
+                agent_name, p
+            );
+        }
+    }
+
     // Model — extract settings values in a block to avoid holding MutexGuard across await.
     // The chosen alias is then passed through `resolve_model_for_cli`, which
     // substitutes the newest available Opus (e.g. `claude-opus-4-7`) when the
     // user's effective tier is `opus` and the startup probe found one on this
     // machine. This keeps the UI/settings simple (3 tiers) while letting
     // subscribers with Opus 4.7 access benefit automatically.
+    //
+    // Phase 6 priority order (most → least specific):
+    //   1. `binding.model`  (per-agent override from config.json)
+    //   2. `model`          (caller suggestion — typically the dispatcher
+    //                        forcing a specific tier for routing decisions)
+    //   3. `settings.advanced.default_agent_model`
+    //   4. fallback "opus"
     let chosen_alias: Option<String> = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
         let auto_model = settings.advanced.auto_model_selection;
         let allowed = ["haiku", "sonnet", "opus"];
-        // Fall back to the user's configured default whenever the caller (or
-        // dispatcher) didn't pin a specific tier. Without this, auto-model
-        // mode with a `None` suggestion would omit `--model` entirely and let
-        // the Claude CLI pick its own default (often Haiku), contradicting
-        // the user's "Default model: Opus" setting.
+        // Fall back to the user's configured default whenever neither the
+        // agent binding nor the caller pinned a specific tier. Without this,
+        // auto-model mode would omit `--model` entirely and let the Claude
+        // CLI pick its own default (often Haiku), contradicting the user's
+        // "Default model: Opus" setting.
         let default_model = &settings.advanced.default_agent_model;
         let fallback = if allowed.contains(&default_model.as_str()) {
             default_model.clone()
         } else {
             "opus".to_string()
         };
+        // Phase 6: agent-binding model takes precedence over caller model.
+        // Only valid aliases are honored at this layer (concrete model IDs
+        // pass through `resolve_model_for_cli` below); a non-alias binding
+        // value falls through to caller / fallback.
+        let binding_alias = binding
+            .model
+            .as_deref()
+            .filter(|m| allowed.contains(m))
+            .map(str::to_string);
         if auto_model {
             Some(
-                model
-                    .as_ref()
-                    .and_then(|m| {
-                        if allowed.contains(&m.as_str()) {
-                            Some(m.clone())
-                        } else {
-                            None
-                        }
+                binding_alias
+                    .or_else(|| {
+                        model.as_ref().and_then(|m| {
+                            if allowed.contains(&m.as_str()) {
+                                Some(m.clone())
+                            } else {
+                                None
+                            }
+                        })
                     })
                     .unwrap_or(fallback),
             )
         } else {
-            Some(fallback)
+            Some(binding_alias.unwrap_or(fallback))
         }
     }; // settings guard dropped here
     if let Some(alias) = chosen_alias.clone() {
