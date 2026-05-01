@@ -74,10 +74,21 @@ jobs:
           APPLE_ID: ${{ secrets.APPLE_ID }}
           APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater signing
+          # Tauri updater signing — wrapper enables createUpdaterArtifacts
+          # only when TAURI_SIGNING_PRIVATE_KEY is set (see
+          # scripts/tauri-build.mjs). Local contributor builds without
+          # the key skip updater artifacts and don't error out.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        run: pnpm exec tauri build ${{ matrix.tauri-args }}
+        # Use the wrapper (`pnpm build`), not raw `pnpm exec tauri build`,
+        # so two important pre-build steps run:
+        #   1. ensureGooseSidecar() downloads the pinned Goose binary into
+        #      src-tauri/binaries/ (gitignored — must be fetched per build)
+        #   2. createUpdaterArtifacts override is applied based on whether
+        #      the signing key env var is present
+        # The `--` is required so pnpm forwards matrix.tauri-args through
+        # to the wrapper instead of swallowing them as pnpm flags.
+        run: pnpm build -- ${{ matrix.tauri-args }}
 
       - name: List bundle output
         shell: bash

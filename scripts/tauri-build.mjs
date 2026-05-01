@@ -3,9 +3,19 @@
 /**
  * Conditional Tauri build script.
  *
- * - If TAURI_SIGNING_PRIVATE_KEY is set  → normal signed build (updater artifacts enabled)
- * - If missing                           → build WITHOUT updater artifacts so contributors
- *                                          can compile locally without the signing key.
+ * `tauri.conf.json` ships with `createUpdaterArtifacts: false` as the safe
+ * default — that way ANY build path (this wrapper, raw `pnpm tauri build`,
+ * `cargo tauri build`, an IDE integration, …) succeeds without a signing
+ * key. The wrapper only ENABLES updater artifacts when a signing key is
+ * actually present:
+ *
+ * - If `TAURI_SIGNING_PRIVATE_KEY` is set  → wrapper passes
+ *   `--config '{"bundle":{"createUpdaterArtifacts":true}}'` to override the
+ *   conf-file false. Result: signed updater artifacts produced (CI / release).
+ *
+ * - If unset                               → wrapper does nothing extra. The
+ *   conf-file false applies, no updater artifact generated, no signing
+ *   step, no error. Contributors can `pnpm build` locally with zero setup.
  *
  * Uses the locally-installed `@tauri-apps/cli` (node_modules/.bin/tauri) so no
  * separate `cargo install tauri-cli` step is required. `cargo` itself still
@@ -88,23 +98,29 @@ if (cargoDir) {
 const hasSigningKey = !!process.env.TAURI_SIGNING_PRIVATE_KEY;
 const extraArgs = process.argv.slice(2);
 
+// `tauri.conf.json` ships with createUpdaterArtifacts=false (safe default).
+// When the signing key IS present we override to true here so CI/release
+// builds emit the signed `.tar.gz` updater artifact.
 const baseArgs = ["build"];
-if (!hasSigningKey) {
+if (hasSigningKey) {
   baseArgs.push(
     "--config",
-    JSON.stringify({ bundle: { createUpdaterArtifacts: false } })
+    JSON.stringify({ bundle: { createUpdaterArtifacts: true } })
   );
 }
 
 if (hasSigningKey) {
-  console.log("🔑 Signing key detected — building with updater artifacts");
+  console.log(
+    "🔑 TAURI_SIGNING_PRIVATE_KEY detected — building WITH updater artifacts (signed)"
+  );
 } else {
   console.log(
-    "⚠️  No TAURI_SIGNING_PRIVATE_KEY found — building WITHOUT updater signing"
+    "ℹ️  No TAURI_SIGNING_PRIVATE_KEY — building without updater artifacts."
   );
   console.log(
-    "   (This is fine for local dev. CI/CD sets the key automatically.)\n"
+    "   The .app and .dmg are produced normally. Set the env var only when"
   );
+  console.log("   producing release artifacts for the GitHub updater channel.\n");
 }
 
 // Ensure bundled Goose sidecar is present before tauri build runs.

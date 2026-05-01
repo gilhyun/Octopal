@@ -154,23 +154,34 @@ claude login
 
 ## Getting Started
 
+이 프로젝트는 **pnpm**을 씁니다 (`package.json`의 `packageManager` 필드로
+명시). 없다면 `corepack enable && corepack prepare pnpm@latest --activate`.
+
 ```bash
 # 의존성 설치
-npm install
+pnpm install
 
 # 개발 모드 (Hot Reload)
-npm run dev
+pnpm dev
 
 # 프로덕션 빌드
-npm run build
+pnpm build
 ```
 
 ### 스크립트
 
 | 명령어 | 설명 |
 |--------|------|
-| `npm run dev` | Tauri 개발 모드 (Vite + Rust 백엔드, 핫 리로드) |
-| `npm run build` | 프로덕션 빌드 (Rust 백엔드 + Vite 프론트엔드 컴파일) |
+| `pnpm dev` | Tauri 개발 모드 (Vite + Rust 백엔드, 핫 리로드) |
+| `pnpm build` | 프로덕션 빌드 — Rust 백엔드 + Vite 프론트엔드 컴파일, `.app` / `.dmg`(플랫폼별) 산출. **서명 키 불필요.** |
+| `pnpm build:signed` | 업데이터 아티팩트 포함 릴리스 빌드. **메인테이너 전용** — `TAURI_SIGNING_PRIVATE_KEY` 환경변수 필요 (GitHub releases 자동 업데이트 채널용; CI에서 자동 설정). |
+
+> **왜 `pnpm tauri build`가 아니라 `pnpm build`인가요?** 전자는
+> `scripts/tauri-build.mjs`를 거쳐서 서명 키가 있을 때만 업데이터
+> 아티팩트를 활성화합니다. 후자(`pnpm tauri build`)도 일반 `.app`/`.dmg`
+> 빌드는 정상 동작합니다 — 기본 `tauri.conf.json`이
+> `createUpdaterArtifacts: false`로 출시되므로 기여자는 "private key
+> not set" 에러를 만나지 않습니다.
 
 ## Tech Stack
 

@@ -159,23 +159,34 @@ Octopal stores API keys in the OS keyring (macOS Keychain, Windows Credential Ma
 
 ## Getting Started
 
+We use **pnpm** (declared via `packageManager` in `package.json`). If you
+don't have it: `corepack enable && corepack prepare pnpm@latest --activate`.
+
 ```bash
 # Install dependencies
-npm install
+pnpm install
 
 # Development mode (Hot Reload)
-npm run dev
+pnpm dev
 
 # Production build
-npm run build
+pnpm build
 ```
 
 ### Scripts
 
 | Command | Description |
 |---------|-------------|
-| `npm run dev` | Run Tauri dev mode (Vite + Rust backend with hot reload) |
-| `npm run build` | Production build (compiles Rust backend + Vite frontend) |
+| `pnpm dev` | Run Tauri dev mode (Vite + Rust backend with hot reload) |
+| `pnpm build` | Production build — compiles Rust backend + Vite frontend, produces `.app` and `.dmg` (or platform equivalent). **No signing key required.** |
+| `pnpm build:signed` | Release build with updater artifacts. **Maintainers only** — requires `TAURI_SIGNING_PRIVATE_KEY` env var (used by CI for the GitHub releases auto-update channel). |
+
+> **Why `pnpm build` instead of `pnpm tauri build`?** The former goes
+> through `scripts/tauri-build.mjs`, which conditionally enables updater
+> artifacts only when a signing key is present. The latter calls the Tauri
+> CLI directly, which is also fine for plain `.app`/`.dmg` builds — the
+> default `tauri.conf.json` ships with `createUpdaterArtifacts: false` so
+> contributors never hit the "private key not set" error.
 
 ## Tech Stack
 
