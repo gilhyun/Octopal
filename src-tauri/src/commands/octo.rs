@@ -79,6 +79,11 @@ pub fn create_octo(
     color: Option<String>,
     permissions: Option<serde_json::Value>,
     mcp_servers: Option<serde_json::Value>,
+    // Phase 6 §3: per-agent provider/model binding. Both optional —
+    // absent / null / empty string ⇒ inherit settings defaults at
+    // turn time (resolved by `agent_config::resolve_for_turn`).
+    provider: Option<String>,
+    model: Option<String>,
 ) -> CreateResult {
     let sanitized_name = name
         .chars()
@@ -133,6 +138,16 @@ pub fn create_octo(
     if let Some(m) = mcp_servers {
         octo["mcpServers"] = m;
     }
+    // Phase 6: write provider/model only when explicitly set to a
+    // non-empty string. Absent / null / empty ⇒ inherit defaults at
+    // turn time. We deliberately don't write the field at all (vs.
+    // writing `null`) so the JSON stays compatible with v0.1.42 readers.
+    if let Some(p) = provider.as_deref().filter(|s| !s.is_empty()) {
+        octo["provider"] = serde_json::Value::String(p.to_string());
+    }
+    if let Some(m) = model.as_deref().filter(|s| !s.is_empty()) {
+        octo["model"] = serde_json::Value::String(m.to_string());
+    }
 
     // Write agent config.json
     match fs::write(&config_path, serde_json::to_string_pretty(&octo).unwrap()) {
@@ -167,6 +182,15 @@ pub fn update_octo(
     color: Option<String>,
     permissions: Option<serde_json::Value>,
     mcp_servers: Option<serde_json::Value>,
+    // Phase 6 §3: per-agent provider/model. Three-state semantics:
+    //   None         → don't touch the existing field (omitted from request)
+    //   Some("")     → REMOVE the field (UI "Use workspace default" checkbox)
+    //   Some(value)  → set to value
+    // The empty-string-as-clear convention parallels how `mcp_servers`
+    // already accepts JSON null to remove, but we reuse Option<String>
+    // here for serde simplicity on the renderer side.
+    provider: Option<String>,
+    model: Option<String>,
 ) -> CreateResult {
     let path = Path::new(&octo_path);
     if !path.exists() {
@@ -220,6 +244,23 @@ pub fn update_octo(
             octo.as_object_mut().map(|o| o.remove("mcpServers"));
         } else {
             octo["mcpServers"] = m;
+        }
+    }
+    // Phase 6: provider/model 3-state semantics — empty string clears,
+    // non-empty sets, None leaves untouched. See create_octo for the
+    // "absent vs explicit clear" rationale.
+    if let Some(p) = provider {
+        if p.is_empty() {
+            octo.as_object_mut().map(|o| o.remove("provider"));
+        } else {
+            octo["provider"] = serde_json::Value::String(p);
+        }
+    }
+    if let Some(m) = model {
+        if m.is_empty() {
+            octo.as_object_mut().map(|o| o.remove("model"));
+        } else {
+            octo["model"] = serde_json::Value::String(m);
         }
     }
 

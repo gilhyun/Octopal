@@ -35,6 +35,18 @@ interface OctoFile {
   isolated?: boolean
   permissions?: OctoPermissions | null
   mcpServers?: McpServersConfig | null
+  /**
+   * Phase 6: per-agent provider override (matches a key in
+   * providers.json). Absent ⇒ inherit `settings.providers.defaultProvider`.
+   */
+  provider?: string
+  /**
+   * Phase 6: per-agent model override. Absent ⇒ inherit
+   * `settings.providers.defaultModel`. For Anthropic, may be either an
+   * alias (opus/sonnet/haiku) or a concrete ID; other providers only
+   * accept concrete IDs (e.g. gpt-5, gemini-2.5-pro).
+   */
+  model?: string
 }
 
 interface Workspace {
@@ -173,8 +185,28 @@ interface Window {
     readPendingState: (folderPath: string) => Promise<Record<string, any>>
     writePendingState: (folderPath: string, state: Record<string, any>) => Promise<void>
 
-    createOcto: (params: { folderPath: string; name: string; role: string; prompt?: string; icon?: string; color?: string; permissions?: OctoPermissions; mcpServers?: McpServersConfig }) =>
-      Promise<{ ok: true; path: string } | { ok: false; error: string }>
+    createOcto: (params: {
+      folderPath: string
+      name: string
+      role: string
+      prompt?: string
+      icon?: string
+      color?: string
+      permissions?: OctoPermissions
+      mcpServers?: McpServersConfig
+      /**
+       * Phase 6: per-agent provider override. Absent / undefined ⇒
+       * inherit `settings.providers.defaultProvider` at turn time.
+       */
+      provider?: string
+      /**
+       * Phase 6: per-agent model override. Absent / undefined ⇒
+       * inherit `settings.providers.defaultModel` at turn time. For
+       * Anthropic, accepts both aliases (`opus`/`sonnet`/`haiku`)
+       * and concrete model IDs; other providers only accept concrete IDs.
+       */
+      model?: string
+    }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
     updateOcto: (params: {
       octoPath: string
       name?: string
@@ -184,6 +216,14 @@ interface Window {
       color?: string
       permissions?: OctoPermissions
       mcpServers?: McpServersConfig | null
+      /**
+       * Phase 6 3-state semantics:
+       *   undefined  → don't touch the existing field
+       *   ""         → REMOVE the field (UI "Use workspace default" checkbox)
+       *   "<value>"  → set to value
+       */
+      provider?: string
+      model?: string
     }) => Promise<{ ok: true; path: string } | { ok: false; error: string }>
     deleteOcto: (octoPath: string) =>
       Promise<{ ok: true } | { ok: false; error: string }>

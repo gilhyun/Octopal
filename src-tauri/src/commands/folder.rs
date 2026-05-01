@@ -472,6 +472,11 @@ pub fn list_octos(
             None,
             None,
             None,
+            // Phase 6: default assistant inherits workspace provider/model
+            // (None ⇒ omitted from config.json ⇒ resolve_for_turn falls
+            // back to settings).
+            None,
+            None,
         );
         if result.ok {
             if let Some(ref path) = result.path {

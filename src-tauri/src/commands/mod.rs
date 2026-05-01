@@ -16,6 +16,7 @@ pub mod goose_acp_mapper;
 pub mod goose_acp_pool;
 pub mod model_alias;
 pub mod providers_manifest;
+pub mod agent_config;
 pub mod api_keys;
 pub mod binary_discovery;
 pub mod cli_subscription;

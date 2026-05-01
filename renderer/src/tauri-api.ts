@@ -81,6 +81,10 @@ export function createTauriApi(): typeof window.api {
         color: params.color ?? null,
         permissions: params.permissions ?? null,
         mcpServers: params.mcpServers ?? null,
+        // Phase 6 — undefined ⇒ omit field from config.json (inherits
+        // workspace default at turn time).
+        provider: params.provider ?? null,
+        model: params.model ?? null,
       }),
     updateOcto: (params) =>
       invoke('update_octo', {
@@ -92,6 +96,12 @@ export function createTauriApi(): typeof window.api {
         color: params.color ?? null,
         permissions: params.permissions ?? null,
         mcpServers: params.mcpServers ?? null,
+        // Phase 6 — 3-state forwarding:
+        //   undefined → null on the wire ⇒ Rust treats as None ⇒ don't touch
+        //   ""        → "" on the wire ⇒ Rust removes the field
+        //   "<value>" → "<value>" ⇒ Rust sets the field
+        provider: params.provider ?? null,
+        model: params.model ?? null,
       }),
     deleteOcto: (octoPath: string) => invoke('delete_octo', { octoPath }),
     readAgentPrompt: (octoPath: string) => invoke('read_agent_prompt', { octoPath }),
