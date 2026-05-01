@@ -93,15 +93,33 @@ impl ClaudeDetection {
 /// binary doesn't block the Settings tab indefinitely.
 const VERSION_TIMEOUT_SECS: u64 = 10;
 
-/// Run `claude --version` against the path we resolved. Splits into
+/// Run `<bin> --version` against the path we resolved. Splits into
 /// its own function so tests can call it with a known-good binary
-/// (e.g. `echo`) without touching the user's real claude install.
+/// (e.g. `echo`) without touching the user's real install.
+///
+/// Phase 5a-finalize follow-up (2026-05-02 user report): for shebang
+/// scripts like `codex.js` (`#!/usr/bin/env node`), the kernel resolves
+/// the interpreter against the *child's* PATH at exec time — even
+/// when we invoke the script by absolute path. Under macOS LaunchServices
+/// the parent PATH is `/usr/bin:/bin:/usr/sbin:/sbin` (no nvm node),
+/// so a naive spawn produces `env: node: No such file or directory`,
+/// the script exits non-zero, and probe_version returns `ambiguous`.
+/// Card UI reads that as "not found" and the user sees a stuck
+/// `neither` state despite the binary being installed and runnable
+/// from a shell.
+///
+/// We inject [`augmented_path_value`] into the child env so node
+/// (and other shebang-resolved helpers) are reachable. This mirrors
+/// what `goose_acp::build_goose_env` does for the actual sidecar
+/// spawn — same invariant, different code path.
 async fn probe_version(bin: &std::path::Path) -> ClaudeDetection {
     let path_str = bin.display().to_string();
     let mut cmd = Command::new(bin);
     cmd.arg("--version");
-    // Inherit the parent PATH so `claude` can find its own helpers.
-    // No XDG manipulation — we want the user's real environment.
+    cmd.env(
+        "PATH",
+        crate::commands::binary_discovery::augmented_path_value(),
+    );
     match timeout(Duration::from_secs(VERSION_TIMEOUT_SECS), cmd.output()).await {
         Ok(Ok(out)) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
@@ -303,6 +321,40 @@ mod tests {
         assert!(!result.found);
         let err = result.error.unwrap();
         assert!(err.starts_with("exit "), "got: {err}");
+    }
+
+    #[tokio::test]
+    async fn probe_version_injects_augmented_path_into_child_env() {
+        // The 2026-05-02 codex bug: shebang scripts re-resolve their
+        // interpreter via the *child's* PATH at exec time. probe_version
+        // must inject augmented PATH (parent + nvm + asdf + homebrew +
+        // .local + .cargo) so e.g. codex.js's `#!/usr/bin/env node`
+        // can find node even when LaunchServices stripped nvm dirs from
+        // the parent inheritance.
+        //
+        // Contract test: spawn `/usr/bin/env` with our PATH override,
+        // assert the child's PATH= line equals the same string. We
+        // capture `augmented_path_value()` ONCE at the top — calling it
+        // twice would race against `binary_discovery::tests::*` which
+        // mutate PATH under their own EnvGuard.
+        let env_bin = std::path::PathBuf::from("/usr/bin/env");
+        if !env_bin.is_file() {
+            return;
+        }
+        let expected = crate::commands::binary_discovery::augmented_path_value();
+        let mut cmd = tokio::process::Command::new(&env_bin);
+        cmd.env("PATH", &expected);
+        let out = cmd.output().await.expect("spawn env");
+        let envdump = String::from_utf8_lossy(&out.stdout);
+        let path_line = envdump
+            .lines()
+            .find(|l| l.starts_with("PATH="))
+            .expect("env should print PATH= line");
+        let path_val = &path_line["PATH=".len()..];
+        assert_eq!(
+            path_val, expected,
+            "child PATH should equal the captured augmented value"
+        );
     }
 
     #[tokio::test]
