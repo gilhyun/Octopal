@@ -123,7 +123,10 @@ interface ProviderAuthMethod {
   id: string
   label: string
   goose_provider: string
+  /** Phase 5a-finalize: name of CLI binary to discover (claude, codex, …). */
   detectBinary?: string
+  /** Phase 5a-finalize: docs URL for the install-guide link. */
+  installUrl?: string
 }
 
 interface ProviderEntry {

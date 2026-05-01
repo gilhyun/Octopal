@@ -10,7 +10,7 @@
     ],
     "authMethods": [
       { "id": "api_key", "label": "API Key", "goose_provider": "anthropic" },
-      { "id": "cli_subscription", "label": "Claude Pro/Max subscription", "goose_provider": "claude-code", "detectBinary": "claude" }
+      { "id": "cli_subscription", "label": "Claude Pro/Max subscription", "goose_provider": "claude-code", "detectBinary": "claude", "installUrl": "https://docs.claude.com/en/docs/claude-code/quickstart" }
     ]
   },
   "openai": {
@@ -18,7 +18,7 @@
     "models": ["gpt-5", "gpt-5-mini", "gpt-5-codex", "o3"],
     "authMethods": [
       { "id": "api_key", "label": "API Key", "goose_provider": "openai" },
-      { "id": "cli_subscription", "label": "ChatGPT subscription (Codex CLI)", "goose_provider": "chatgpt-codex", "detectBinary": "codex" }
+      { "id": "cli_subscription", "label": "ChatGPT subscription (Codex CLI)", "goose_provider": "chatgpt-codex", "detectBinary": "codex", "installUrl": "https://developers.openai.com/codex/cli" }
     ]
   },
   "google": {

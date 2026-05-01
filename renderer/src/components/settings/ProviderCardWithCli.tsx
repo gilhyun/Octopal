@@ -14,33 +14,55 @@ import {
 } from 'lucide-react'
 
 /**
- * Anthropic-specific card with the Phase 5a four-state flow.
+ * Phase 5a-finalize §3.5: provider card that supports BOTH api_key and
+ * cli_subscription auth modes, generalizing the 5a-only
+ * AnthropicProviderCard for Anthropic + OpenAI (Codex CLI) + future
+ * subscription-bearing providers.
  *
- * Auto-detects the user's credentials on mount via two parallel probes:
- *   - `hasApiKey('anthropic')`: reads settings flag (no keyring touch)
- *   - `detectClaude()`: PATH lookup + `claude --version` (no token cost)
+ * Selection: ProvidersTab dispatches to this card iff the provider's
+ * manifest entry includes a `cli_subscription` authMethod with a
+ * `detectBinary` field. Providers with only `api_key` keep using the
+ * simpler `ProviderCard.tsx`.
+ *
+ * Auto-detects credentials on mount via two parallel probes:
+ *   - `hasApiKey(providerId)`: settings flag, no keyring touch
+ *   - `detectBinary(cliBinaryName)`: augmented PATH lookup +
+ *     `<bin> --version` (zero tokens, never invokes a model)
  *
  * Four states:
  *   neither       → install-guide + empty API key input
- *   api_key_only  → Phase 4 UI
- *   cli_only      → "Activate CLI subscription" banner
- *   detected_both → radio toggle, currentMode pre-selected
+ *   api_only      → simple Phase 4 UI
+ *   cli_only      → "Activate <Provider> CLI subscription" panel
+ *   both          → radio toggle, currentMode pre-selected
  *
- * The card is Anthropic-only because (a) Phase 5a only restores the
- * cli_subscription authMethod on Anthropic (scope §3) and (b) Goose
- * v1.31.0 has no comparable provider for the other card's providers.
- * Generic providers keep using `ProviderCard.tsx`.
+ * All copy is provider-agnostic: i18n strings interpolate `{{cliName}}`
+ * (claude / codex) and `{{providerName}}` (Anthropic / OpenAI), so
+ * adding a third subscription-capable provider is providers.json +
+ * resolver only — no card edits needed.
  */
 
-interface AnthropicProviderCardProps {
+interface ProviderCardWithCliProps {
+  /** UI provider id (matches providers.json key + keyring key). */
+  providerId: string
+  /** Display name for the card header (e.g. "Anthropic"). */
   displayName: string
+  /** Binary name to probe via detect_binary (e.g. "claude", "codex"). */
+  cliBinaryName: string
+  /** Label for the cli_subscription authMethod (from manifest). */
+  cliMethodLabel: string
+  /**
+   * Optional install URL — when provided, the `neither` state and
+   * "binary missing" hints render a link to this URL. None: link
+   * suppressed entirely.
+   */
+  cliInstallUrl?: string
   /** Whether an API key is stored (settings flag, not keyring). */
   hasKey: boolean
   /** Currently selected auth mode (reads from settings). */
   authMode: AuthMode
   /** Running in env-fallback mode. */
   envFallback: boolean
-  /** Env var name for fallback mode (OCTOPAL_KEY_ANTHROPIC). */
+  /** Env var name for fallback mode (OCTOPAL_KEY_<PROVIDER>). */
   envVarName: string
   /** Called after a save/delete/flip so parent can refresh state. */
   onChanged: () => void
@@ -48,14 +70,18 @@ interface AnthropicProviderCardProps {
 
 type Busy = 'save' | 'remove' | 'test' | 'flip' | null
 
-export function AnthropicProviderCard({
+export function ProviderCardWithCli({
+  providerId,
   displayName,
+  cliBinaryName,
+  cliMethodLabel,
+  cliInstallUrl,
   hasKey,
   authMode,
   envFallback,
   envVarName,
   onChanged,
-}: AnthropicProviderCardProps) {
+}: ProviderCardWithCliProps) {
   const { t } = useTranslation()
 
   const [detection, setDetection] = useState<ClaudeDetection | null>(null)
@@ -66,8 +92,8 @@ export function AnthropicProviderCard({
   const [busy, setBusy] = useState<Busy>(null)
   const [error, setError] = useState<string | null>(null)
   const [testResult, setTestResult] = useState<TestConnectionResult | null>(null)
-  // Separate result for CLI mode — `detectClaude` reshapes into a
-  // "Claude CLI responds" banner, distinct from the HTTP /models probe.
+  // Separate result for CLI mode — the binary `--version` probe gets a
+  // dedicated banner distinct from the HTTP `/v1/models` probe.
   const [cliTestOk, setCliTestOk] = useState<boolean | null>(null)
   const [cliTestMessage, setCliTestMessage] = useState<string | null>(null)
 
@@ -76,7 +102,16 @@ export function AnthropicProviderCard({
     ;(async () => {
       setDetecting(true)
       try {
-        const d = (await window.api.detectClaude?.()) ?? null
+        // Prefer the generic detect_binary (5a-finalize §3.2). Fall
+        // back to detectClaude alias for Anthropic if detectBinary
+        // isn't exposed (dev-build mismatches between Tauri command
+        // registration and renderer expectations).
+        let d: ClaudeDetection | null = null
+        if (window.api.detectBinary) {
+          d = await window.api.detectBinary(cliBinaryName)
+        } else if (cliBinaryName === 'claude' && window.api.detectClaude) {
+          d = await window.api.detectClaude()
+        }
         if (!cancelled) setDetection(d)
       } catch {
         if (!cancelled) setDetection(null)
@@ -87,7 +122,7 @@ export function AnthropicProviderCard({
     return () => {
       cancelled = true
     }
-  }, [])
+  }, [cliBinaryName])
 
   useEffect(() => {
     setKeyInput('')
@@ -98,14 +133,14 @@ export function AnthropicProviderCard({
   }, [hasKey, authMode])
 
   // ── State derivation ─────────────────────────────────────────────
-  const claudeFound = detection?.found === true
-  const claudeAmbiguous = detection !== null && !detection.found && detection.path !== null
+  const cliFound = detection?.found === true
+  const cliAmbiguous = detection !== null && !detection.found && detection.path !== null
 
   // Effective mode: what the UI currently *shows*. When neither side is
   // configured this falls back to api_key so the keyless state reads
   // naturally ("empty API key input + 'Install CLI' alternative").
   // When both are available and settings say 'none', we default to
-  // api_key too, since that's the existing Phase 4 muscle memory.
+  // api_key too, preserving the Phase 4 muscle memory.
   const effectiveMode: AuthMode = useMemo(() => {
     if (authMode === 'cli_subscription') return 'cli_subscription'
     if (authMode === 'api_key') return 'api_key'
@@ -113,11 +148,11 @@ export function AnthropicProviderCard({
   }, [authMode])
 
   const state: 'neither' | 'api_only' | 'cli_only' | 'both' = useMemo(() => {
-    if (hasKey && claudeFound) return 'both'
+    if (hasKey && cliFound) return 'both'
     if (hasKey) return 'api_only'
-    if (claudeFound) return 'cli_only'
+    if (cliFound) return 'cli_only'
     return 'neither'
-  }, [hasKey, claudeFound])
+  }, [hasKey, cliFound])
 
   // ── Actions ──────────────────────────────────────────────────────
 
@@ -130,8 +165,8 @@ export function AnthropicProviderCard({
     setBusy('save')
     setError(null)
     try {
-      // saveApiKeyCmd already flips configuredProviders['anthropic'] to ApiKey.
-      await window.api.saveApiKey?.('anthropic', value)
+      // saveApiKeyCmd flips configuredProviders[providerId] to ApiKey atomically.
+      await window.api.saveApiKey?.(providerId, value)
       setKeyInput('')
       onChanged()
     } catch (e: any) {
@@ -139,50 +174,51 @@ export function AnthropicProviderCard({
     } finally {
       setBusy(null)
     }
-  }, [keyInput, onChanged, t])
+  }, [keyInput, onChanged, providerId, t])
 
   const remove = useCallback(async () => {
     if (!confirm(t('settings.providers.confirmRemove', { name: displayName }))) return
     setBusy('remove')
     setError(null)
     try {
-      await window.api.deleteApiKey?.('anthropic')
+      await window.api.deleteApiKey?.(providerId)
       onChanged()
     } catch (e: any) {
       setError(e?.message ?? String(e))
     } finally {
       setBusy(null)
     }
-  }, [displayName, onChanged, t])
+  }, [displayName, onChanged, providerId, t])
 
   const activateCli = useCallback(async () => {
     setBusy('flip')
     setError(null)
     try {
-      await window.api.setAuthMode?.('anthropic', 'cli_subscription')
+      await window.api.setAuthMode?.(providerId, 'cli_subscription')
       onChanged()
     } catch (e: any) {
       setError(e?.message ?? String(e))
     } finally {
       setBusy(null)
     }
-  }, [onChanged])
+  }, [onChanged, providerId])
 
   const switchToApiKey = useCallback(async () => {
     setBusy('flip')
     setError(null)
     try {
-      // hasKey is the invariant here — we never switch to api_key when
-      // no key is stored. If the stored-key flag is out of sync we'd
-      // land in a broken state where sends fail; guard at call site.
-      await window.api.setAuthMode?.('anthropic', 'api_key')
+      // hasKey is the invariant here — never switch to api_key when
+      // no key is stored. Guard at the call site (the radio for api_key
+      // is only selectable when hasKey is true; the simple ProviderCard
+      // path covers the no-key case).
+      await window.api.setAuthMode?.(providerId, 'api_key')
       onChanged()
     } catch (e: any) {
       setError(e?.message ?? String(e))
     } finally {
       setBusy(null)
     }
-  }, [onChanged])
+  }, [onChanged, providerId])
 
   const testConnection = useCallback(async () => {
     setBusy('test')
@@ -193,28 +229,34 @@ export function AnthropicProviderCard({
 
     try {
       if (effectiveMode === 'cli_subscription') {
-        // Zero-token probe — same call as card mount, just shaped into
-        // a Test Connection banner. Scope §5.3: do NOT dispatch a real
-        // query here.
-        const d = (await window.api.detectClaude?.()) ?? null
+        // Zero-token probe — same call shape as card mount, just
+        // reshaped into a Test Connection banner. Scope §5.3
+        // invariant: do NOT dispatch a real query here.
+        let d: ClaudeDetection | null = null
+        if (window.api.detectBinary) {
+          d = await window.api.detectBinary(cliBinaryName)
+        } else if (cliBinaryName === 'claude' && window.api.detectClaude) {
+          d = await window.api.detectClaude()
+        }
         setDetection(d)
         if (d?.found) {
           setCliTestOk(true)
-          setCliTestMessage(t('settings.providers.cliTestOk'))
+          setCliTestMessage(t('settings.providers.cliTestOk', { cliName: cliBinaryName }))
         } else if (d?.path) {
           setCliTestOk(false)
           setCliTestMessage(
             t('settings.providers.cliTestAmbiguous', {
+              cliName: cliBinaryName,
               path: d.path,
               error: d.error ?? '',
             }),
           )
         } else {
           setCliTestOk(false)
-          setCliTestMessage(t('settings.providers.cliTestMissing'))
+          setCliTestMessage(t('settings.providers.cliTestMissing', { cliName: cliBinaryName }))
         }
       } else {
-        const result = await window.api.testProviderConnection?.('anthropic')
+        const result = await window.api.testProviderConnection?.(providerId)
         if (result) setTestResult(result)
       }
     } catch (e: any) {
@@ -222,15 +264,16 @@ export function AnthropicProviderCard({
     } finally {
       setBusy(null)
     }
-  }, [effectiveMode, t])
+  }, [cliBinaryName, effectiveMode, providerId, t])
 
   // ── Render ───────────────────────────────────────────────────────
 
-  const statusLabel = authMode === 'none'
-    ? t('settings.providers.notSet')
-    : authMode === 'cli_subscription'
-      ? t('settings.providers.activeCli')
-      : t('settings.providers.active')
+  const statusLabel =
+    authMode === 'none'
+      ? t('settings.providers.notSet')
+      : authMode === 'cli_subscription'
+        ? t('settings.providers.activeCli', { cliName: cliBinaryName })
+        : t('settings.providers.active')
   const statusActive = authMode !== 'none'
 
   return (
@@ -256,17 +299,17 @@ export function AnthropicProviderCard({
           {detecting && (
             <div className="provider-card-hint">
               <Loader2 size={14} className="spin" />
-              {t('settings.providers.cliDetecting')}
+              {t('settings.providers.cliDetecting', { cliName: cliBinaryName })}
             </div>
           )}
 
-          {/* Mode picker — only in `both` state (scope §5.1). */}
+          {/* Mode picker — only in `both` state. */}
           {!detecting && state === 'both' && (
             <div className="provider-card-mode-picker" role="radiogroup">
               <label className="provider-card-mode-option">
                 <input
                   type="radio"
-                  name="anthropic-authmode"
+                  name={`${providerId}-authmode`}
                   checked={effectiveMode === 'api_key'}
                   onChange={switchToApiKey}
                   disabled={busy !== null}
@@ -277,19 +320,19 @@ export function AnthropicProviderCard({
               <label className="provider-card-mode-option">
                 <input
                   type="radio"
-                  name="anthropic-authmode"
+                  name={`${providerId}-authmode`}
                   checked={effectiveMode === 'cli_subscription'}
                   onChange={activateCli}
                   disabled={busy !== null}
                 />
                 <Terminal size={14} />
-                <span>{t('settings.providers.modeCliSubscription')}</span>
+                <span>{cliMethodLabel}</span>
               </label>
             </div>
           )}
 
-          {/* API key input — shown in api_only, both (when api_key mode
-              selected), and neither (so user can paste to set up). */}
+          {/* API key input — shown in api_only, neither, or both
+              when api_key mode is selected. */}
           {!detecting &&
             (state === 'api_only' ||
               state === 'neither' ||
@@ -376,26 +419,28 @@ export function AnthropicProviderCard({
               </>
             )}
 
-          {/* CLI subscription panel — shown in cli_only, both (when cli
-              mode selected). */}
+          {/* CLI subscription panel — shown in cli_only, or both when
+              cli_subscription mode is selected. */}
           {!detecting &&
             (state === 'cli_only' ||
               (state === 'both' && effectiveMode === 'cli_subscription')) && (
               <div className="provider-card-cli-panel">
                 <div className="provider-card-cli-header">
                   <Terminal size={14} />
-                  <span>{t('settings.providers.cliSubscriptionTitle')}</span>
+                  <span>{cliMethodLabel}</span>
                 </div>
                 <p className="provider-card-cli-desc">
-                  {claudeAmbiguous
+                  {cliAmbiguous
                     ? t('settings.providers.cliAmbiguous', {
+                        cliName: cliBinaryName,
                         path: detection?.path ?? '',
                       })
                     : detection?.version
                       ? t('settings.providers.cliReadyWithVersion', {
+                          cliName: cliBinaryName,
                           version: detection.version,
                         })
-                      : t('settings.providers.cliReady')}
+                      : t('settings.providers.cliReady', { cliName: cliBinaryName })}
                 </p>
                 <div className="provider-card-actions">
                   {/* In cli_only state, show Activate iff we're not
@@ -405,10 +450,10 @@ export function AnthropicProviderCard({
                     <button
                       className="provider-card-btn primary"
                       onClick={activateCli}
-                      disabled={busy !== null || !claudeFound}
+                      disabled={busy !== null || !cliFound}
                     >
                       {busy === 'flip' && <Loader2 size={14} className="spin" />}
-                      {t('settings.providers.activateCli')}
+                      {t('settings.providers.activateCli', { cliName: cliBinaryName })}
                     </button>
                   )}
                   {authMode === 'cli_subscription' && (
@@ -434,15 +479,17 @@ export function AnthropicProviderCard({
             <div className="provider-card-hint">
               <Info size={14} />
               <span>
-                {t('settings.providers.neitherHint')}{' '}
-                <a
-                  href="https://docs.claude.com/en/docs/claude-code/quickstart"
-                  target="_blank"
-                  rel="noreferrer noopener"
-                >
-                  {t('settings.providers.cliInstallLink')}
-                </a>
-                .
+                {t('settings.providers.neitherHint', { providerName: displayName })}{' '}
+                {cliInstallUrl && (
+                  <a
+                    href={cliInstallUrl}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                  >
+                    {t('settings.providers.cliInstallLink', { cliName: cliBinaryName })}
+                  </a>
+                )}
+                {cliInstallUrl ? '.' : ''}
               </span>
             </div>
           )}

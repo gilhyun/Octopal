@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { AlertTriangle, Info, KeyRound, Loader2 } from 'lucide-react'
 import { ProviderCard } from './ProviderCard'
-import { AnthropicProviderCard } from './AnthropicProviderCard'
+import { ProviderCardWithCli } from './ProviderCardWithCli'
 
 /**
  * Settings → Providers tab (Phase 4, scope §3.4).
@@ -250,14 +250,23 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
           const primaryAuth = entry.authMethods[0]
           if (!primaryAuth) return null
           const envVarName = `OCTOPAL_KEY_${pid.toUpperCase()}`
-          // Anthropic routes to the 4-state Phase 5a card (scope §5.1).
-          // Other providers keep the simple Phase 4 card — they only
-          // have one auth path in Goose v1.31.0 (scope §3.1).
-          if (pid === 'anthropic') {
+          // Phase 5a-finalize §3.5: any provider whose authMethods
+          // includes `cli_subscription` with a `detectBinary` field
+          // gets the generic 4-state ProviderCardWithCli. Anthropic
+          // (claude-code) and OpenAI (chatgpt-codex) qualify; Google
+          // (api_key only) and Ollama (host_only) do not.
+          const cliMethod = entry.authMethods.find(
+            (m) => m.id === 'cli_subscription' && m.detectBinary,
+          )
+          if (cliMethod && cliMethod.detectBinary) {
             return (
-              <AnthropicProviderCard
+              <ProviderCardWithCli
                 key={pid}
+                providerId={pid}
                 displayName={entry.displayName}
+                cliBinaryName={cliMethod.detectBinary}
+                cliMethodLabel={cliMethod.label}
+                cliInstallUrl={cliMethod.installUrl}
                 hasKey={hasKey[pid] ?? false}
                 authMode={authModes[pid] ?? 'none'}
                 envFallback={status?.backend === 'env_fallback'}

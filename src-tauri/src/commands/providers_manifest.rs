@@ -68,6 +68,12 @@ pub struct AuthMethod {
     /// Phase 5 fields, accepted and stored but not yet consumed.
     #[serde(rename = "detectBinary", default, skip_serializing_if = "Option::is_none")]
     pub detect_binary: Option<String>,
+    /// Phase 5a-finalize §3.5: docs URL for the install-guide link
+    /// rendered when the CLI binary isn't detected. Optional —
+    /// providers without a public install page just don't render
+    /// the link.
+    #[serde(rename = "installUrl", default, skip_serializing_if = "Option::is_none")]
+    pub install_url: Option<String>,
 }
 
 /// Root manifest — a map of provider ID → entry.
