@@ -278,9 +278,18 @@ impl<'de> Deserialize<'de> for AuthMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProvidersSettings {
-    /// v0.2.0-beta opt-in rollout: true = legacy Claude CLI path (v0.1.42
-    /// behavior), false = Goose ACP sidecar. Flips to default-false in
-    /// v0.2.0 stable; removed entirely in v0.3.0 cleanup PR.
+    /// v0.2.0-beta opt-in → v0.2.0 stable default-false flip.
+    /// true = legacy Claude CLI path (v0.1.42 behavior, anthropic-only),
+    /// false = Goose ACP sidecar (multi-provider, Phase 5a + 6 features).
+    /// Removed entirely in v0.3.0 cleanup PR.
+    ///
+    /// Default flipped to `false` after Phase 6 user report (2026-05-02):
+    /// per-agent provider/model overrides only take effect on the Goose
+    /// path, but the legacy default silently fell back to anthropic and
+    /// confused users into thinking Phase 6 was broken. Existing users
+    /// with `useLegacyClaudeCli` explicit in their settings.json keep
+    /// their choice; only fresh installs and users without the field
+    /// pick up the new default.
     #[serde(rename = "useLegacyClaudeCli", default = "default_use_legacy_claude_cli")]
     pub use_legacy_claude_cli: bool,
 
@@ -353,7 +362,9 @@ impl ProvidersSettings {
 }
 
 fn default_use_legacy_claude_cli() -> bool {
-    true
+    // v0.2.0 stable: Goose path is now the default (false). See
+    // ProvidersSettings::use_legacy_claude_cli docstring for rationale.
+    false
 }
 
 fn default_default_provider() -> String {
@@ -642,6 +653,13 @@ mod migration_tests {
     fn legacy_settings_with_missing_providers_block_deserializes() {
         // Even older shape: providers key absent entirely (pre-6b).
         // `AppSettings.providers` has `#[serde(default)]` — should fill in.
+        //
+        // v0.2.0 stable flip: the default is now `false` (Goose path).
+        // A v0.1.42 user upgrading hits this branch and gets routed
+        // through Goose on first launch — they'll need to configure
+        // a provider in Settings → Providers (API key OR CLI
+        // subscription). The error message at the no-auth fast-path
+        // points them there.
         let json = r#"{
             "general": {"restoreLastWorkspace": true, "launchAtLogin": false, "language": "en"},
             "agents": {"defaultPermissions": {"fileWrite": false, "bash": false, "network": false}},
@@ -651,7 +669,10 @@ mod migration_tests {
             "versionControl": {"autoCommit": true}
         }"#;
         let s: AppSettings = serde_json::from_str(json).unwrap();
-        assert_eq!(s.providers.use_legacy_claude_cli, true);
+        assert_eq!(
+            s.providers.use_legacy_claude_cli, false,
+            "v0.2.0 stable default is false (Goose path)"
+        );
         assert_eq!(s.providers.default_provider, "anthropic");
     }
 

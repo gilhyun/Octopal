@@ -413,7 +413,9 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
           <ProvidersTab
             providers={
               settings.providers ?? {
-                useLegacyClaudeCli: true,
+                // v0.2.0 stable: legacy Claude CLI is now opt-IN (default
+                // false). See state.rs::default_use_legacy_claude_cli.
+                useLegacyClaudeCli: false,
                 defaultProvider: 'anthropic',
                 defaultModel: 'claude-sonnet-4-6',
                 plannerModel: 'claude-haiku-4-5-20251001',
@@ -688,7 +690,11 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
               </span>
               <input
                 type="checkbox"
-                checked={settings.providers?.useLegacyClaudeCli !== false}
+                // v0.2.0 stable: undefined / missing settings ⇒ false
+                // (Goose path is the default now). The previous form
+                // `!== false` resolved to `true` on undefined, which
+                // matched the v0.2.0-beta opt-in semantics; flipped here.
+                checked={settings.providers?.useLegacyClaudeCli === true}
                 onChange={(e) =>
                   update('providers', { useLegacyClaudeCli: e.target.checked })
                 }
