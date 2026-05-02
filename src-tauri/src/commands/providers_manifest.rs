@@ -162,15 +162,28 @@ mod tests {
     }
 
     #[test]
-    fn bundled_anthropic_has_opus_4_7_first() {
-        // ADR §6.8 newest-first ordering — also asserts our alias target
-        // (claude-opus-4-7) is actually present in the curated list.
+    fn bundled_anthropic_has_opus_4_7_present() {
+        // 2026-05-02 fix: claude-acp's model namespace is now first
+        // in the dropdown (current / claude-4-opus / …) since the
+        // CliSubscription path is the most common usage. The Anthropic
+        // API IDs (claude-opus-4-7 etc.) still need to be present so
+        // the API-key path's alias resolver can land on them — just
+        // not first anymore. ADR §6.8's newest-first ordering applied
+        // within each namespace group.
         let m: ProvidersManifest = serde_json::from_str(BUNDLED_MANIFEST).unwrap();
         let anthropic = m.get("anthropic").unwrap();
         let models = anthropic.models.as_slice().expect("static list");
-        assert_eq!(models[0], "claude-opus-4-7");
+        assert!(
+            models.contains(&"claude-opus-4-7".to_string()),
+            "claude-opus-4-7 must be present (alias target for API path); got {models:?}"
+        );
         assert!(models.contains(&"claude-sonnet-4-6".to_string()));
         assert!(models.contains(&"claude-haiku-4-5-20251001".to_string()));
+        // claude-acp namespace also present.
+        assert!(
+            models.contains(&"current".to_string()),
+            "claude-acp 'current' alias must be present"
+        );
     }
 
     #[test]

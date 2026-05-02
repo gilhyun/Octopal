@@ -1412,7 +1412,7 @@ pub async fn run_agent_turn(
     //   4. "claude-sonnet-4-6" (built-in fallback for the very-first-run
     //                           case where settings haven't been
     //                           normalized yet)
-    let model = binding
+    let raw_model = binding
         .model
         .as_deref()
         .filter(|s| !s.is_empty())
@@ -1431,6 +1431,50 @@ pub async fn run_agent_turn(
                 settings_default_model_for_resolution.clone()
             }
         });
+
+    // 2026-05-02 fix: provider-aware model namespace mapping. Each
+    // Goose provider has its own model catalog and they don't agree
+    // on identifiers:
+    //
+    //   anthropic (API)    : claude-opus-4-7, claude-sonnet-4-6, …
+    //   claude-acp         : current, claude-4-opus, claude-4-sonnet,
+    //                        claude-haiku-4-5, claude-sonnet-4-5,
+    //                        claude-3-7-sonnet, claude-3-5-sonnet
+    //   chatgpt_codex      : gpt-5.4, gpt-5.3-codex, …, gpt-5-codex
+    //
+    // agent.rs::send_message passes the user's `opus`/`sonnet`/`haiku`
+    // alias through `resolve_model_for_cli` which substitutes the
+    // **Anthropic-API** ID — fine for the legacy claude path and
+    // Goose's `anthropic` provider, but claude-acp rejects those IDs
+    // at session/prompt and the turn hangs to timeout. Pre-fix
+    // symptom (user report 2026-05-02):
+    //   pool key: …::claude-opus-4-7::… → 120s timeout → kill
+    //
+    // We map the most common Anthropic-API IDs and the alias forms to
+    // their claude-acp equivalents. Unrecognized values pass through
+    // — Goose surfaces the per-provider error message in the stream
+    // if the model isn't in its catalog.
+    let model = if goose_provider == "claude-acp" {
+        match raw_model.as_str() {
+            // Aliases (Octopal's 3-tier system).
+            "opus" => "claude-4-opus".to_string(),
+            "sonnet" => "claude-4-sonnet".to_string(),
+            "haiku" => "claude-haiku-4-5".to_string(),
+            // Anthropic-API IDs that resolve_model_for_cli produces.
+            // The trailing `-N` doesn't map cleanly to claude-acp's
+            // catalog, so we collapse to the family name.
+            id if id.starts_with("claude-opus-4") => "claude-4-opus".to_string(),
+            id if id.starts_with("claude-sonnet-4") => "claude-4-sonnet".to_string(),
+            id if id.starts_with("claude-haiku-4") => "claude-haiku-4-5".to_string(),
+            id if id.starts_with("claude-3-7-sonnet") => "claude-3-7-sonnet".to_string(),
+            id if id.starts_with("claude-3-5-sonnet") => "claude-3-5-sonnet".to_string(),
+            // Pass-through (already in claude-acp form, OR unknown —
+            // let the provider surface the error).
+            other => other.to_string(),
+        }
+    } else {
+        raw_model
+    };
 
     // Phase 4 invariant (scope §4.1): keyring is read **only on MISS
     // path**. HIT path reuses a pooled sidecar that already has the key
