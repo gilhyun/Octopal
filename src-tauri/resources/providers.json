@@ -18,7 +18,7 @@
     "models": ["gpt-5", "gpt-5-mini", "gpt-5-codex", "o3"],
     "authMethods": [
       { "id": "api_key", "label": "API Key", "goose_provider": "openai" },
-      { "id": "cli_subscription", "label": "ChatGPT subscription (Codex CLI)", "goose_provider": "codex", "detectBinary": "codex", "installUrl": "https://developers.openai.com/codex/cli" }
+      { "id": "cli_subscription", "label": "ChatGPT subscription (Codex CLI)", "goose_provider": "chatgpt_codex", "detectBinary": "codex", "installUrl": "https://developers.openai.com/codex/cli" }
     ]
   },
   "google": {

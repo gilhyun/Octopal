@@ -182,29 +182,51 @@ pub(crate) fn resolve_goose_provider(
         (_, AuthMode::None) => None,
         ("anthropic", AuthMode::ApiKey) => Some("anthropic"),
         ("anthropic", AuthMode::CliSubscription) => Some("claude-code"),
-        // Phase 5a-finalize §3.4 + 2026-05-02 fix: OpenAI's CliSubscription
-        // routes to `codex` (codex CLI subprocess via Goose's deprecated
-        // `codex` provider — module path `crates/goose/src/providers/codex.rs`).
-        // We deliberately use the deprecated provider, NOT the current
-        // `chatgpt_codex` (underscore), because:
-        //   - `codex` (deprecated) spawns the user's installed codex
-        //     CLI as a subprocess, which means Octopal can hand it the
-        //     absolute binary path via CODEX_COMMAND env (D-3) and
-        //     piggyback on the codex CLI's existing OAuth state from
-        //     `codex login`.
-        //   - `chatgpt_codex` (current) does its own OAuth flow against
-        //     chatgpt.com — separate token store, separate auth dance,
-        //     no relationship to the user's existing codex CLI install.
-        //     Migrating to it is a separate UX (Phase 5b/onboarding
-        //     territory).
-        // The 2026-05-02 user report — "Unknown provider: chatgpt-codex"
-        // — surfaced an even more basic error: 5a-finalize hardcoded
-        // `chatgpt-codex` (dash) but Goose only knows `chatgpt_codex`
-        // (underscore) and the deprecated `codex`. We pivot to `codex`
-        // here because that's the one that fits the rest of our
-        // CODEX_COMMAND-based plumbing.
+        // 2026-05-02 second fix: OpenAI's CliSubscription routes to
+        // `chatgpt_codex` (underscore) — Goose's CURRENT OpenAI
+        // subscription provider that does OAuth directly against
+        // chatgpt.com.
+        //
+        // Earlier-this-session attempt was the deprecated `codex`
+        // provider, which spawns the user's installed codex CLI as a
+        // subprocess. That looked attractive (piggyback on the user's
+        // existing `codex login` state) but failed at runtime:
+        //
+        //   gpt agent → codex CLI 0.128.0 spawned with --skip-git-repo-check
+        //   → "error: unexpected argument '--skip-git-repo-check' found"
+        //   → exit 1
+        //
+        // Goose v1.31.0's deprecated `codex` provider was written
+        // against an older codex CLI version whose flags have since
+        // changed. Hence "deprecated" in the strings dump — Goose
+        // upstream knew the subprocess approach was brittle and
+        // pivoted to `chatgpt_codex` for first-party OAuth.
+        //
+        // Trade-off accepted: `chatgpt_codex` runs its own OAuth flow
+        // against chatgpt.com (separate token store at
+        // `<XDG_DATA>/chatgpt_codex/tokens.json`, NOT the user's
+        // `~/.codex/auth.json`). First message after activation
+        // triggers the OAuth — Goose opens the browser, user
+        // authorizes, Goose's localhost callback receives the code,
+        // tokens get persisted under our XDG isolation root, then the
+        // turn proceeds. Phase 5b's onboarding work will eventually
+        // pre-flight this from the OpenAI card's Activate button so
+        // it doesn't surprise the user mid-message.
+        //
+        // What this means for Octopal's plumbing:
+        //   - CODEX_COMMAND env (D-3) is no longer relevant for OpenAI
+        //     — chatgpt_codex doesn't shell out. The mapping in
+        //     build_goose_env stays for now (it's a no-op when
+        //     cli_command is None) but could be removed entirely in
+        //     a follow-up cleanup.
+        //   - detect_binary("codex") on the OpenAI card still surfaces
+        //     a "have you got codex installed?" hint, even though the
+        //     binary isn't strictly needed at runtime. Kept for the
+        //     UX continuity — users who installed codex CLI for
+        //     `codex login` typically expect Octopal to route through
+        //     it conceptually.
         ("openai", AuthMode::ApiKey) => Some("openai"),
-        ("openai", AuthMode::CliSubscription) => Some("codex"),
+        ("openai", AuthMode::CliSubscription) => Some("chatgpt_codex"),
         ("google", AuthMode::ApiKey) => Some("google"),
         ("databricks", AuthMode::ApiKey) => Some("databricks"),
         ("ollama", AuthMode::ApiKey) => Some("ollama"),
@@ -2086,10 +2108,13 @@ mod tests {
             ("ollama", AuthMode::ApiKey, Some("ollama")),
             // CliSubscription:
             //   anthropic → claude-code (Phase 5a)
-            //   openai    → codex (Phase 5a-finalize D-4)
+            //   openai    → chatgpt_codex (2026-05-02 second fix; was
+            //               originally chatgpt-codex which doesn't exist,
+            //               then `codex` deprecated which broke against
+            //               codex CLI 0.128.0's flag changes)
             //   others    → None (5b+ territory)
             ("anthropic", AuthMode::CliSubscription, Some("claude-code")),
-            ("openai", AuthMode::CliSubscription, Some("codex")),
+            ("openai", AuthMode::CliSubscription, Some("chatgpt_codex")),
             ("google", AuthMode::CliSubscription, None),
             // Unknown providers resolve to None so the caller surfaces a
             // specific error ("not supported in this build") rather than
@@ -2107,23 +2132,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_goose_provider_openai_cli_subscription_uses_codex() {
-        // 2026-05-02 fix: OpenAI's CliSubscription routes to `codex`
-        // (Goose's deprecated `codex` provider — module path
-        // `crates/goose/src/providers/codex.rs`). We deliberately use
-        // the deprecated one because it spawns the user's existing
-        // codex CLI as a subprocess (compatible with our CODEX_COMMAND
-        // env injection from D-3), whereas the current `chatgpt_codex`
-        // provider runs its own OAuth flow against chatgpt.com.
-        //
-        // Pre-2026-05-02 this test asserted `chatgpt-codex` (dash) which
-        // matched neither — Goose threw "Unknown provider: chatgpt-codex"
-        // at session/set_mode. Mirror of
-        // `resolve_goose_provider_anthropic_cli_subscription_uses_claude_code`.
+    fn resolve_goose_provider_openai_cli_subscription_uses_chatgpt_codex() {
+        // 2026-05-02 second fix: OpenAI's CliSubscription routes to
+        // `chatgpt_codex` (underscore, current). Two earlier attempts
+        // failed:
+        //   - `chatgpt-codex` (dash) → "Unknown provider" at Goose
+        //   - `codex` (deprecated) → spawns codex CLI 0.128.0 with
+        //     legacy flags (--skip-git-repo-check) → exit 1
+        // chatgpt_codex does its own OAuth against chatgpt.com — Goose
+        // opens a browser, user authorizes, tokens persist under the
+        // sidecar's XDG_DATA root.
         use crate::state::AuthMode;
         assert_eq!(
             resolve_goose_provider("openai", AuthMode::CliSubscription),
-            Some("codex"),
+            Some("chatgpt_codex"),
         );
     }
 
