@@ -34,6 +34,87 @@ import { ensureGooseSidecar } from "./ensure-goose-sidecar.mjs";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..");
 const isWindows = platform() === "win32";
+const isMac = platform() === "darwin";
+
+/**
+ * macOS-only preflight: verify Xcode "first launch" status (license
+ * accepted + required components installed). After a macOS update the
+ * license sometimes resets and the resulting cargo build error is a
+ * wall of linker arguments with the actual cause buried near the
+ * bottom:
+ *
+ *   You have not agreed to the Xcode license agreements.
+ *   Please run 'sudo xcodebuild -license' from within a Terminal window
+ *   to review and agree to the Xcode and Apple SDKs license.
+ *
+ * Catch this up front and surface a clear remediation instead of
+ * letting a contributor scroll through cargo's linker dump trying to
+ * figure out what went wrong.
+ *
+ * Detection: `xcodebuild -checkFirstLaunchStatus` exits 0 when the
+ * license is accepted AND first-launch components are installed.
+ * Non-zero (commonly 69, "service unavailable" in BSD sysexits, used
+ * by xcodebuild for "first launch incomplete") signals that
+ * `sudo xcodebuild -runFirstLaunch` is needed. This catches both the
+ * license-not-accepted case and the missing-components case in one
+ * gate — same remediation either way.
+ *
+ * Lighter calls like `xcrun --show-sdk-path` and `clang --version`
+ * succeed even when the license isn't accepted (verified empirically
+ * 2026-05-02), so they can't be used as the gate.
+ */
+function checkXcodeFirstLaunch() {
+  if (!isMac) return;
+  // Step 1: Xcode CLT itself must be installed. xcode-select -p
+  // returns the developer dir if CLT or full Xcode is set up, errors
+  // otherwise — this exits before xcodebuild even exists.
+  try {
+    execSync("xcode-select -p", { stdio: "pipe" });
+  } catch (_e) {
+    console.error("");
+    console.error("❌ Xcode Command Line Tools are not installed.");
+    console.error("");
+    console.error("   Install them once, then retry the build:");
+    console.error("");
+    console.error("       xcode-select --install");
+    console.error("");
+    console.error(
+      "   See https://tauri.app/start/prerequisites/ for the full macOS list."
+    );
+    console.error("");
+    process.exit(1);
+  }
+
+  // Step 2: license + first-launch components.
+  try {
+    execSync("xcodebuild -checkFirstLaunchStatus", { stdio: "pipe" });
+    return; // 0 = all good
+  } catch (_e) {
+    // xcodebuild not on PATH (CLT-only install without full Xcode).app)
+    // returns ENOENT here — that's a separate failure mode and CLT-only
+    // builds shouldn't need xcodebuild for Tauri's link step. Skip
+    // the gate in that case rather than blocking.
+    if (_e.code === "ENOENT") return;
+    console.error("");
+    console.error(
+      "❌ Xcode setup is incomplete (license not accepted, or required components missing)."
+    );
+    console.error(
+      "   This often happens after a macOS update — the Xcode license needs"
+    );
+    console.error("   to be re-accepted.");
+    console.error("");
+    console.error("   Run this once in a terminal, then retry the build:");
+    console.error("");
+    console.error("       sudo xcodebuild -runFirstLaunch");
+    console.error("");
+    console.error("   Or, to review the license interactively:");
+    console.error("");
+    console.error("       sudo xcodebuild -license");
+    console.error("");
+    process.exit(1);
+  }
+}
 
 /**
  * Resolve a usable `cargo` binary path.
@@ -87,6 +168,10 @@ if (!existsSync(tauriBin)) {
   );
   process.exit(1);
 }
+
+// Preflight checks before any heavy work. Fail fast with a friendly
+// remediation pointer rather than letting cargo wall-of-text the user.
+checkXcodeFirstLaunch();
 
 const cargoDir = resolveCargoDir();
 const childEnv = { ...process.env };
