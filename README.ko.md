@@ -128,19 +128,32 @@ source "$HOME/.cargo/env"
 > 참고하세요 (macOS: Xcode Command Line Tools, Windows: WebView2 + MSVC,
 > Linux: `webkit2gtk`).
 
-### 2. Claude CLI (AI 에이전트 통신용)
+### 2. 프로바이더 CLI (에이전트 통신용)
 
-Octopal을 사용하려면 **Claude CLI**가 설치되어 있고 로그인되어 있어야 합니다.
+Octopal은 각 에이전트를 Goose ACP를 통해 프로바이더로 라우팅합니다. 사용하실
+프로바이더의 CLI를 설치하세요 — 최소 하나는 필요합니다:
 
 ```bash
-# 1. Claude CLI 설치
-npm install -g @anthropic-ai/claude-code
+# Anthropic (Claude) — Pro/Max 구독을 claude-acp 어댑터로
+npm install -g @anthropic-ai/claude-code           # claude CLI
+npm install -g @zed-industries/claude-agent-acp    # ACP 어댑터
+claude login                                       # OAuth 한 번
 
-# 2. 로그인
-claude login
+# OpenAI (GPT) — ChatGPT Plus/Pro 구독을 chatgpt_codex로
+npm install -g @openai/codex                       # codex CLI
+codex login                                        # OAuth 한 번
+# ChatGPT 측 OAuth는 Octopal이 첫 메시지에서 Goose 통해 자동 처리
 ```
 
-> Claude CLI가 없으면 Octopal은 에이전트와 통신할 수 없습니다. Claude CLI가 감지되지 않거나 로그인되지 않은 경우 앱 시작 시 안내 팝업이 표시됩니다.
+> Claude는 왜 npm 패키지가 두 개인가요? Goose v1.31.0의 `claude-acp`
+> 프로바이더가 `claude-agent-acp` 어댑터를 spawn하고, 그 어댑터가 다시
+> `claude` CLI를 spawn하는 구조입니다. 둘 다 `PATH`에 있어야 합니다.
+> Octopal의 PATH 보강 로직이 nvm/asdf/homebrew 설치 위치를 자동 탐색
+> 합니다.
+
+> API 키 경로 (Settings → Providers → API Key)를 쓰시면 위 CLI들이
+> 필요 없습니다. Claude Pro/Max 또는 ChatGPT 구독이 없으면 API 키를
+> 붙여넣으세요.
 
 ## Download
 

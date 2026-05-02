@@ -163,7 +163,8 @@ fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
 ///
 /// Phase 5a scope:
 /// - `(anthropic, ApiKey)` → `anthropic` (unchanged Phase 4 path)
-/// - `(anthropic, CliSubscription)` → `claude-code` (new — subprocess-piggyback)
+/// - `(anthropic, CliSubscription)` → `claude-acp` (npm adapter, OAuth-aware;
+///   replaces deprecated `claude-code` post-2026-05-02 fix)
 /// - Other `(p, ApiKey)` pass through (openai/google/databricks/ollama)
 /// - `(_, None)` → None — caller surfaces the "not configured" error
 /// - `(non-anthropic, CliSubscription)` → None — Phase 5b+ territory
@@ -181,7 +182,20 @@ pub(crate) fn resolve_goose_provider(
     match (ui_provider, auth_mode) {
         (_, AuthMode::None) => None,
         ("anthropic", AuthMode::ApiKey) => Some("anthropic"),
-        ("anthropic", AuthMode::CliSubscription) => Some("claude-code"),
+        // 2026-05-02 third fix (this session): pivot to `claude-acp` for
+        // the same reason we pivoted OpenAI to `chatgpt_codex` earlier
+        // — Goose's deprecated `claude-code` provider hangs at
+        // session/prompt under modern claude CLI 2.x. Goose strings
+        // dump literally says: "[Deprecated: use claude-acp instead]
+        // Requires claude CLI installed, no MCPs. Use claude-acp for
+        // ACP support with extensions."
+        //
+        // Trade-off: claude-acp requires `npm install -g
+        // @zed-industries/claude-agent-acp` (the ACP adapter). README
+        // calls this out alongside the codex prerequisite. The
+        // `claude` binary itself is still required (the adapter
+        // shells out to it) so detectBinary stays as "claude".
+        ("anthropic", AuthMode::CliSubscription) => Some("claude-acp"),
         // 2026-05-02 second fix: OpenAI's CliSubscription routes to
         // `chatgpt_codex` (underscore) — Goose's CURRENT OpenAI
         // subscription provider that does OAuth directly against
@@ -346,23 +360,32 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
     }
 
     // Phase 5a-finalize §3.3: pin the CLI-subscription binary's absolute
-    // path into Goose's env via the matching `*_COMMAND` override. Goose
-    // reads these and skips PATH lookup, which is exactly what we want
-    // on macOS app-bundle launches where LaunchServices stripped nvm
-    // dirs from PATH (5a §10.3 / 5a-finalize §1.1).
+    // path into Goose's env via the matching `*_COMMAND` override.
+    // Goose reads these and skips PATH lookup, which is what we want on
+    // macOS app-bundle launches where LaunchServices stripped nvm dirs
+    // (5a §10.3 / 5a-finalize §1.1).
     //
-    // Provider → env var mapping (verified by Goose v1.31.0 strings dump):
-    //   claude-code  → CLAUDE_CODE_COMMAND
-    //   claude-acp   → CLAUDE_CODE_COMMAND  (claude-acp also spawns claude)
-    //   codex → CODEX_COMMAND
-    //   gemini-cli / gemini-oauth → GEMINI_CLI_COMMAND
+    // Provider → env var mapping (verified empirically against Goose
+    // v1.31.0 strings dump 2026-05-02):
     //
-    // Other providers (`anthropic`, `openai`, `ollama`, …) don't spawn a
-    // subprocess CLI — `cli_command` should be None for them and this
-    // block is a no-op.
+    //   claude-code  → CLAUDE_CODE_COMMAND  (deprecated, kept for forward-compat)
+    //   codex        → CODEX_COMMAND        (deprecated, similar story)
+    //   gemini-cli   → GEMINI_CLI_COMMAND
+    //   gemini-oauth → GEMINI_CLI_COMMAND
+    //
+    // **NOT included on purpose:**
+    //   claude-acp     — spawns `claude-agent-acp` (npm adapter); strings
+    //                    dump shows no CLAUDE_AGENT_ACP_COMMAND override.
+    //                    Adapter resolves via PATH only — augmented PATH
+    //                    below covers it.
+    //   chatgpt_codex  — does its own OAuth, doesn't shell out.
+    //
+    // For the not-included providers, `cli_command` either stays None
+    // (no detect) or carries the discovered path that simply isn't
+    // honored; either way this block is a no-op for them.
     if let Some(abs_path) = &cfg.cli_command {
         let env_var = match cfg.provider.as_str() {
-            "claude-code" | "claude-acp" => Some("CLAUDE_CODE_COMMAND"),
+            "claude-code" => Some("CLAUDE_CODE_COMMAND"),
             "codex" => Some("CODEX_COMMAND"),
             "gemini-cli" | "gemini-oauth" => Some("GEMINI_CLI_COMMAND"),
             _ => None,
@@ -2113,7 +2136,7 @@ mod tests {
             //               then `codex` deprecated which broke against
             //               codex CLI 0.128.0's flag changes)
             //   others    → None (5b+ territory)
-            ("anthropic", AuthMode::CliSubscription, Some("claude-code")),
+            ("anthropic", AuthMode::CliSubscription, Some("claude-acp")),
             ("openai", AuthMode::CliSubscription, Some("chatgpt_codex")),
             ("google", AuthMode::CliSubscription, None),
             // Unknown providers resolve to None so the caller surfaces a
@@ -2150,14 +2173,19 @@ mod tests {
     }
 
     #[test]
-    fn resolve_goose_provider_anthropic_cli_subscription_uses_claude_code() {
-        // Pinning the specific 5a decision point: Anthropic + CliSubscription
-        // MUST go to `claude-code`, not `claude-acp` (which would require
-        // a separate npm install — scope §3.3).
+    fn resolve_goose_provider_anthropic_cli_subscription_uses_claude_acp() {
+        // 2026-05-02 third-this-session pivot: Anthropic + CliSubscription
+        // → `claude-acp` (NOT the originally-chosen `claude-code` from
+        // 5a §3.3). Same pattern as the OpenAI pivot earlier this
+        // session: Goose's `claude-code` provider is deprecated
+        // ("[Deprecated: use claude-acp instead]") and hangs at
+        // session/prompt under modern claude CLI 2.x. claude-acp
+        // requires an npm adapter (`npm install -g
+        // @zed-industries/claude-agent-acp`) — README documents this.
         use crate::state::AuthMode;
         assert_eq!(
             resolve_goose_provider("anthropic", AuthMode::CliSubscription),
-            Some("claude-code"),
+            Some("claude-acp"),
         );
     }
 
@@ -2282,17 +2310,19 @@ mod tests {
     }
 
     #[test]
-    fn env_builder_claude_acp_routes_to_claude_code_command() {
-        // claude-acp also spawns `claude` underneath (just via the
-        // npm adapter). It shares the CLAUDE_CODE_COMMAND override.
-        // Phase 5c will pick this up; pinning the mapping now means
-        // D-3's *_COMMAND switch survives the eventual claude-acp
-        // transition without further build_goose_env edits.
+    fn env_builder_claude_acp_does_not_inject_command_env() {
+        // 2026-05-02 reversal of the earlier "claude-acp shares
+        // CLAUDE_CODE_COMMAND" assumption. Goose v1.31.0 strings dump
+        // confirms claude-acp has NO `*_COMMAND` env override — it
+        // resolves the `claude-agent-acp` npm adapter via PATH only.
+        // build_goose_env intentionally does NOT inject CLAUDE_CODE_COMMAND
+        // for claude-acp; the augmented PATH (which includes nvm/asdf)
+        // covers adapter discovery.
         let tmp = std::env::temp_dir().join("octopal-env-claude-acp-test");
         let claude_path = std::path::PathBuf::from("/usr/local/bin/claude");
         let cfg = GooseSpawnConfig {
             provider: "claude-acp".into(),
-            model: "claude-sonnet-4-6".into(),
+            model: "current".into(),
             api_key: None,
             ollama_host: None,
             xdg: xdg(&tmp),
@@ -2301,10 +2331,8 @@ mod tests {
             cli_command: Some(claude_path.clone()),
         };
         let env = build_goose_env(&cfg);
-        assert_eq!(
-            env.get("CLAUDE_CODE_COMMAND").map(|s| s.as_str()),
-            Some(claude_path.to_string_lossy().as_ref()),
-        );
+        // No *_COMMAND envs leaked — claude-acp doesn't read them.
+        assert!(env.get("CLAUDE_CODE_COMMAND").is_none());
     }
 
     #[test]

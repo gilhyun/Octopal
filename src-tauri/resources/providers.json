@@ -10,7 +10,7 @@
     ],
     "authMethods": [
       { "id": "api_key", "label": "API Key", "goose_provider": "anthropic" },
-      { "id": "cli_subscription", "label": "Claude Pro/Max subscription", "goose_provider": "claude-code", "detectBinary": "claude", "installUrl": "https://docs.claude.com/en/docs/claude-code/quickstart" }
+      { "id": "cli_subscription", "label": "Claude Pro/Max subscription", "goose_provider": "claude-acp", "detectBinary": "claude", "installUrl": "https://docs.claude.com/en/docs/claude-code/quickstart" }
     ]
   },
   "openai": {

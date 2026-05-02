@@ -129,19 +129,33 @@ source "$HOME/.cargo/env"
 > (Xcode Command Line Tools on macOS, WebView2 + MSVC on Windows,
 > `webkit2gtk` on Linux).
 
-### 2. Claude CLI (for the AI agent)
+### 2. Provider CLIs (for the AI agents)
 
-Octopal requires **Claude CLI** to be installed and logged in.
+Octopal routes each agent to a provider through Goose's ACP. Install the
+CLIs for the providers you actually plan to use — at least one is
+required:
 
 ```bash
-# 1. Install Claude CLI
-npm install -g @anthropic-ai/claude-code
+# Anthropic (Claude) — Pro/Max subscription via claude-acp adapter
+npm install -g @anthropic-ai/claude-code           # the `claude` CLI
+npm install -g @zed-industries/claude-agent-acp    # ACP adapter
+claude login                                       # OAuth once
 
-# 2. Log in
-claude login
+# OpenAI (GPT) — ChatGPT Plus/Pro subscription via chatgpt_codex
+npm install -g @openai/codex                       # the `codex` CLI
+codex login                                        # OAuth once
+# Octopal handles ChatGPT-side OAuth on first message via Goose
 ```
 
-> Without Claude CLI, Octopal cannot communicate with agents. The app will show a login prompt on startup if Claude CLI is not detected or not logged in.
+> Why two npm packages for Claude? Goose v1.31.0's `claude-acp` provider
+> spawns the `claude-agent-acp` adapter, which itself shells out to the
+> `claude` CLI. Both must be on `PATH`. Octopal's PATH augmentation
+> covers nvm/asdf/homebrew installs automatically.
+
+> Octopal's API-key path (Settings → Providers → API Key) doesn't
+> require these CLIs — only the CLI-subscription path does. If you
+> don't have a Claude Pro/Max or ChatGPT subscription, paste an API
+> key instead.
 
 ## Download
 
