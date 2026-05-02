@@ -135,7 +135,7 @@ async fn dev_fallback_check() -> Result<Value, String> {
 /// Values based on Goose's own provider modules (see `goose --help` provider
 /// list + source). Returns `None` for providers that don't take a key
 /// (Ollama = host URL only, `claude-code` / `claude-acp` / `gemini-cli` /
-/// `chatgpt-codex` = piggyback on the user's CLI subscription, no key
+/// `codex` = piggyback on the user's CLI subscription, no key
 /// plumbed through env).
 ///
 /// Phase 5a (scope §6.2): `claude-code` is the routing target for
@@ -148,7 +148,7 @@ fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
         "google" => Some("GOOGLE_API_KEY"),
         "databricks" => Some("DATABRICKS_TOKEN"),
         // CLI-subscription providers + Ollama: no API key env
-        "claude-code" | "claude-acp" | "gemini-cli" | "gemini-oauth" | "chatgpt-codex"
+        "claude-code" | "claude-acp" | "gemini-cli" | "gemini-oauth" | "codex"
         | "ollama" => None,
         // Unknown provider: don't guess. Caller falls back to no key injection
         // and the agent will surface the provider's own "missing credentials"
@@ -182,13 +182,29 @@ pub(crate) fn resolve_goose_provider(
         (_, AuthMode::None) => None,
         ("anthropic", AuthMode::ApiKey) => Some("anthropic"),
         ("anthropic", AuthMode::CliSubscription) => Some("claude-code"),
-        // Phase 5a-finalize §3.4: OpenAI's CliSubscription routes to
-        // `chatgpt-codex` (current Goose v1.31.0 OpenAI subscription
-        // path; supersedes deprecated `codex` provider). Same pattern
-        // as Anthropic's `claude-code` choice over `claude-acp`:
-        // zero-install, no extra npm adapter required.
+        // Phase 5a-finalize §3.4 + 2026-05-02 fix: OpenAI's CliSubscription
+        // routes to `codex` (codex CLI subprocess via Goose's deprecated
+        // `codex` provider — module path `crates/goose/src/providers/codex.rs`).
+        // We deliberately use the deprecated provider, NOT the current
+        // `chatgpt_codex` (underscore), because:
+        //   - `codex` (deprecated) spawns the user's installed codex
+        //     CLI as a subprocess, which means Octopal can hand it the
+        //     absolute binary path via CODEX_COMMAND env (D-3) and
+        //     piggyback on the codex CLI's existing OAuth state from
+        //     `codex login`.
+        //   - `chatgpt_codex` (current) does its own OAuth flow against
+        //     chatgpt.com — separate token store, separate auth dance,
+        //     no relationship to the user's existing codex CLI install.
+        //     Migrating to it is a separate UX (Phase 5b/onboarding
+        //     territory).
+        // The 2026-05-02 user report — "Unknown provider: chatgpt-codex"
+        // — surfaced an even more basic error: 5a-finalize hardcoded
+        // `chatgpt-codex` (dash) but Goose only knows `chatgpt_codex`
+        // (underscore) and the deprecated `codex`. We pivot to `codex`
+        // here because that's the one that fits the rest of our
+        // CODEX_COMMAND-based plumbing.
         ("openai", AuthMode::ApiKey) => Some("openai"),
-        ("openai", AuthMode::CliSubscription) => Some("chatgpt-codex"),
+        ("openai", AuthMode::CliSubscription) => Some("codex"),
         ("google", AuthMode::ApiKey) => Some("google"),
         ("databricks", AuthMode::ApiKey) => Some("databricks"),
         ("ollama", AuthMode::ApiKey) => Some("ollama"),
@@ -316,7 +332,7 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
     // Provider → env var mapping (verified by Goose v1.31.0 strings dump):
     //   claude-code  → CLAUDE_CODE_COMMAND
     //   claude-acp   → CLAUDE_CODE_COMMAND  (claude-acp also spawns claude)
-    //   chatgpt-codex → CODEX_COMMAND
+    //   codex → CODEX_COMMAND
     //   gemini-cli / gemini-oauth → GEMINI_CLI_COMMAND
     //
     // Other providers (`anthropic`, `openai`, `ollama`, …) don't spawn a
@@ -325,7 +341,7 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
     if let Some(abs_path) = &cfg.cli_command {
         let env_var = match cfg.provider.as_str() {
             "claude-code" | "claude-acp" => Some("CLAUDE_CODE_COMMAND"),
-            "chatgpt-codex" => Some("CODEX_COMMAND"),
+            "codex" => Some("CODEX_COMMAND"),
             "gemini-cli" | "gemini-oauth" => Some("GEMINI_CLI_COMMAND"),
             _ => None,
         };
@@ -2026,7 +2042,7 @@ mod tests {
             "claude-acp",
             "gemini-cli",
             "gemini-oauth",
-            "chatgpt-codex",
+            "codex",
             "ollama",
         ] {
             assert!(
@@ -2070,10 +2086,10 @@ mod tests {
             ("ollama", AuthMode::ApiKey, Some("ollama")),
             // CliSubscription:
             //   anthropic → claude-code (Phase 5a)
-            //   openai    → chatgpt-codex (Phase 5a-finalize D-4)
+            //   openai    → codex (Phase 5a-finalize D-4)
             //   others    → None (5b+ territory)
             ("anthropic", AuthMode::CliSubscription, Some("claude-code")),
-            ("openai", AuthMode::CliSubscription, Some("chatgpt-codex")),
+            ("openai", AuthMode::CliSubscription, Some("codex")),
             ("google", AuthMode::CliSubscription, None),
             // Unknown providers resolve to None so the caller surfaces a
             // specific error ("not supported in this build") rather than
@@ -2091,17 +2107,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_goose_provider_openai_cli_subscription_uses_chatgpt_codex() {
-        // Phase 5a-finalize §3.4 single-fact pin: OpenAI's
-        // CliSubscription path MUST route to `chatgpt-codex`, NOT to
-        // the deprecated `codex` provider and NOT to `codex-acp`
-        // (which requires a separate npm install — same caveat as
-        // claude-acp). Mirror of
+    fn resolve_goose_provider_openai_cli_subscription_uses_codex() {
+        // 2026-05-02 fix: OpenAI's CliSubscription routes to `codex`
+        // (Goose's deprecated `codex` provider — module path
+        // `crates/goose/src/providers/codex.rs`). We deliberately use
+        // the deprecated one because it spawns the user's existing
+        // codex CLI as a subprocess (compatible with our CODEX_COMMAND
+        // env injection from D-3), whereas the current `chatgpt_codex`
+        // provider runs its own OAuth flow against chatgpt.com.
+        //
+        // Pre-2026-05-02 this test asserted `chatgpt-codex` (dash) which
+        // matched neither — Goose threw "Unknown provider: chatgpt-codex"
+        // at session/set_mode. Mirror of
         // `resolve_goose_provider_anthropic_cli_subscription_uses_claude_code`.
         use crate::state::AuthMode;
         assert_eq!(
             resolve_goose_provider("openai", AuthMode::CliSubscription),
-            Some("chatgpt-codex"),
+            Some("codex"),
         );
     }
 
@@ -2188,17 +2210,16 @@ mod tests {
     }
 
     #[test]
-    fn env_builder_chatgpt_codex_with_cli_command_injects_codex_env() {
-        // Phase 5a-finalize §3.4 forward-prep: D-4 wires OpenAI to this
-        // provider, but build_goose_env's *_COMMAND mapping already
-        // covers chatgpt-codex (single source of truth for the
-        // provider→env var map). Pin the behavior now so D-4 just
-        // wires the resolver; no env-builder churn.
+    fn env_builder_codex_with_cli_command_injects_codex_env() {
+        // 2026-05-02 fix: provider id is `codex` (deprecated provider
+        // spawning the codex CLI subprocess), NOT `chatgpt-codex`
+        // (which doesn't exist) or `chatgpt_codex` (current OAuth-only
+        // provider). build_goose_env routes `codex` → CODEX_COMMAND.
         let tmp = std::env::temp_dir().join("octopal-env-codex-cmd-test");
         let codex_path =
             std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/codex");
         let cfg = GooseSpawnConfig {
-            provider: "chatgpt-codex".into(),
+            provider: "codex".into(),
             model: "gpt-5".into(),
             api_key: None,
             ollama_host: None,
