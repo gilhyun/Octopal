@@ -158,16 +158,17 @@ function resolveCargoDir() {
   process.exit(1);
 }
 
-const tauriBin = join(
+const tauriCli = join(
   projectRoot,
   "node_modules",
-  ".bin",
-  isWindows ? "tauri.cmd" : "tauri"
+  "@tauri-apps",
+  "cli",
+  "tauri.js"
 );
 
-if (!existsSync(tauriBin)) {
+if (!existsSync(tauriCli)) {
   console.error(
-    `❌ Tauri CLI not found at ${tauriBin}. Did you run \`pnpm install\` (or \`npm install\`)?`
+    `❌ Tauri CLI not found at ${tauriCli}. Did you run \`pnpm install\` (or \`npm install\`)?`
   );
   process.exit(1);
 }
@@ -232,13 +233,10 @@ try {
 }
 
 try {
-  execFileSync(tauriBin, [...baseArgs, ...extraArgs], {
+  execFileSync(process.execPath, [tauriCli, ...baseArgs, ...extraArgs], {
     stdio: "inherit",
     env: childEnv,
     cwd: projectRoot,
-    // Windows cannot reliably launch .cmd shims through execFile without
-    // a shell. macOS/Linux keep the direct executable path.
-    shell: isWindows,
   });
 } catch (err) {
   if (err.status == null) {
