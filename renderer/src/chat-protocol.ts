@@ -1,4 +1,4 @@
-import type { Attachment, PermissionRequest } from './types'
+import type { AgentRecommendation, Attachment, PermissionRequest } from './types'
 
 interface AgentRef {
   name: string
@@ -53,6 +53,47 @@ export function parseHandoffTags(text: string): Array<{ target: string; reason: 
   return out
 }
 
+export function parseAgentRecommendations(text: string): AgentRecommendation[] {
+  const match = /<!--AGENT_RECOMMENDATIONS:\s*([\s\S]*?)-->/.exec(text)
+  if (!match) return []
+
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(match[1].trim())
+  } catch {
+    return []
+  }
+  if (!Array.isArray(parsed)) return []
+
+  const seen = new Set<string>()
+  const out: AgentRecommendation[] = []
+  for (const item of parsed) {
+    if (!item || typeof item !== 'object') continue
+    const rec = item as Record<string, unknown>
+    const name = typeof rec.name === 'string' ? rec.name.trim() : ''
+    const role = typeof rec.role === 'string' ? rec.role.trim() : ''
+    if (!name || !role) continue
+    const normalized = name.toLowerCase()
+    if (seen.has(normalized)) continue
+    seen.add(normalized)
+    out.push({
+      name,
+      role,
+      ...(typeof rec.prompt === 'string' && rec.prompt.trim()
+        ? { prompt: rec.prompt.trim() }
+        : {}),
+      ...(typeof rec.icon === 'string' && rec.icon.trim()
+        ? { icon: rec.icon.trim() }
+        : {}),
+      ...(typeof rec.color === 'string' && rec.color.trim()
+        ? { color: rec.color.trim() }
+        : {}),
+    })
+    if (out.length >= 4) break
+  }
+  return out
+}
+
 function stripPermissionTag(text: string): string {
   return text.replace(/<!--NEEDS_PERMISSIONS:\s*[\w\s,]+-->/g, '').trim()
 }
@@ -61,6 +102,10 @@ function stripHandoffTags(text: string): string {
   return text.replace(/<HANDOFF\s+target\s*=\s*"[^"]+"(?:\s+reason\s*=\s*"[^"]*")?\s*\/?>/gi, '').trim()
 }
 
+function stripAgentRecommendations(text: string): string {
+  return text.replace(/<!--AGENT_RECOMMENDATIONS:\s*[\s\S]*?-->/g, '').trim()
+}
+
 export function sanitizeDisplayText(text: string): string {
-  return stripHandoffTags(stripPermissionTag(text))
+  return stripAgentRecommendations(stripHandoffTags(stripPermissionTag(text)))
 }

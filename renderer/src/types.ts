@@ -25,6 +25,21 @@ export interface PermissionRequest {
   agentPath?: string         // path to the .octo file to update
 }
 
+export interface AgentRecommendation {
+  name: string
+  role: string
+  prompt?: string
+  icon?: string
+  color?: string
+}
+
+export interface AgentProposal {
+  agents: AgentRecommendation[]
+  approved?: boolean          // undefined = waiting, true = created, false = dismissed
+  created?: string[]          // names created by the approval action
+  error?: string
+}
+
 export interface TokenUsage {
   inputTokens: number
   outputTokens: number
@@ -46,6 +61,7 @@ export interface Message {
   attachments?: Attachment[]
   handoff?: PendingHandoff    // set when this agent's message proposes calling others
   permissionRequest?: PermissionRequest  // set when agent needs permissions to fulfill user's request
+  agentProposal?: AgentProposal  // set when onboarding analysis recommends creating teammates
   usage?: TokenUsage          // token usage for this agent response
   dispatcherAgents?: string[] // agent names shown in routing indicator (slot-machine effect)
   interruptConfirm?: InterruptConfirm  // set when user tries to interrupt multi-agent work

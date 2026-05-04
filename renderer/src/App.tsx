@@ -2,7 +2,7 @@ import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { mergeWithPending } from './utils'
 import { useTranslation } from 'react-i18next'
 import './i18n'
-import type { ActivityLogEntry, Attachment, Message, TokenUsage } from './types'
+import type { ActivityLogEntry, AgentProposal, Attachment, Message, TokenUsage } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
 import { ChatPanel } from './components/ChatPanel'
 import { RightSidebar } from './components/RightSidebar'
@@ -17,6 +17,7 @@ import { ToastContainer, showToast } from './components/Toast'
 import { expandShortcut } from './shortcut-expander'
 import {
   buildBufferedPrompt,
+  parseAgentRecommendations,
   parseHandoffTags,
   parseMentions,
   parsePermissionRequest,
@@ -295,7 +296,15 @@ export function App() {
         // Preserve in-memory pending messages (not yet persisted to disk)
         const existing = prev[folder] || []
         const pendingMessages = existing.filter((m) => m.pending)
-        const loaded = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
+        const loaded = history.map(m => {
+          const rawText = m.text ?? ''
+          const agents = parseAgentRecommendations(rawText)
+          return {
+            ...m,
+            text: sanitizeDisplayText(rawText),
+            ...(agents.length > 0 ? { agentProposal: { agents } } : {}),
+          }
+        })
         // Merge: loaded history + any pending messages not already in the loaded set
         const loadedIds = new Set(loaded.map((m) => m.id))
         const missingPending = pendingMessages.filter((m) => !loadedIds.has(m.id))
@@ -329,6 +338,7 @@ export function App() {
         const firstPrompt = [
           'You have just been added to this project folder. This is your first interaction — there is no user message yet.',
           'Scan the project folder to understand what it contains, then provide a welcome message.',
+          'Also recommend a small team of 2-4 specialist agents that would fit this project.',
           '',
           'FORMAT YOUR RESPONSE EXACTLY LIKE THIS:',
           '',
@@ -346,8 +356,12 @@ export function App() {
           '- "Find where <relevant feature> is handled"',
           '- "Help me fix a bug in <relevant area>"',
           '',
+          '**Recommended teammates:**',
+          '- `@<agent-name>` — <why this specialist helps this project>',
+          '- `@<agent-name>` — <why this specialist helps this project>',
+          '',
           '💡 **Tips:**',
-          '- Need more help? **Hire AI teammates** — specialists like designers, planners, or reviewers!',
+          '- Use the button below if you want Octopal to create the recommended teammates with file-write permission.',
           '- Each agent\'s capabilities (file write, shell, network) can be configured in their settings.',
           '- You\'ll see a real-time **activity log** of everything agents do in the sidebar.',
           '```',
@@ -362,8 +376,13 @@ export function App() {
           '- 💡 Brainstorm ideas',
           '- 🤖 Hire more AI teammates to collaborate with',
           '',
+          '**Recommended teammates:**',
+          '- `@planner` — turns the idea into an implementation plan',
+          '- `@builder` — scaffolds files once you approve writes',
+          '- `@reviewer` — checks quality and catches mistakes',
+          '',
           '🔐 **About permissions:**',
-          '- I can read files by default, but writing/shell/network need to be **enabled in agent settings**.',
+          '- The create button below will create the recommended teammates with file-write permission.',
           '- When an agent suggests involving another teammate, you\'ll see **Approve / Dismiss** buttons to stay in control.',
           '- Check the **activity log** in the sidebar to see everything agents are doing in real time.',
           '',
@@ -372,7 +391,10 @@ export function App() {
           '',
           'IMPORTANT: Output ONLY the message content (not the ``` fences). Keep the emoji, bold, and bullet formatting exactly as shown.',
           'Fill in the placeholders with actual project info. Tailor the "Try asking me" suggestions to the specific project.',
-          'Keep it short and friendly (under 150 words). Do not ask questions.',
+          'Recommend role-based specialists, not model/provider-based agents. Do not name agents GPT, Claude, OpenAI, Anthropic, or any model/provider name.',
+          'At the very end, append exactly one hidden HTML comment in this form:',
+          '<!--AGENT_RECOMMENDATIONS:[{"name":"agent-name","role":"One short role sentence.","prompt":"Detailed operating instructions for this agent.","icon":"🛠️"}]-->',
+          'The JSON must contain the same 2-4 teammates you recommended in the visible message. Use valid JSON only. Keep the visible message short and friendly (under 220 words).',
         ].join('\n')
 
         const res = await window.api.sendMessage({
@@ -391,7 +413,18 @@ export function App() {
           const list = prev[folder] || []
           const rawText = res.ok ? res.output : `Error: ${(res as any).error}`
           const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name, existingOctos) : undefined
+          const agentRecommendations = res.ok ? parseAgentRecommendations(rawText) : []
+          const agentProposal = agentRecommendations.length > 0
+            ? { agents: agentRecommendations }
+            : undefined
           const usage = res.ok ? (res as any).usage : undefined
+          if (agentProposal) {
+            pendingAgentProposalsRef.current.set(pendingId, {
+              folderPath: folder,
+              proposal: agentProposal,
+            })
+            persistPendingState(folder)
+          }
           return {
             ...prev,
             [folder]: list.map((m) =>
@@ -403,6 +436,7 @@ export function App() {
                     error: !res.ok,
                     activity: undefined,
                     permissionRequest: permReq,
+                    agentProposal,
                     ...(usage ? { usage } : {}),
                   }
                 : m
@@ -415,6 +449,7 @@ export function App() {
       // buttons survive window reloads. The persisted blob uses
       // { handoffs: { [messageId]: ctx } } with Sets stored as arrays.
       let hydratedHandoffs = new Map<string, any>()
+      let hydratedAgentProposals = new Map<string, AgentProposal>()
       try {
         const raw = await window.api.readPendingState(folder)
         const entries = (raw?.handoffs ?? {}) as Record<string, any>
@@ -440,6 +475,22 @@ export function App() {
             alreadyCalled: new Set<string>(ctx.alreadyCalled || []),
           })
         }
+        const proposalEntries = (raw?.agentProposals ?? {}) as Record<string, any>
+        for (const [id, ctx] of Object.entries(proposalEntries)) {
+          const agents = Array.isArray(ctx.agents) ? ctx.agents : []
+          if (agents.length === 0) continue
+          const proposal: AgentProposal = {
+            agents,
+            approved: typeof ctx.approved === 'boolean' ? ctx.approved : undefined,
+            created: Array.isArray(ctx.created) ? ctx.created : undefined,
+            error: typeof ctx.error === 'string' ? ctx.error : undefined,
+          }
+          hydratedAgentProposals.set(id, proposal)
+          pendingAgentProposalsRef.current.set(id, {
+            folderPath: ctx.folderPath || folder,
+            proposal,
+          })
+        }
       } catch {
         // Non-fatal — fall through with empty hydration
       }
@@ -448,7 +499,9 @@ export function App() {
         const existing = prev[folder] || []
         // Preserve pending messages and unresolved permission requests (in-memory only)
         const preserveMessages = existing.filter(
-          (m) => m.pending || (m.permissionRequest && m.permissionRequest.granted === undefined)
+          (m) => m.pending
+            || (m.permissionRequest && m.permissionRequest.granted === undefined)
+            || (m.agentProposal && m.agentProposal.approved === undefined)
         )
         // Re-attach hydrated `handoff` field to the matching history messages
         // so the Approve/Dismiss buttons re-appear on reload.
@@ -464,11 +517,29 @@ export function App() {
             },
           }
         }
+        const attachAgentProposal = (m: Message): Message => {
+          const fromDisk = m.agentProposal?.agents ?? []
+          const fromHydration = hydratedAgentProposals.get(m.id)
+          const proposal = fromHydration ?? (fromDisk.length > 0 ? { agents: fromDisk } : undefined)
+          if (!proposal) return m
+          if (!pendingAgentProposalsRef.current.has(m.id)) {
+            pendingAgentProposalsRef.current.set(m.id, { folderPath: folder, proposal })
+          }
+          return { ...m, agentProposal: proposal }
+        }
         // Strip protocol tags from every loaded history message so users
         // never see raw <HANDOFF> or <!--NEEDS_PERMISSIONS--> markup.
-        const cleanHistory = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
+        const cleanHistory = history.map(m => {
+          const rawText = m.text ?? ''
+          const agents = parseAgentRecommendations(rawText)
+          return {
+            ...m,
+            text: sanitizeDisplayText(rawText),
+            ...(agents.length > 0 ? { agentProposal: { agents } } : {}),
+          }
+        })
         if (preserveMessages.length === 0) {
-          return { ...prev, [folder]: cleanHistory.map(attachHandoff) }
+          return { ...prev, [folder]: cleanHistory.map(attachHandoff).map(attachAgentProposal) }
         }
         const historyIds = new Set(cleanHistory.map((m) => m.id))
         const missingPreserved = preserveMessages.filter((m) => !historyIds.has(m.id))
@@ -480,7 +551,7 @@ export function App() {
         const mergedHistory = cleanHistory.map((m) => {
           let merged: Message = m
           if (permMap.has(m.id)) merged = { ...merged, permissionRequest: permMap.get(m.id) }
-          merged = attachHandoff(merged)
+          merged = attachAgentProposal(attachHandoff(merged))
           return merged
         })
         // Sort by ts so `missingPreserved` items (old in-memory bubbles not in
@@ -522,7 +593,15 @@ export function App() {
       const existingIds = new Set(existing.map((m) => m.id))
       const newOlder = older
         .filter((m) => !existingIds.has(m.id))
-        .map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
+        .map(m => {
+          const rawText = m.text ?? ''
+          const agents = parseAgentRecommendations(rawText)
+          return {
+            ...m,
+            text: sanitizeDisplayText(rawText),
+            ...(agents.length > 0 ? { agentProposal: { agents } } : {}),
+          }
+        })
       return { ...prev, [activeFolder]: [...newOlder, ...existing] }
     })
     setLoadingMore(false)
@@ -547,7 +626,15 @@ export function App() {
         // Refresh chat messages (merge with in-flight pending messages)
         window.api.loadHistoryPaged({ folderPath: changedFolder, limit: PAGE_SIZE }).then(({ messages: history, hasMore }) => {
           setHasMoreMessages((prev) => ({ ...prev, [changedFolder]: hasMore }))
-          const cleanHistory = history.map(m => ({ ...m, text: sanitizeDisplayText(m.text ?? '') }))
+          const cleanHistory = history.map(m => {
+            const rawText = m.text ?? ''
+            const agents = parseAgentRecommendations(rawText)
+            return {
+              ...m,
+              text: sanitizeDisplayText(rawText),
+              ...(agents.length > 0 ? { agentProposal: { agents } } : {}),
+            }
+          })
           setMessages((prev) => {
             const existing = prev[changedFolder] || []
             // Preserve in-memory-only state that doesn't exist in room-history.json:
@@ -558,6 +645,7 @@ export function App() {
               (m) => (m.pending && !m.id.startsWith('remote-'))
                 || (m.permissionRequest && m.permissionRequest.granted === undefined)
                 || (m.handoff && m.handoff.approved === undefined)
+                || (m.agentProposal && m.agentProposal.approved === undefined)
             )
             if (preserveMessages.length === 0) {
               return { ...prev, [changedFolder]: cleanHistory }
@@ -575,10 +663,16 @@ export function App() {
                 .filter((m) => m.handoff)
                 .map((m) => [m.id, m.handoff])
             )
+            const proposalMap = new Map(
+              existing
+                .filter((m) => m.agentProposal)
+                .map((m) => [m.id, m.agentProposal])
+            )
             const mergedHistory = cleanHistory.map((m) => {
               let merged: Message = m
               if (permMap.has(m.id)) merged = { ...merged, permissionRequest: permMap.get(m.id) }
               if (handoffMap.has(m.id)) merged = { ...merged, handoff: handoffMap.get(m.id) }
+              if (proposalMap.has(m.id)) merged = { ...merged, agentProposal: proposalMap.get(m.id) }
               return merged
             })
             // Concatenating `missingPreserved` at the end would dump old-but-
@@ -1273,6 +1367,17 @@ export function App() {
     console.log('[InvokeAgent] 📥 response for', target.name, '- ok:', res.ok, 'output length:', outputText.length, 'error:', res.error, 'usage:', JSON.stringify(res.usage), 'output preview:', outputText.slice(0, 200))
     const rawText = res.ok ? outputText : `Error: ${res.error}`
     const permReq = res.ok ? parsePermissionRequest(rawText, target.name, octosSnapshot) : undefined
+    const agentRecommendations = res.ok ? parseAgentRecommendations(rawText) : []
+    const agentProposal = agentRecommendations.length > 0
+      ? { agents: agentRecommendations }
+      : undefined
+    if (agentProposal) {
+      pendingAgentProposalsRef.current.set(pendingId, {
+        folderPath: folderPathAtStart,
+        proposal: agentProposal,
+      })
+      persistPendingState(folderPathAtStart)
+    }
     // Hide both the permission-request tag and the handoff tag from the
     // rendered bubble so users never see the protocol markup.
     const displayText = sanitizeDisplayText(rawText)
@@ -1290,6 +1395,7 @@ export function App() {
               error: !res.ok,
               activity: undefined,
               permissionRequest: permReq,
+              agentProposal,
               ...(resUsage ? { usage: resUsage } : {}),
             }
           : m
@@ -1430,6 +1536,16 @@ export function App() {
     >
   >(new Map())
 
+  const pendingAgentProposalsRef = useRef<
+    Map<
+      string,
+      {
+        folderPath: string
+        proposal: AgentProposal
+      }
+    >
+  >(new Map())
+
   /**
    * Persist the pending-handoff map for a folder to disk. Serialization
    * converts the Sets to arrays; the inverse runs on hydration in the folder
@@ -1439,10 +1555,10 @@ export function App() {
    * reload loses the pending approval buttons and the user has to resend.
    */
   const persistPendingState = (folderPath: string) => {
-    const entries: Record<string, any> = {}
+    const handoffEntries: Record<string, any> = {}
     for (const [id, ctx] of pendingHandoffsRef.current.entries()) {
       if (ctx.folderPath !== folderPath) continue
-      entries[id] = {
+      handoffEntries[id] = {
         folderPath: ctx.folderPath,
         speakerName: ctx.speakerName,
         speakerOutput: ctx.speakerOutput,
@@ -1453,7 +1569,21 @@ export function App() {
         alreadyCalled: Array.from(ctx.alreadyCalled),
       }
     }
-    window.api.writePendingState(folderPath, { handoffs: entries }).catch(() => {
+    const proposalEntries: Record<string, any> = {}
+    for (const [id, ctx] of pendingAgentProposalsRef.current.entries()) {
+      if (ctx.folderPath !== folderPath) continue
+      proposalEntries[id] = {
+        folderPath: ctx.folderPath,
+        agents: ctx.proposal.agents,
+        approved: ctx.proposal.approved,
+        created: ctx.proposal.created,
+        error: ctx.proposal.error,
+      }
+    }
+    window.api.writePendingState(folderPath, {
+      handoffs: handoffEntries,
+      agentProposals: proposalEntries,
+    }).catch(() => {
       // Non-fatal — next write will try again.
     })
   }
@@ -1508,6 +1638,95 @@ export function App() {
         [ctx.folderPath]: list.map((m) =>
           m.id === messageId && m.handoff
             ? { ...m, handoff: { ...m.handoff, approved: false } }
+            : m
+        ),
+      }
+    })
+  }
+
+  const approveAgentProposal = async (messageId: string) => {
+    const ctx = pendingAgentProposalsRef.current.get(messageId)
+    if (!ctx) return
+
+    const latestOctos = await window.api.listOctos(ctx.folderPath)
+    const existingNames = new Set(latestOctos.map((o) => o.name.toLowerCase()))
+    const created: string[] = []
+    const errors: string[] = []
+
+    for (const agent of ctx.proposal.agents) {
+      if (existingNames.has(agent.name.toLowerCase())) continue
+      const res = await window.api.createOcto({
+        folderPath: ctx.folderPath,
+        name: agent.name,
+        role: agent.role,
+        prompt: agent.prompt || agent.role,
+        icon: agent.icon || undefined,
+        color: agent.color || undefined,
+        permissions: {
+          fileWrite: true,
+          bash: false,
+          network: false,
+          allowPaths: [],
+          denyPaths: [],
+        },
+      })
+      if (res.ok) {
+        created.push(agent.name)
+        existingNames.add(agent.name.toLowerCase())
+      } else {
+        errors.push(`${agent.name}: ${res.error}`)
+      }
+    }
+
+    const updatedProposal: AgentProposal = {
+      ...ctx.proposal,
+      approved: errors.length === 0,
+      created,
+      ...(errors.length > 0 ? { error: errors.join('\n') } : {}),
+    }
+    pendingAgentProposalsRef.current.set(messageId, {
+      folderPath: ctx.folderPath,
+      proposal: updatedProposal,
+    })
+    persistPendingState(ctx.folderPath)
+
+    setMessages((prev) => {
+      const list = prev[ctx.folderPath] || []
+      return {
+        ...prev,
+        [ctx.folderPath]: list.map((m) =>
+          m.id === messageId && m.agentProposal
+            ? { ...m, agentProposal: updatedProposal }
+            : m
+        ),
+      }
+    })
+
+    const refreshed = await window.api.listOctos(ctx.folderPath)
+    if (activeFolder === ctx.folderPath) setOctos(refreshed)
+  }
+
+  const dismissAgentProposal = (messageId: string) => {
+    const ctx = pendingAgentProposalsRef.current.get(messageId)
+    if (!ctx) return
+
+    const updatedProposal: AgentProposal = {
+      ...ctx.proposal,
+      approved: false,
+    }
+    pendingAgentProposalsRef.current.set(messageId, {
+      folderPath: ctx.folderPath,
+      proposal: updatedProposal,
+    })
+    persistPendingState(ctx.folderPath)
+
+    setMessages((prev) => {
+      const list = prev[ctx.folderPath] || []
+      return {
+        ...prev,
+        [ctx.folderPath]: list.map((m) =>
+          m.id === messageId && m.agentProposal
+            ? { ...m, agentProposal: updatedProposal }
             : m
         ),
       }
@@ -1665,6 +1884,8 @@ export function App() {
               send={send}
               onApproveHandoff={approveHandoff}
               onDismissHandoff={dismissHandoff}
+              onApproveAgentProposal={approveAgentProposal}
+              onDismissAgentProposal={dismissAgentProposal}
               onConfirmInterrupt={confirmInterrupt}
               onCancelInterrupt={cancelInterrupt}
               onGrantPermission={grantPermission}

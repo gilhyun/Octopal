@@ -327,6 +327,8 @@ interface ChatPanelProps {
   send: (attachments?: Attachment[]) => void
   onApproveHandoff: (messageId: string) => void
   onDismissHandoff: (messageId: string) => void
+  onApproveAgentProposal: (messageId: string) => void
+  onDismissAgentProposal: (messageId: string) => void
   onConfirmInterrupt: (messageId: string) => void
   onCancelInterrupt: (messageId: string) => void
   onGrantPermission: (messageId: string) => void
@@ -357,6 +359,8 @@ export function ChatPanel({
   send,
   onApproveHandoff,
   onDismissHandoff,
+  onApproveAgentProposal,
+  onDismissAgentProposal,
   onConfirmInterrupt,
   onCancelInterrupt,
   onGrantPermission,
@@ -1017,6 +1021,49 @@ export function ChatPanel({
                 )}
                 {m.handoff && m.handoff.approved === true && (
                   <div className="handoff-resolved">{t('chat.handoffApproved')}</div>
+                )}
+                {m.agentProposal && m.agentProposal.approved === undefined && !m.agentProposal.error && (
+                  <div className="handoff-prompt">
+                    <div className="handoff-text">
+                      {t('chat.createAgentProposal', {
+                        count: m.agentProposal.agents.length,
+                        agents: m.agentProposal.agents.map((agent) => `@${agent.name}`).join(', '),
+                      })}
+                    </div>
+                    <div className="handoff-actions">
+                      <button
+                        className="btn-primary"
+                        onClick={() => onApproveAgentProposal(m.id)}
+                      >
+                        {t('chat.createAgents')}
+                      </button>
+                      <button
+                        className="btn-secondary"
+                        onClick={() => onDismissAgentProposal(m.id)}
+                      >
+                        {t('common.dismiss')}
+                      </button>
+                    </div>
+                  </div>
+                )}
+                {m.agentProposal && m.agentProposal.approved === true && (
+                  <div className="handoff-resolved">
+                    {t('chat.agentProposalCreated', {
+                      agents: (m.agentProposal.created && m.agentProposal.created.length > 0
+                        ? m.agentProposal.created
+                        : m.agentProposal.agents.map((agent) => agent.name))
+                        .map((name) => `@${name}`)
+                        .join(', '),
+                    })}
+                  </div>
+                )}
+                {m.agentProposal && m.agentProposal.approved === false && !m.agentProposal.error && (
+                  <div className="handoff-resolved">{t('chat.agentProposalDismissed')}</div>
+                )}
+                {m.agentProposal?.error && (
+                  <div className="permission-resolved dismissed">
+                    {t('chat.agentProposalError', { error: m.agentProposal.error })}
+                  </div>
                 )}
                 {m.interruptConfirm && m.interruptConfirm.confirmed === undefined && (
                   <div className="handoff-prompt interrupt-confirm">
