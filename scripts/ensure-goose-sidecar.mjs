@@ -113,37 +113,36 @@ function extractArchive(archivePath, workDir) {
 }
 
 function findBinary(workDir, triple) {
-  const candidates = [
-    join(workDir, triple.endsWith("windows-msvc") ? "goose.exe" : "goose"),
-  ];
-  for (const p of candidates) {
-    if (existsSync(p)) return p;
-  }
-  // Some archives nest under a subdirectory (e.g. `goose-<triple>/goose`).
-  try {
-    const contents = execSync(`ls -R "${workDir}"`, { encoding: "utf8" });
-    const match = contents.match(/^.*\/?(goose(?:\.exe)?)$/m);
-    if (match) {
-      // Fallback: walk up to 2 levels deep.
-      const fs = require("node:fs");
-      const walk = (d, depth) => {
-        if (depth < 0) return null;
-        for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
-          const full = join(d, entry.name);
-          if (entry.isFile() && (entry.name === "goose" || entry.name === "goose.exe")) {
-            return full;
-          }
-          if (entry.isDirectory()) {
-            const nested = walk(full, depth - 1);
-            if (nested) return nested;
-          }
-        }
-        return null;
-      };
-      const found = walk(workDir, 2);
-      if (found) return found;
+  const binaryName = triple.endsWith("windows-msvc") ? "goose.exe" : "goose";
+
+  // Direct path (flat archive)
+  const direct = join(workDir, binaryName);
+  if (existsSync(direct)) return direct;
+
+  // Walk up to 2 levels deep for nested archives (e.g. goose-<triple>/goose)
+  const walk = (dir, depth) => {
+    if (depth < 0) return null;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return null;
     }
-  } catch {}
+    for (const entry of entries) {
+      const full = join(dir, entry.name);
+      if (entry.isFile() && entry.name === binaryName) {
+        return full;
+      }
+      if (entry.isDirectory()) {
+        const nested = walk(full, depth - 1);
+        if (nested) return nested;
+      }
+    }
+    return null;
+  };
+  const found = walk(workDir, 2);
+  if (found) return found;
+
   throw new Error(`goose binary not found after extraction in ${workDir}`);
 }
 

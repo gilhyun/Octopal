@@ -181,7 +181,11 @@ if (cargoDir) {
 }
 
 const hasSigningKey = !!process.env.TAURI_SIGNING_PRIVATE_KEY;
-const extraArgs = process.argv.slice(2);
+// Filter out bare "--" separators injected by pnpm so that args like
+// "--target universal-apple-darwin" are handled by the Tauri CLI itself
+// rather than being passed through to cargo (which doesn't understand
+// universal-apple-darwin).
+const extraArgs = process.argv.slice(2).filter((a) => a !== "--");
 
 // `tauri.conf.json` ships with createUpdaterArtifacts=false (safe default).
 // When the signing key IS present we override to true here so CI/release
@@ -209,9 +213,15 @@ if (hasSigningKey) {
 }
 
 // Ensure bundled Goose sidecar is present before tauri build runs.
-// Host triple only — CI cross-compile jobs pass GOOSE_TARGET_TRIPLE env.
+// For universal-apple-darwin builds, prepare BOTH architectures.
 try {
-  await ensureGooseSidecar();
+  const isUniversal = extraArgs.includes("universal-apple-darwin");
+  if (isUniversal) {
+    await ensureGooseSidecar({ triple: "aarch64-apple-darwin" });
+    await ensureGooseSidecar({ triple: "x86_64-apple-darwin" });
+  } else {
+    await ensureGooseSidecar();
+  }
 } catch (err) {
   console.error(`❌ Failed to prepare Goose sidecar: ${err.message}`);
   process.exit(1);
