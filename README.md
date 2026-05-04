@@ -4,11 +4,12 @@
   <img src="assets/logo.png" alt="Octopal Logo" width="180" />
 </p>
 
-<h1 align="center">Create a Space, Talk to your Agents.</h1>
+<h1 align="center">Multi-Model AI Agent Orchestration</h1>
 
 <p align="center">
-  A team workspace of AI agents.<br />
-  Free & open source — available on macOS & Windows.
+  Run Claude, GPT, and Ollama agents together in one workspace.<br />
+  Assign the right model to each role. Let them collaborate.<br />
+  Free & open source — macOS & Windows.
 </p>
 
 <p align="center">
@@ -40,41 +41,38 @@
 
 ## What is Octopal?
 
-Octopal is an AI agent team workspace that supports multiple AI providers (Claude, GPT, Ollama, and more). Assign agents with different models and start collaborating right away.
+Octopal is a **multi-model AI agent orchestrator** with a group chat interface. Run Claude, GPT, and Ollama agents side by side, each assigned to its own role, and let them collaborate in real time.
 
-Built on [**Goose**](https://github.com/block/goose) (by Block) — an open-source multi-agent framework that orchestrates AI providers through the Agent Control Protocol (ACP). Goose handles provider routing, tool execution, and session management so each agent can leverage the best model for its role.
+Built on [**Goose**](https://github.com/block/goose) (by Block), an open-source framework that routes each agent to the right provider through the Agent Control Protocol (ACP). No single-vendor lock-in: pick the best model for each job and swap freely.
 
-All agent data is stored in the `octopal-agents/` folder inside your project — each agent gets its own subfolder with `config.json` and `prompt.md`.
+All agent data lives in your project's `octopal-agents/` folder. Each agent is a subfolder with `config.json` and `prompt.md`. No cloud, no accounts.
 
-## Philosophy
+## Why Multi-Model?
 
-> **Create a Space, Talk to your Agents.**
+Different models are good at different things. Octopal lets you assign the right model to each role instead of forcing every agent through one provider.
 
-**One simple metaphor, zero infrastructure.**
+| Role | Model | Why |
+|------|-------|-----|
+| Code review | Claude Opus | Deep reasoning, long context |
+| Frontend dev | GPT-4o | Fast iteration, broad knowledge |
+| Local drafts | Ollama (Llama) | Offline, free, private |
+| Strategy | GPT-5 | Structured analysis |
 
-Octopal's uniquely simple structure turns familiar concepts into a powerful AI workspace. No servers, no accounts — everything lives on your machine.
-
-| Concept | Becomes | Description |
-|---------|---------|-------------|
-| 📁 Folder | **Team** | Each folder becomes an independent team with its own agents and context. |
-| 📁 octopal-agents/ | **Agents** | Each subfolder defines an agent — its config, prompt, and personality. |
-| 🏢 Workspace | **Company** | Group your folders into a workspace and you have your own AI company. |
-
-No complex setup, no cloud — just your computer and your AI agents.
+Mix providers in the same room. Agents talk to each other regardless of which model powers them.
 
 ## Highlights
 
 | | Feature | Description |
 |---|---------|-------------|
-| 🐙 | **Octo Agents** | Define agents in `octopal-agents/` subfolders. Each folder is an independent agent with its own config, prompt, and capabilities. |
-| 💬 | **Group Chat** | Agents talk to each other and to you in a natural group chat. @mention to direct, or let the orchestrator route automatically. |
-| 🧠 | **Hidden Orchestrator** | A smart orchestrator reads the context and calls the right agent at the right time. You direct, agents collaborate. |
-| 🤖 | **Multi-Model** | Run Claude and GPT agents in the same room. Each agent can use a different provider — cross-model collaboration out of the box. |
-| 🎯 | **Per-Agent Model** | Assign a specific model to each agent — GPT-4o for coding, Claude for writing, Ollama for local inference. Mix and match freely. |
-| 🏠 | **Local Models (Ollama)** | Connect Ollama or any OpenAI-compatible local server. Run agents fully offline with your own hardware — no API keys needed. |
-| 📁 | **Your Folders, Your Teams** | Each folder is a team, each workspace is a company. Organize agent teams the way you already organize files. |
-| 🔗 | **Agent-to-Agent** | Agents can @mention each other, triggering chain reactions of collaboration without your intervention. |
-| 🔒 | **Local-first, Privacy-first** | Everything runs on your machine. No cloud servers, no data collection — your agents, your files, your control. |
+| 🤖 | **Multi-Model Orchestration** | Run Claude, GPT, and Ollama agents in the same room. Cross-model collaboration out of the box. |
+| 🎯 | **Per-Agent Model Assignment** | Assign a specific model to each agent. Mix and match providers freely per role. |
+| 🏠 | **Local Models (Ollama)** | Connect Ollama or any OpenAI-compatible local server. Fully offline, no API keys needed. |
+| 🧠 | **Smart Routing** | A hidden orchestrator reads context and calls the right agent at the right time. |
+| 💬 | **Group Chat** | Agents talk to each other and to you in a natural chat. @mention to direct, or let the orchestrator decide. |
+| 🔗 | **Agent-to-Agent** | Agents @mention each other, triggering chain collaboration without your intervention. |
+| 🐙 | **Octo Agents** | Define agents in `octopal-agents/` subfolders. Each folder is an independent agent with its own config and prompt. |
+| 📁 | **Folder = Team** | Each folder is a team, each workspace is a company. Organize agents the way you organize files. |
+| 🔒 | **Local-first** | Everything runs on your machine. No cloud servers, no data collection. |
 
 ## How It Works
 
