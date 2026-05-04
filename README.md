@@ -19,7 +19,7 @@
   <img src="https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" />
-  <img src="https://img.shields.io/badge/Goose_ACP-000000?style=flat-square&logo=goose&logoColor=white" />
+  <img src="https://img.shields.io/badge/goose_ACP-000000?style=flat-square&logo=goose&logoColor=white" />
   <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white" />
   <img src="https://img.shields.io/badge/GPT-412991?style=flat-square&logo=openai&logoColor=white" />
 </p>
@@ -43,7 +43,7 @@
 
 Octopal is a **multi-model AI agent orchestrator** with a group chat interface. Run Claude, GPT, and Ollama agents side by side, each assigned to its own role, and let them collaborate in real time.
 
-Built on [**Goose**](https://github.com/block/goose) (by Block), an open-source framework that routes each agent to the right provider through the Agent Control Protocol (ACP). No single-vendor lock-in: pick the best model for each job and swap freely.
+Built on [**goose**](https://github.com/block/goose), an open-source framework that routes each agent to the right provider through the Agent Control Protocol (ACP). No single-vendor lock-in: pick the best model for each job and swap freely.
 
 All agent data lives in your project's `octopal-agents/` folder. Each agent is a subfolder with `config.json` and `prompt.md`. No cloud, no accounts.
 
@@ -131,7 +131,7 @@ source "$HOME/.cargo/env"
 
 ### 2. Provider CLIs (for the AI agents)
 
-Octopal routes each agent to a provider through Goose's ACP. Install the
+Octopal routes each agent to a provider through goose's ACP. Install the
 CLIs for the providers you actually plan to use — at least one is
 required:
 
@@ -144,10 +144,10 @@ claude login                                       # OAuth once
 # OpenAI (GPT) — ChatGPT Plus/Pro subscription via chatgpt_codex
 npm install -g @openai/codex                       # the `codex` CLI
 codex login                                        # OAuth once
-# Octopal handles ChatGPT-side OAuth on first message via Goose
+# Octopal handles ChatGPT-side OAuth on first message via goose
 ```
 
-> Why two npm packages for Claude? Goose v1.31.0's `claude-acp` provider
+> Why two npm packages for Claude? goose v1.31.0's `claude-acp` provider
 > spawns the `claude-agent-acp` adapter, which itself shells out to the
 > `claude` CLI. Both must be on `PATH`. Octopal's PATH augmentation
 > covers nvm/asdf/homebrew installs automatically.
@@ -216,7 +216,7 @@ git push origin v0.1.43
 
 The workflow (`.github/workflows/release.yml`) does:
 1. **Build** — macOS (universal: Intel + Apple Silicon) and Windows (MSI + NSIS) in parallel
-2. **Bundle Goose** — Downloads the Goose sidecar binary for each platform
+2. **Bundle goose** — Downloads the goose sidecar binary for each platform
 3. **Sign & Notarize** — Code signing + Apple notarization (maintainer secrets required)
 4. **Release** — Creates a GitHub Release with DMG, MSI, EXE, and auto-update artifacts
 
@@ -228,7 +228,7 @@ If you fork Octopal, CI will run on your fork too. Here's what to know:
 |------|-------------|
 | **Secrets** | Your fork does NOT have the original repo's secrets. Signing/notarization will be skipped — you'll get unsigned builds. |
 | **GITHUB_TOKEN** | Automatically provided by GitHub for your fork. Releases will be created on YOUR fork's releases page. |
-| **Goose sidecar** | Downloaded from Block's public GitHub releases — works without any secrets. |
+| **goose sidecar** | Downloaded from Block's public GitHub releases — works without any secrets. |
 | **Auto-update** | Won't work without `TAURI_SIGNING_PRIVATE_KEY`. Users will need to manually download new versions. |
 
 To set up signing on your fork, add these repository secrets:
@@ -245,7 +245,7 @@ To set up signing on your fork, add these repository secrets:
 | Desktop | Tauri 2 (Rust backend) |
 | Frontend | React 18 + TypeScript 5.6 |
 | Build | Vite 5 + Cargo |
-| AI Engine | Goose ACP (Claude + OpenAI multi-provider) |
+| AI Engine | goose ACP (Claude + OpenAI multi-provider) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Icons | Lucide React |
 | i18n | i18next + react-i18next |
@@ -327,7 +327,7 @@ Octopal/
 │    └────┬────┘           └─────────────┘     │
 │         │                                     │
 │    ┌────▼────┐                               │
-│    │ Goose   │                               │
+│    │ goose   │                               │
 │    │ ACP     │                               │
 │    │ (spawn) │                               │
 │    └────┬────┘                               │
