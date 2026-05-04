@@ -7,7 +7,7 @@
 <h1 align="center">Create a Space, Talk to your Agents.</h1>
 
 <p align="center">
-  A team workspace of AI agents — right on your computer, inside your folders.<br />
+  A team workspace of AI agents.<br />
   Free & open source — available on macOS & Windows.
 </p>
 
@@ -40,11 +40,9 @@
 
 ## What is Octopal?
 
-Octopal is a team workspace of AI agents — powered by multiple AI providers (Claude, GPT, and more). Create a space for each project, assign agents with different models, and start collaborating — all right on your computer, inside your folders.
+Octopal is an AI agent team workspace that supports multiple AI providers (Claude, GPT, Ollama, and more). Assign agents with different models and start collaborating right away.
 
 Built on [**Goose**](https://github.com/block/goose) (by Block) — an open-source multi-agent framework that orchestrates AI providers through the Agent Control Protocol (ACP). Goose handles provider routing, tool execution, and session management so each agent can leverage the best model for its role.
-
-Built for power users who work on multiple projects simultaneously.
 
 All agent data is stored in the `octopal-agents/` folder inside your project — each agent gets its own subfolder with `config.json` and `prompt.md`.
 
@@ -210,6 +208,42 @@ pnpm build
 > default `tauri.conf.json` ships with `createUpdaterArtifacts: false` so
 > contributors never hit the "private key not set" error.
 
+## Building & CI
+
+### GitHub Actions (Automated Release)
+
+Octopal uses GitHub Actions to automatically build and release when a version tag is pushed:
+
+```bash
+# Tag a release and push — CI builds macOS + Windows automatically
+git tag v0.1.43
+git push origin v0.1.43
+```
+
+The workflow (`.github/workflows/release.yml`) does:
+1. **Build** — macOS (universal: Intel + Apple Silicon) and Windows (MSI + NSIS) in parallel
+2. **Bundle Goose** — Downloads the Goose sidecar binary for each platform
+3. **Sign & Notarize** — Code signing + Apple notarization (maintainer secrets required)
+4. **Release** — Creates a GitHub Release with DMG, MSI, EXE, and auto-update artifacts
+
+### Forking & Building Yourself
+
+If you fork Octopal, CI will run on your fork too. Here's what to know:
+
+| Item | What happens |
+|------|-------------|
+| **Secrets** | Your fork does NOT have the original repo's secrets. Signing/notarization will be skipped — you'll get unsigned builds. |
+| **GITHUB_TOKEN** | Automatically provided by GitHub for your fork. Releases will be created on YOUR fork's releases page. |
+| **Goose sidecar** | Downloaded from Block's public GitHub releases — works without any secrets. |
+| **Auto-update** | Won't work without `TAURI_SIGNING_PRIVATE_KEY`. Users will need to manually download new versions. |
+
+To set up signing on your fork, add these repository secrets:
+- `TAURI_SIGNING_PRIVATE_KEY` — For updater artifact signing
+- `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — For macOS code signing
+- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` — For Apple notarization
+
+> No secrets? No problem. `pnpm build` produces a working unsigned app locally.
+
 ## Tech Stack
 
 | Layer | Tech |
@@ -321,6 +355,10 @@ Octopal/
 | Attachments | `~/.octopal/uploads/` |
 | Wiki | `~/.octopal/wiki/{workspaceId}/` |
 | Settings | `~/.octopal/settings.json` |
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release notes and update history.
 
 ## License
 

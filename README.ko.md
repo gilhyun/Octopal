@@ -7,7 +7,7 @@
 <h1 align="center">스페이스를 만들고, 에이전트와 대화하세요.</h1>
 
 <p align="center">
-  AI 에이전트들의 팀 워크스페이스 — 내 컴퓨터, 내 폴더 안에서.<br />
+  AI 에이전트들의 팀 워크스페이스.<br />
   무료 & 오픈소스 — macOS & Windows 지원.
 </p>
 
@@ -40,11 +40,9 @@
 
 ## Octopal이란?
 
-Octopal은 여러 AI 프로바이더(Claude, GPT 등)를 지원하는 AI 에이전트 팀 워크스페이스입니다. 프로젝트마다 스페이스를 만들고, 서로 다른 모델의 에이전트를 배치하고, 바로 협업을 시작하세요 — 내 컴퓨터, 내 폴더 안에서.
+Octopal은 여러 AI 프로바이더(Claude, GPT, Ollama 등)를 지원하는 AI 에이전트 팀 워크스페이스입니다. 서로 다른 모델의 에이전트를 배치하고, 바로 협업을 시작하세요.
 
 [**Goose**](https://github.com/block/goose)(by Block) 기반 — 오픈소스 멀티 에이전트 프레임워크로, Agent Control Protocol(ACP)을 통해 AI 프로바이더를 오케스트레이션합니다. Goose가 프로바이더 라우팅, 도구 실행, 세션 관리를 담당하여 각 에이전트가 역할에 맞는 최적의 모델을 활용할 수 있습니다.
-
-여러 프로젝트를 동시에 작업하는 파워 유저를 위해 만들어졌습니다.
 
 모든 에이전트 데이터는 프로젝트 폴더의 `octopal-agents/` 디렉토리에 저장됩니다. 각 에이전트가 `config.json`과 `prompt.md`를 가진 서브폴더로 관리됩니다.
 
@@ -204,6 +202,42 @@ pnpm build
 > `createUpdaterArtifacts: false`로 출시되므로 기여자는 "private key
 > not set" 에러를 만나지 않습니다.
 
+## 빌드 & CI
+
+### GitHub Actions (자동 릴리즈)
+
+Octopal은 버전 태그를 푸시하면 GitHub Actions가 자동으로 빌드 & 릴리즈합니다:
+
+```bash
+# 태그 찍고 푸시 — macOS + Windows 자동 빌드
+git tag v0.1.43
+git push origin v0.1.43
+```
+
+워크플로우 (`.github/workflows/release.yml`) 동작:
+1. **빌드** — macOS (유니버설: Intel + Apple Silicon) + Windows (MSI + NSIS) 동시 빌드
+2. **Goose 번들** — 플랫폼별 Goose sidecar 바이너리 자동 다운로드
+3. **서명 & 공증** — 코드 서명 + Apple 공증 (메인테이너 secrets 필요)
+4. **릴리즈** — DMG, MSI, EXE + 자동 업데이트 아티팩트로 GitHub Release 생성
+
+### 포크해서 직접 빌드하기
+
+Octopal을 포크하면 CI가 포크에서도 동작합니다. 알아둘 점:
+
+| 항목 | 설명 |
+|------|------|
+| **Secrets** | 포크에는 원본 레포의 secrets가 없습니다. 서명/공증은 스킵되고, 서명 안 된 빌드가 만들어집니다. |
+| **GITHUB_TOKEN** | GitHub가 포크 레포에 자동 제공합니다. 릴리즈는 포크의 Releases 페이지에 생성됩니다. |
+| **Goose sidecar** | Block의 공개 GitHub Releases에서 다운로드 — secrets 없이 동작합니다. |
+| **자동 업데이트** | `TAURI_SIGNING_PRIVATE_KEY` 없으면 동작하지 않습니다. 수동 다운로드 필요. |
+
+포크에서 서명을 설정하려면 레포 secrets에 추가:
+- `TAURI_SIGNING_PRIVATE_KEY` — 업데이터 아티팩트 서명용
+- `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — macOS 코드 서명용
+- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` — Apple 공증용
+
+> Secrets 없어도 괜찮습니다. `pnpm build`로 로컬에서 서명 없는 앱을 바로 빌드할 수 있습니다.
+
 ## 기술 스택
 
 | Layer | Tech |
@@ -315,6 +349,10 @@ Octopal/
 | 첨부 파일 | `~/.octopal/uploads/` |
 | 위키 | `~/.octopal/wiki/{workspaceId}/` |
 | 설정 | `~/.octopal/settings.json` |
+
+## 변경 이력
+
+릴리즈 노트와 업데이트 내역은 [CHANGELOG.md](CHANGELOG.md)를 참고하세요.
 
 ## 라이선스
 
