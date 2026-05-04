@@ -1043,7 +1043,7 @@ export function App() {
               recentHistory: recent,
               folderPath,
             }),
-            20_000,
+            60_000,
             'Dispatcher routing',
           )
         } catch (err) {

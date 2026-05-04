@@ -99,7 +99,7 @@
       "backupMaxAge": "최대 보관 기간 (일)",
       "backupMaxAgeDesc": "이 기간을 넘은 스냅샷은 개수에 관계없이 정리됩니다.",
       "runtimeTitle": "런타임",
-      "runtimeDesc": "에이전트를 실행할 백엔드를 고릅니다. Goose 2.0이 베타인 동안은 기존 Claude CLI가 기본값입니다.",
+      "runtimeDesc": "에이전트를 실행할 백엔드를 고릅니다. Goose가 기본 멀티 프로바이더 런타임이고, 기존 Claude CLI는 구형 설정용으로 남아 있습니다.",
       "useLegacyCli": "Claude CLI 사용 (v0.1.42 경로)",
       "useLegacyCliDesc": "켜져 있으면 기존 Claude CLI로 에이전트를 실행합니다 (글로벌 `claude` 설치 필요). 끄면 번들된 Goose 2.0 사이드카를 사용합니다. API 키는 설정 → 프로바이더에서 관리합니다."
     },
@@ -112,7 +112,7 @@
       "defaultModel": "기본 모델",
       "defaultModelDesc": "Anthropic 별칭(opus/sonnet/haiku)은 실행 시 최신 Octopal 큐레이티드 모델로 해석됩니다.",
       "plannerModel": "플래너 모델",
-      "plannerModelDesc": "디스패처가 응답 에이전트를 선정할 때 쓰는 모델. v0.2.0-베타에서는 스키마만 저장되고 디스패처는 여전히 Haiku를 하드코딩 사용합니다. Stage 6b-ii 배포 시 저장된 값이 적용됩니다.",
+      "plannerModelDesc": "Anthropic이 설정되어 있을 때 히든 디스패처가 응답 에이전트를 고르는 데 쓰는 모델입니다. 아니면 현재 워크스페이스 프로바이더/모델을 사용합니다.",
       "keysTitle": "API 키",
       "apiKey": "API 키",
       "hostUrl": "호스트 URL",

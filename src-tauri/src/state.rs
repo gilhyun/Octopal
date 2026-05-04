@@ -304,15 +304,10 @@ pub struct ProvidersSettings {
     #[serde(rename = "defaultModel", default = "default_default_model")]
     pub default_model: String,
 
-    /// Phase 3: Planner model for dispatcher (Stage 6b-ii).
-    ///
-    /// **Schema-only in Phase 3+4. Wire-up deferred to Stage 6b-ii.**
-    /// This PR adds the field, surfaces it in Settings UI, and persists user
-    /// choice — but `dispatcher.rs` still reads its hardcoded haiku model
-    /// name until 6b-ii swaps in `settings.providers.planner_model`.
-    /// Designed here so 6b-ii lands as a pure logic change without a schema
-    /// migration; beta users who pre-set this get their choice honored the
-    /// moment 6b-ii ships.
+    /// Planner model for the hidden dispatcher. The Settings UI exposes the
+    /// Anthropic planner list; `dispatcher.rs` uses it when Anthropic auth is
+    /// configured, otherwise it falls back to the active workspace provider /
+    /// model so OpenAI-only or Google-only setups still get LLM routing.
     #[serde(rename = "plannerModel", default = "default_planner_model")]
     pub planner_model: String,
 

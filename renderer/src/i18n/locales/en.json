@@ -99,7 +99,7 @@
       "backupMaxAge": "Max age (days)",
       "backupMaxAgeDesc": "Snapshots older than this are pruned regardless of count.",
       "runtimeTitle": "Runtime",
-      "runtimeDesc": "Which backend spawns your agents. Defaults to the legacy Claude CLI while Goose 2.0 is in beta.",
+      "runtimeDesc": "Which backend spawns your agents. Goose is the default multi-provider runtime; legacy Claude CLI remains available for older setups.",
       "useLegacyCli": "Use legacy Claude CLI (v0.1.42 path)",
       "useLegacyCliDesc": "When on, agents spawn via the Claude CLI (requires `claude` installed globally). Turn off to use the bundled Goose 2.0 sidecar. Configure API keys in Settings → Providers."
     },
@@ -112,7 +112,7 @@
       "defaultModel": "Default model",
       "defaultModelDesc": "Anthropic aliases (opus/sonnet/haiku) are resolved to the latest Octopal-curated model at run time.",
       "plannerModel": "Planner model",
-      "plannerModelDesc": "Model used by the dispatcher to pick the responding agent. Schema-only in v0.2.0-beta — the dispatcher still uses Haiku hardcoded until Stage 6b-ii ships; your choice here is saved and will take effect then.",
+      "plannerModelDesc": "Model used by the hidden dispatcher when Anthropic is configured. Otherwise the dispatcher uses the active workspace provider/model.",
       "keysTitle": "API keys",
       "apiKey": "API key",
       "hostUrl": "Host URL",
