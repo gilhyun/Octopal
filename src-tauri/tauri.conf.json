@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-tauri/main/tooling/cli/schema.json",
   "productName": "Octopal",
-  "version": "0.1.43",
+  "version": "0.1.44",
   "identifier": "com.studioh.octopal",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
