@@ -29,7 +29,10 @@ import { existsSync, readdirSync } from "node:fs";
 import { homedir, platform } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ensureGooseSidecar } from "./ensure-goose-sidecar.mjs";
+import {
+  ensureGooseSidecar,
+  ensureGooseUniversalSidecar,
+} from "./ensure-goose-sidecar.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const projectRoot = join(__dirname, "..");
@@ -213,12 +216,13 @@ if (hasSigningKey) {
 }
 
 // Ensure bundled Goose sidecar is present before tauri build runs.
-// For universal-apple-darwin builds, prepare BOTH architectures.
+// For universal-apple-darwin builds, Tauri expects
+// `src-tauri/binaries/goose-universal-apple-darwin`, so build that
+// fat sidecar from the two release binaries before the bundler runs.
 try {
   const isUniversal = extraArgs.includes("universal-apple-darwin");
   if (isUniversal) {
-    await ensureGooseSidecar({ triple: "aarch64-apple-darwin" });
-    await ensureGooseSidecar({ triple: "x86_64-apple-darwin" });
+    await ensureGooseUniversalSidecar();
   } else {
     await ensureGooseSidecar();
   }

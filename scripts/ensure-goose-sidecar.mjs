@@ -22,6 +22,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   rmSync,
   statSync,
 } from "node:fs";
@@ -161,6 +162,9 @@ function adhocCodesignMacOS(path) {
 export async function ensureGooseSidecar({ triple } = {}) {
   const { version, assets } = loadVersion();
   const target = triple ?? detectHostTriple();
+  if (target === "universal-apple-darwin") {
+    return ensureGooseUniversalSidecar();
+  }
   const assetName = assets[target];
   if (!assetName) {
     throw new Error(`No release asset mapped for target triple ${target} in goose-version.json`);
@@ -197,6 +201,38 @@ export async function ensureGooseSidecar({ triple } = {}) {
   copyFileSync(binaryInArchive, outPath);
   if (!isWindows) chmodSync(outPath, 0o755);
 
+  adhocCodesignMacOS(outPath);
+
+  const sha = sha256OfFile(outPath);
+  const size = statSync(outPath).size;
+  console.log(`✓ Installed ${outName} (${(size / 1024 / 1024).toFixed(1)} MB, sha256 ${sha.slice(0, 12)}…)`);
+  return outPath;
+}
+
+export async function ensureGooseUniversalSidecar() {
+  const target = "universal-apple-darwin";
+  const outName = `goose-${target}`;
+  const outPath = join(binariesDir, outName);
+
+  if (existsSync(outPath)) {
+    const size = statSync(outPath).size;
+    console.log(`✓ Goose sidecar already present: ${outName} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+    return outPath;
+  }
+
+  if (platform() !== "darwin") {
+    throw new Error("universal-apple-darwin sidecar can only be created on macOS with lipo");
+  }
+
+  const armPath = await ensureGooseSidecar({ triple: "aarch64-apple-darwin" });
+  const intelPath = await ensureGooseSidecar({ triple: "x86_64-apple-darwin" });
+
+  console.log(`\n📦 Preparing Goose universal sidecar for ${target}`);
+  mkdirSync(binariesDir, { recursive: true });
+  execFileSync("lipo", ["-create", armPath, intelPath, "-output", outPath], {
+    stdio: "inherit",
+  });
+  chmodSync(outPath, 0o755);
   adhocCodesignMacOS(outPath);
 
   const sha = sha256OfFile(outPath);

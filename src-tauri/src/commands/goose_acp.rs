@@ -39,6 +39,8 @@ use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
+const GOOSE_PROMPT_TIMEOUT_SECS: u64 = 300;
+
 // ── check_goose_sidecar ────────────────────────────────────────────────
 
 #[derive(Serialize)]
@@ -833,6 +835,10 @@ pub struct TurnResult {
 /// The select loop is **biased toward the stream** so callers see UI
 /// updates before the final response — matters for "Writing response…"
 /// label + last char sequencing.
+/// Returning `Some(value)` from the callback for `TurnEvent::Permission`
+/// sends that value back to Goose immediately; deferring that response
+/// deadlocks `session/prompt` because Goose pauses the turn until the
+/// JSON-RPC request is answered.
 ///
 /// # Cancellation
 /// There is no JSON-RPC cancel (ADR §6.7). If the caller wants to abort
@@ -848,7 +854,7 @@ pub async fn run_turn<F>(
     mut on_event: F,
 ) -> Result<TurnResult, String>
 where
-    F: FnMut(TurnEvent),
+    F: FnMut(TurnEvent) -> Option<Value>,
 {
     let prompt_fut = client.request(
         "session/prompt",
@@ -864,9 +870,13 @@ where
             biased;
             item = stream.recv() => {
                 match item {
-                    Some(StreamItem::Mapped(ev)) => on_event(TurnEvent::Mapped(ev)),
+                    Some(StreamItem::Mapped(ev)) => {
+                        let _ = on_event(TurnEvent::Mapped(ev));
+                    }
                     Some(StreamItem::Permission(req)) => {
-                        on_event(TurnEvent::Permission(req));
+                        if let Some(response) = on_event(TurnEvent::Permission(req.clone())) {
+                            client.respond_raw(req.request_id, response).await?;
+                        }
                     }
                     Some(StreamItem::Terminated { code }) => {
                         return Err(format!(
@@ -1170,20 +1180,24 @@ pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, Stri
         &mut stream,
         &session_id,
         &prompt,
-        Duration::from_secs(120),
+        Duration::from_secs(GOOSE_PROMPT_TIMEOUT_SECS),
         |ev| match ev {
             TurnEvent::Mapped(MappedEvent::AssistantTextChunk { text }) => {
                 collected_text.push_str(&text);
+                None
             }
             TurnEvent::Mapped(MappedEvent::AssistantThoughtChunk { text }) => {
                 thoughts.push(text);
+                None
             }
             TurnEvent::Mapped(MappedEvent::Activity { text }) => {
                 activity.push(text);
+                None
             }
             TurnEvent::Mapped(MappedEvent::ActivityLog { tool, target }) => {
                 tool_calls += 1;
                 activity_log.push(json!({ "tool": tool, "target": target }));
+                None
             }
             TurnEvent::Permission(req) => {
                 perms += 1;
@@ -1191,6 +1205,7 @@ pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, Stri
                     "permission requested: {} (call={})",
                     req.payload.tool_name, req.payload.tool_call_id
                 ));
+                Some(render_permission_response(&req.payload, None))
             }
         },
     )
@@ -1703,7 +1718,6 @@ pub async fn run_agent_turn(
     let file_lock_manager = state.file_lock_manager.clone();
 
     let mut collected_text = String::new();
-    let mut permission_replies: Vec<(u64, Value)> = Vec::new();
     let perms_for_cb = params.permissions.clone();
 
     let turn_outcome = run_turn(
@@ -1711,7 +1725,7 @@ pub async fn run_agent_turn(
         &mut stream,
         &session_id,
         &turn_text,
-        Duration::from_secs(120),
+        Duration::from_secs(GOOSE_PROMPT_TIMEOUT_SECS),
         |ev| match ev {
             TurnEvent::Mapped(MappedEvent::AssistantTextChunk { text }) => {
                 // Progressive text delivery — Goose emits agent_message_chunk
@@ -1729,10 +1743,12 @@ pub async fn run_agent_turn(
                     }),
                 );
                 collected_text.push_str(&text);
+                None
             }
             TurnEvent::Mapped(MappedEvent::AssistantThoughtChunk { .. }) => {
                 // Not rendered in v0.1.42 UI; dropping is intentional per
                 // ADR §6.5 Q-A (no thinking events observed anyway).
+                None
             }
             TurnEvent::Mapped(MappedEvent::Activity { text }) => {
                 let _ = app_for_cb.emit(
@@ -1744,6 +1760,7 @@ pub async fn run_agent_turn(
                         "agentName": agent_cb,
                     }),
                 );
+                None
             }
             TurnEvent::Mapped(MappedEvent::ActivityLog { tool, target }) => {
                 // Mirror legacy's Write/Edit backup + lock plumbing.
@@ -1789,19 +1806,14 @@ pub async fn run_agent_turn(
                     payload.insert("conflictWith".into(), json!(c));
                 }
                 let _ = app_for_cb.emit("activity:log", Value::Object(payload));
+                None
             }
             TurnEvent::Permission(req) => {
-                let response = render_permission_response(&req.payload, perms_for_cb.as_ref());
-                permission_replies.push((req.request_id, response));
+                Some(render_permission_response(&req.payload, perms_for_cb.as_ref()))
             }
         },
     )
     .await;
-
-    // Flush any permission replies we buffered (callback can't be async).
-    for (id, resp) in permission_replies.drain(..) {
-        let _ = client.respond_raw(id, resp).await;
-    }
 
     // ── Cleanup: unregister + pool decision (Stage 6c) ──────────────
     let was_interrupted = state
