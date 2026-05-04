@@ -18,6 +18,7 @@
   <img src="https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" />
+  <img src="https://img.shields.io/badge/Goose_ACP-000000?style=flat-square&logo=goose&logoColor=white" />
   <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white" />
   <img src="https://img.shields.io/badge/GPT-412991?style=flat-square&logo=openai&logoColor=white" />
 </p>
@@ -40,6 +41,8 @@
 ## Octopal이란?
 
 Octopal은 여러 AI 프로바이더(Claude, GPT 등)를 지원하는 AI 에이전트 팀 워크스페이스입니다. 프로젝트마다 스페이스를 만들고, 서로 다른 모델의 에이전트를 배치하고, 바로 협업을 시작하세요 — 내 컴퓨터, 내 폴더 안에서.
+
+[**Goose**](https://github.com/block/goose)(by Block) 기반 — 오픈소스 멀티 에이전트 프레임워크로, Agent Control Protocol(ACP)을 통해 AI 프로바이더를 오케스트레이션합니다. Goose가 프로바이더 라우팅, 도구 실행, 세션 관리를 담당하여 각 에이전트가 역할에 맞는 최적의 모델을 활용할 수 있습니다.
 
 여러 프로젝트를 동시에 작업하는 파워 유저를 위해 만들어졌습니다.
 

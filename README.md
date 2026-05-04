@@ -18,6 +18,7 @@
   <img src="https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" />
+  <img src="https://img.shields.io/badge/Goose_ACP-000000?style=flat-square&logo=goose&logoColor=white" />
   <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white" />
   <img src="https://img.shields.io/badge/GPT-412991?style=flat-square&logo=openai&logoColor=white" />
 </p>
@@ -40,6 +41,8 @@
 ## What is Octopal?
 
 Octopal is a team workspace of AI agents — powered by multiple AI providers (Claude, GPT, and more). Create a space for each project, assign agents with different models, and start collaborating — all right on your computer, inside your folders.
+
+Built on [**Goose**](https://github.com/block/goose) (by Block) — an open-source multi-agent framework that orchestrates AI providers through the Agent Control Protocol (ACP). Goose handles provider routing, tool execution, and session management so each agent can leverage the best model for its role.
 
 Built for power users who work on multiple projects simultaneously.
 
