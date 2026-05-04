@@ -21,7 +21,8 @@
 //! providers receiving `opus`/`sonnet`/`haiku` also pass through so the
 //! 404 surfaces in the activity stream, matching the same principle.
 
-/// Resolves an alias or model ID for the given provider.
+/// Resolves an alias or model ID for the given provider's canonical API
+/// namespace.
 ///
 /// - `(alias, anthropic)` → concrete ID per the table above.
 /// - anything else → input unchanged.
@@ -32,7 +33,34 @@ pub fn resolve(alias_or_id: &str, provider: &str) -> String {
         ("opus", "anthropic") => "claude-opus-4-7".to_string(),
         ("sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
         ("haiku", "anthropic") => "claude-haiku-4-5-20251001".to_string(),
+        ("current", "anthropic") => "claude-sonnet-4-6".to_string(),
+        ("claude-4-opus", "anthropic") => "claude-opus-4-7".to_string(),
+        ("claude-4-sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
+        ("claude-haiku-4-5", "anthropic") => "claude-haiku-4-5-20251001".to_string(),
         _ => alias_or_id.to_string(),
+    }
+}
+
+/// Normalize an Octopal model setting for the Goose provider we are about
+/// to spawn. Anthropic API and Claude subscription mode use different model
+/// namespaces, so the same saved agent model must be translated at the edge.
+pub fn resolve_for_goose_provider(model: &str, goose_provider: &str) -> String {
+    match goose_provider {
+        "anthropic" => resolve(model, "anthropic"),
+        "claude-acp" => match model {
+            // Octopal's alias tier.
+            "opus" => "claude-4-opus".to_string(),
+            "sonnet" => "claude-4-sonnet".to_string(),
+            "haiku" => "claude-haiku-4-5".to_string(),
+            // Anthropic API IDs that settings/model aliases can produce.
+            id if id.starts_with("claude-opus-4") => "claude-4-opus".to_string(),
+            id if id.starts_with("claude-sonnet-4") => "claude-4-sonnet".to_string(),
+            id if id.starts_with("claude-haiku-4") => "claude-haiku-4-5".to_string(),
+            id if id.starts_with("claude-3-7-sonnet") => "claude-3-7-sonnet".to_string(),
+            id if id.starts_with("claude-3-5-sonnet") => "claude-3-5-sonnet".to_string(),
+            other => other.to_string(),
+        },
+        _ => model.to_string(),
     }
 }
 
@@ -48,12 +76,23 @@ mod tests {
     }
 
     #[test]
+    fn anthropic_api_path_accepts_legacy_claude_acp_names() {
+        assert_eq!(resolve("current", "anthropic"), "claude-sonnet-4-6");
+        assert_eq!(resolve("claude-4-opus", "anthropic"), "claude-opus-4-7");
+        assert_eq!(resolve("claude-4-sonnet", "anthropic"), "claude-sonnet-4-6");
+        assert_eq!(
+            resolve("claude-haiku-4-5", "anthropic"),
+            "claude-haiku-4-5-20251001"
+        );
+    }
+
+    #[test]
     fn concrete_anthropic_ids_passthrough() {
         for id in [
             "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-sonnet-4-5-20250929",
-            "claude-haiku-4-5",
+            "claude-haiku-4-5-20251001",
         ] {
             assert_eq!(resolve(id, "anthropic"), id);
         }
@@ -86,5 +125,30 @@ mod tests {
         // it just won't match an alias arm. run_agent_turn's empty-model
         // default fallback handles the empty case upstream.
         assert_eq!(resolve("", "anthropic"), "");
+    }
+
+    #[test]
+    fn goose_provider_resolution_maps_anthropic_api_to_claude_acp() {
+        assert_eq!(
+            resolve_for_goose_provider("claude-opus-4-7", "claude-acp"),
+            "claude-4-opus"
+        );
+        assert_eq!(
+            resolve_for_goose_provider("claude-sonnet-4-6", "claude-acp"),
+            "claude-4-sonnet"
+        );
+        assert_eq!(
+            resolve_for_goose_provider("haiku", "claude-acp"),
+            "claude-haiku-4-5"
+        );
+    }
+
+    #[test]
+    fn goose_provider_resolution_keeps_other_providers_unchanged() {
+        assert_eq!(resolve_for_goose_provider("gpt-5", "openai"), "gpt-5");
+        assert_eq!(
+            resolve_for_goose_provider("gemini-2.5-pro", "google"),
+            "gemini-2.5-pro"
+        );
     }
 }

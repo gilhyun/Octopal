@@ -362,15 +362,15 @@ function setupTauriDragRegions() {
 
   // Attach to existing elements
   const init = () => {
-    document.querySelectorAll('.drag').forEach(attachDrag)
+    Array.from(document.querySelectorAll('.drag')).forEach(attachDrag)
 
     // Watch for new `.drag` elements
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
-        for (const node of mutation.addedNodes) {
+        for (const node of Array.from(mutation.addedNodes)) {
           if (node instanceof HTMLElement) {
             if (node.classList?.contains('drag')) attachDrag(node)
-            node.querySelectorAll?.('.drag').forEach(attachDrag)
+            Array.from(node.querySelectorAll('.drag')).forEach(attachDrag)
           }
         }
       }

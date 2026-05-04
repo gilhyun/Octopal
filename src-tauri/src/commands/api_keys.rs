@@ -4,7 +4,7 @@
 //!
 //! Single keyring service, one account per provider:
 //!
-//! ```
+//! ```text
 //! service = "com.octopal.api_keys"
 //! account = <provider_id>   // "anthropic", "openai", ...
 //! secret  = <raw API key>

@@ -2,13 +2,6 @@
   "anthropic": {
     "displayName": "Anthropic",
     "models": [
-      "current",
-      "claude-4-opus",
-      "claude-4-sonnet",
-      "claude-haiku-4-5",
-      "claude-sonnet-4-5",
-      "claude-3-7-sonnet",
-      "claude-3-5-sonnet",
       "claude-opus-4-7",
       "claude-sonnet-4-6",
       "claude-haiku-4-5-20251001",

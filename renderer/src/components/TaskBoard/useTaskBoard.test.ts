@@ -8,16 +8,17 @@ import { ALL_STATUSES, KANBAN_COLUMNS } from './types'
 // ---------------------------------------------------------------------------
 
 function makeTask(overrides: Partial<Task> & { status: TaskStatus }): Task {
+  const { status, ...rest } = overrides
   return {
     id: `task-${Math.random().toString(36).slice(2)}`,
     title: 'Test task',
-    status: overrides.status,
+    status,
     priority: 'medium',
     autoAssigned: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     history: [{ timestamp: Date.now(), type: 'created' }],
-    ...overrides,
+    ...rest,
   }
 }
 

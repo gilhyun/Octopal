@@ -53,8 +53,8 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
   const [shortcutError, setShortcutError] = useState<string | null>(null)
   const [versionInfo, setVersionInfo] = useState<{
     version: string
-    electron: string
-    node: string
+    tauri: string
+    rust: string
   } | null>(null)
   const [updateStatus, setUpdateStatus] = useState<
     'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'up-to-date' | 'error'
@@ -721,12 +721,12 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                 <span>{versionInfo?.version || '...'}</span>
               </div>
               <div className="settings-about-row">
-                <span>{t('settings.about.electron')}</span>
-                <span>{versionInfo?.electron || '...'}</span>
+                <span>{t('settings.about.tauri')}</span>
+                <span>{versionInfo?.tauri || '...'}</span>
               </div>
               <div className="settings-about-row">
-                <span>{t('settings.about.node')}</span>
-                <span>{versionInfo?.node || '...'}</span>
+                <span>{t('settings.about.rust')}</span>
+                <span>{versionInfo?.rust || '...'}</span>
               </div>
             </div>
 

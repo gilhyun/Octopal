@@ -44,6 +44,19 @@ interface AgentModelTabProps {
   onModelChange: (next: string | undefined) => void
 }
 
+function preferredModelFor(providerId: string, options: string[]): string {
+  if (providerId === 'anthropic') {
+    return options.find((m) => m === 'sonnet')
+      ?? options.find((m) => m === 'claude-sonnet-4-6')
+      ?? options[0]
+      ?? ''
+  }
+  if (providerId === 'openai') {
+    return options.find((m) => m === 'gpt-5') ?? options[0] ?? ''
+  }
+  return options[0] ?? ''
+}
+
 export function AgentModelTab({
   provider,
   model,
@@ -53,15 +66,21 @@ export function AgentModelTab({
   const { t } = useTranslation()
 
   const [manifest, setManifest] = useState<ProvidersManifest | null>(null)
+  const [workspaceDefaultProvider, setWorkspaceDefaultProvider] = useState('anthropic')
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const m =
-          (await window.api.getProvidersManifest?.()) ?? null
-        if (!cancelled) setManifest(m)
+        const [m, settings] = await Promise.all([
+          window.api.getProvidersManifest?.() ?? Promise.resolve(null),
+          window.api.loadSettings().catch(() => null),
+        ])
+        if (!cancelled) {
+          setManifest(m)
+          setWorkspaceDefaultProvider(settings?.providers?.defaultProvider ?? 'anthropic')
+        }
       } finally {
         if (!cancelled) setLoading(false)
       }
@@ -73,20 +92,21 @@ export function AgentModelTab({
 
   const providerInherits = !provider
   const modelInherits = !model
+  const effectiveProvider = provider ?? workspaceDefaultProvider
 
   // For Anthropic, prepend the alias sentinels so users can pick
   // "opus"/"sonnet"/"haiku" alongside concrete IDs (mirrors the
   // Settings → Providers default-model dropdown).
   const modelOptions = useMemo<string[]>(() => {
-    if (!manifest || !provider) return []
-    const entry = manifest[provider]
+    if (!manifest || !effectiveProvider) return []
+    const entry = manifest[effectiveProvider]
     if (!entry) return []
     const baseList = Array.isArray(entry.models) ? entry.models : []
-    if (provider === 'anthropic') {
+    if (effectiveProvider === 'anthropic') {
       return ['opus', 'sonnet', 'haiku', ...baseList]
     }
     return baseList
-  }, [manifest, provider])
+  }, [effectiveProvider, manifest])
 
   if (loading) {
     return (
@@ -124,9 +144,9 @@ export function AgentModelTab({
             checked={providerInherits}
             onChange={(e) => {
               if (e.target.checked) {
-                // Inherit the workspace default — clear both the
-                // provider AND the model since the model probably
-                // doesn't make sense for the new (default) provider.
+                // Inherit the workspace default — clear both the provider
+                // AND the model because the current model may belong to the
+                // previously selected provider's catalog.
                 onProviderChange(undefined)
                 onModelChange(undefined)
               } else {
@@ -168,26 +188,27 @@ export function AgentModelTab({
           <input
             type="checkbox"
             checked={modelInherits}
-            // Disable the model checkbox when provider is inheriting —
-            // can't pin a model without first pinning a provider.
-            disabled={providerInherits}
             onChange={(e) => {
               if (e.target.checked) {
                 onModelChange(undefined)
               } else {
-                // Pre-select the first option so the dropdown isn't
-                // visually empty after re-enabling.
-                onModelChange(modelOptions[0] ?? '')
+                // Pre-select a safe provider-local default so the dropdown
+                // isn't visually empty after re-enabling.
+                onModelChange(preferredModelFor(effectiveProvider, modelOptions))
               }
             }}
           />
-          <span>{t('modals.agentModel.useWorkspaceDefault')}</span>
+          <span>
+            {provider
+              ? t('modals.agentModel.useProviderDefault')
+              : t('modals.agentModel.useWorkspaceDefault')}
+          </span>
         </label>
       </div>
       <select
         className="modal-input"
         value={model ?? ''}
-        disabled={modelInherits || providerInherits}
+        disabled={modelInherits}
         onChange={(e) =>
           onModelChange(e.target.value || undefined)
         }
@@ -204,7 +225,9 @@ export function AgentModelTab({
         <div className="modal-hint" style={{ marginTop: 16 }}>
           {t('modals.agentModel.effectiveHint', {
             provider: provider ?? t('modals.agentModel.workspaceDefault'),
-            model: model ?? t('modals.agentModel.workspaceDefault'),
+            model: model ?? (provider
+              ? t('modals.agentModel.providerDefault')
+              : t('modals.agentModel.workspaceDefault')),
           })}
         </div>
       )}

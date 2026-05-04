@@ -13,6 +13,215 @@ use super::agent::sanitize_prompt_field;
 use super::process_pool::ProcessPool;
 use crate::state::ManagedState;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HeuristicRoute {
+    leader: String,
+    collaborators: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct AgentCandidate {
+    name: String,
+    role: String,
+    index: usize,
+}
+
+fn candidates_from_agents(agents: &[serde_json::Value]) -> Vec<AgentCandidate> {
+    agents
+        .iter()
+        .enumerate()
+        .filter_map(|(index, a)| {
+            let name = a.get("name").and_then(|v| v.as_str())?;
+            if name.trim().is_empty() {
+                return None;
+            }
+            let role = a
+                .get("role")
+                .and_then(|v| v.as_str())
+                .unwrap_or("general assistant");
+            Some(AgentCandidate {
+                name: name.to_string(),
+                role: role.to_string(),
+                index,
+            })
+        })
+        .collect()
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn tokenize(text: &str) -> Vec<String> {
+    text.to_lowercase()
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|part| part.chars().count() >= 2)
+        .map(str::to_string)
+        .collect()
+}
+
+fn last_non_user_agent(recent_history: &[serde_json::Value]) -> Option<String> {
+    recent_history.iter().rev().find_map(|m| {
+        let agent = m.get("agentName").and_then(|v| v.as_str())?;
+        if agent == "user" || agent == "__dispatcher__" || agent == "__system__" {
+            None
+        } else {
+            Some(agent.to_lowercase())
+        }
+    })
+}
+
+fn looks_like_followup(message_lower: &str) -> bool {
+    contains_any(
+        message_lower,
+        &[
+            "continue",
+            "same",
+            "that",
+            "this",
+            "again",
+            "next",
+            "follow up",
+            "keep going",
+            "계속",
+            "이어서",
+            "그거",
+            "그 부분",
+            "다음",
+            "방금",
+        ],
+    )
+}
+
+fn domain_score(message_lower: &str, candidate_lower: &str) -> i32 {
+    let rules: [(&[&str], &[&str], i32); 8] = [
+        (
+            &[
+                "code", "bug", "fix", "implement", "refactor", "api", "component", "build",
+                "compile", "typescript", "rust", "react", "tauri", "코드", "버그", "수정",
+                "구현", "리팩터", "빌드", "컴파일",
+            ],
+            &["developer", "dev", "engineer", "coder", "frontend", "backend", "개발", "엔지니어"],
+            45,
+        ),
+        (
+            &["ui", "ux", "design", "css", "layout", "screen", "visual", "button", "modal", "디자인", "화면", "레이아웃", "스타일"],
+            &["designer", "design", "ui", "ux", "디자이너", "디자인"],
+            45,
+        ),
+        (
+            &["test", "qa", "spec", "regression", "verify", "coverage", "테스트", "검증", "회귀"],
+            &["tester", "qa", "test", "테스터", "검증"],
+            42,
+        ),
+        (
+            &["security", "xss", "csrf", "injection", "auth", "permission", "sanitize", "보안", "권한", "인젝션"],
+            &["security", "sec", "보안"],
+            48,
+        ),
+        (
+            &["review", "audit", "risk", "pr", "리뷰", "검토", "위험"],
+            &["reviewer", "review", "auditor", "리뷰어", "검토"],
+            40,
+        ),
+        (
+            &["plan", "roadmap", "task", "schedule", "milestone", "todo", "계획", "일정", "작업", "태스크"],
+            &["planner", "pm", "project", "planning", "manager", "기획", "플래너"],
+            35,
+        ),
+        (
+            &["doc", "docs", "readme", "writing", "copy", "문서", "설명", "작성"],
+            &["writer", "docs", "document", "technical writer", "문서", "라이터"],
+            32,
+        ),
+        (
+            &["hello", "hi", "hey", "thanks", "thank", "morning", "안녕", "고마워", "굿모닝"],
+            &["assistant", "general", "help", "어시스턴트", "도우미"],
+            30,
+        ),
+    ];
+
+    rules
+        .iter()
+        .filter(|(message_needles, candidate_needles, _)| {
+            contains_any(message_lower, message_needles)
+                && contains_any(candidate_lower, candidate_needles)
+        })
+        .map(|(_, _, score)| *score)
+        .sum()
+}
+
+fn heuristic_route(
+    message: &str,
+    agents: &[serde_json::Value],
+    recent_history: &[serde_json::Value],
+) -> Option<HeuristicRoute> {
+    let candidates = candidates_from_agents(agents);
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let message_lower = message.to_lowercase();
+    let message_tokens = tokenize(message);
+    let followup_agent = if looks_like_followup(&message_lower) {
+        last_non_user_agent(recent_history)
+    } else {
+        None
+    };
+
+    let mut scored: Vec<(i32, usize, String)> = candidates
+        .iter()
+        .map(|candidate| {
+            let name_lower = candidate.name.to_lowercase();
+            let candidate_lower = format!("{} {}", name_lower, candidate.role.to_lowercase());
+            let candidate_tokens = tokenize(&candidate_lower);
+
+            let mut score = 0;
+            if message_lower.contains(&name_lower) {
+                score += 50;
+            }
+            score += domain_score(&message_lower, &candidate_lower);
+            score += message_tokens
+                .iter()
+                .filter(|token| candidate_tokens.contains(token))
+                .take(6)
+                .count() as i32
+                * 4;
+            if followup_agent.as_deref() == Some(name_lower.as_str()) {
+                score += 18;
+            }
+
+            (score, candidate.index, candidate.name.clone())
+        })
+        .collect();
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let (top_score, _, leader) = scored.first()?.clone();
+    if top_score <= 0 {
+        let fallback = candidates
+            .iter()
+            .find(|a| a.name.eq_ignore_ascii_case("assistant"))
+            .unwrap_or(&candidates[0]);
+        return Some(HeuristicRoute {
+            leader: fallback.name.clone(),
+            collaborators: vec![],
+        });
+    }
+
+    let collaborators = scored
+        .iter()
+        .skip(1)
+        .filter(|(score, _, _)| *score >= 35 && *score >= top_score - 8)
+        .map(|(_, _, name)| name.clone())
+        .take(2)
+        .collect();
+
+    Some(HeuristicRoute {
+        leader,
+        collaborators,
+    })
+}
+
 /// Smart dispatcher: uses a persistent Claude CLI haiku process to analyze
 /// the user's message and route it to the most appropriate agent.
 ///
@@ -70,11 +279,9 @@ pub async fn dispatcher_route(
         }));
     }
 
-    // Dispatcher still runs on Claude Haiku — Goose-based routing lands in
-    // Stage 6b-ii (Phase 0 open question: Haiku dependency audit needs
-    // live measurement first). When the agent path is on Goose, short-
-    // circuit to "first available agent" so we don't spawn a Claude Haiku
-    // process just to route. Matches the legacy fallback on line ~290.
+    // Dispatcher still runs on Claude Haiku on the legacy path. When agent
+    // execution is on Goose, avoid spawning a separate Claude router and use
+    // the deterministic role/keyword router instead.
     let legacy = state
         .settings
         .lock()
@@ -85,14 +292,20 @@ pub async fn dispatcher_route(
         && std::env::var("OCTOPAL_USE_GOOSE").as_deref() == Ok("1");
     let use_goose = !legacy || dev_override;
     if use_goose {
+        let route = heuristic_route(&message, &agents, &recent_history).unwrap_or_else(|| {
+            HeuristicRoute {
+                leader: agent_names[0].to_string(),
+                collaborators: vec![],
+            }
+        });
         eprintln!(
-            "[dispatcher:gate] legacy={} dev_override={} → skip Haiku, leader={}",
-            legacy, dev_override, agent_names[0]
+            "[dispatcher:gate] legacy={} dev_override={} → heuristic leader={} collaborators={:?}",
+            legacy, dev_override, route.leader, route.collaborators
         );
         return Ok(serde_json::json!({
             "ok": true,
-            "leader": agent_names[0],
-            "collaborators": [],
+            "leader": route.leader,
+            "collaborators": route.collaborators,
             "model": null
         }));
     }
@@ -308,12 +521,63 @@ Rules:
         }
         Err(e) => {
             eprintln!("[dispatcher_route] LLM routing failed: {}. Falling back.", e);
-            let fallback = agent_names[0];
+            let route = heuristic_route(&message, &agents, &recent_history).unwrap_or_else(|| {
+                HeuristicRoute {
+                    leader: agent_names[0].to_string(),
+                    collaborators: vec![],
+                }
+            });
             Ok(serde_json::json!({
                 "ok": true,
-                "leader": fallback,
-                "collaborators": []
+                "leader": route.leader,
+                "collaborators": route.collaborators
             }))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn agents() -> Vec<serde_json::Value> {
+        vec![
+            json!({ "name": "designer", "role": "UI and product design" }),
+            json!({ "name": "developer", "role": "Rust and TypeScript implementation" }),
+            json!({ "name": "tester", "role": "QA, tests, regression coverage" }),
+            json!({ "name": "assistant", "role": "General assistant" }),
+        ]
+    }
+
+    #[test]
+    fn heuristic_routes_code_to_developer_even_when_not_first() {
+        let route = heuristic_route("Fix the Rust build error", &agents(), &[]).unwrap();
+        assert_eq!(route.leader, "developer");
+    }
+
+    #[test]
+    fn heuristic_routes_design_to_designer() {
+        let route = heuristic_route("The modal layout needs better UI spacing", &agents(), &[]).unwrap();
+        assert_eq!(route.leader, "designer");
+    }
+
+    #[test]
+    fn heuristic_routes_tests_to_tester() {
+        let route = heuristic_route("Add regression tests for this bug", &agents(), &[]).unwrap();
+        assert_eq!(route.leader, "tester");
+    }
+
+    #[test]
+    fn heuristic_uses_recent_agent_for_followups() {
+        let history = vec![json!({ "agentName": "developer", "text": "I changed the build script" })];
+        let route = heuristic_route("Continue with that same fix", &agents(), &history).unwrap();
+        assert_eq!(route.leader, "developer");
+    }
+
+    #[test]
+    fn heuristic_prefers_assistant_for_unscored_general_message() {
+        let route = heuristic_route("What is this project?", &agents(), &[]).unwrap();
+        assert_eq!(route.leader, "assistant");
     }
 }

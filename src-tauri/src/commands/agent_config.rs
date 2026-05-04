@@ -239,10 +239,9 @@ mod tests {
         };
         let (p, m) = resolve_for_turn(&binding, "anthropic", "claude-sonnet-4-6");
         assert_eq!(p, "openai");
-        // Note: this is a "weird" combination (openai + sonnet), but the
-        // resolver is intentionally agnostic — UI prevents this in the
-        // dropdown cascade, but if it ever happens at the resolver layer
-        // we don't crash, we just pass to Goose which surfaces an error.
+        // Note: this low-level resolver is intentionally provider-agnostic.
+        // Goose's turn path wraps it with provider-local default selection so
+        // UI provider-only overrides don't reach the sidecar in this shape.
         assert_eq!(m, "claude-sonnet-4-6");
     }
 

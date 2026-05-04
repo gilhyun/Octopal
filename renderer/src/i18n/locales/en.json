@@ -154,8 +154,8 @@
     "about": {
       "title": "About Octopal",
       "version": "Version",
-      "electron": "Electron",
-      "node": "Node.js",
+      "tauri": "Tauri",
+      "rust": "Rust",
       "github": "GitHub",
       "checkUpdates": "Check for Updates",
       "checking": "Checking...",
@@ -273,7 +273,9 @@
       "provider": "Provider",
       "model": "Model",
       "useWorkspaceDefault": "Use workspace default",
+      "useProviderDefault": "Use provider default",
       "workspaceDefault": "(workspace default)",
+      "providerDefault": "(provider default)",
       "effectiveHint": "This agent will run as provider={{provider}}, model={{model}}."
     },
     "createWorkspace": {

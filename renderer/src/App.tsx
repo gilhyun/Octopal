@@ -1,13 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { mergeWithPending } from './utils'
 import { useTranslation } from 'react-i18next'
 import './i18n'
-import type { ActivityLogEntry, Attachment, InterruptConfirm, Message, PermissionRequest, TokenUsage } from './types'
+import type { ActivityLogEntry, Attachment, Message, TokenUsage } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
 import { ChatPanel } from './components/ChatPanel'
-import { WikiPanel } from './components/WikiPanel'
 import { RightSidebar } from './components/RightSidebar'
-import { ActivityPanel } from './components/ActivityPanel'
 import { CreateAgentModal } from './components/modals/CreateAgentModal'
 import { CreateWorkspaceModal } from './components/modals/CreateWorkspaceModal'
 import { WelcomeModal } from './components/modals/WelcomeModal'
@@ -15,10 +13,20 @@ import { OpenFolderModal } from './components/modals/OpenFolderModal'
 import { EditAgentModal } from './components/modals/EditAgentModal'
 import { ClaudeLoginModal } from './components/modals/ClaudeLoginModal'
 import { FileAccessApprovalModal, type FileAccessDecision } from './components/modals/FileAccessApprovalModal'
-import { SettingsPanel } from './components/SettingsPanel'
-import { TaskBoard } from './components/TaskBoard'
 import { ToastContainer, showToast } from './components/Toast'
 import { expandShortcut } from './shortcut-expander'
+import {
+  buildBufferedPrompt,
+  parseHandoffTags,
+  parseMentions,
+  parsePermissionRequest,
+  sanitizeDisplayText,
+} from './chat-protocol'
+
+const ActivityPanel = lazy(() => import('./components/ActivityPanel').then((m) => ({ default: m.ActivityPanel })))
+const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
+const TaskBoard = lazy(() => import('./components/TaskBoard').then((m) => ({ default: m.TaskBoard })))
+const WikiPanel = lazy(() => import('./components/WikiPanel').then((m) => ({ default: m.WikiPanel })))
 
 /** Race a promise against a timeout. Rejects with a descriptive error if ms elapses. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -382,7 +390,7 @@ export function App() {
         setMessages((prev) => {
           const list = prev[folder] || []
           const rawText = res.ok ? res.output : `Error: ${(res as any).error}`
-          const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name) : undefined
+          const permReq = res.ok ? parsePermissionRequest(rawText, assistant.name, existingOctos) : undefined
           const usage = res.ok ? (res as any).usage : undefined
           return {
             ...prev,
@@ -390,7 +398,7 @@ export function App() {
               m.id === pendingId
                 ? {
                     ...m,
-                    text: permReq ? stripPermissionTag(rawText) : rawText,
+                    text: sanitizeDisplayText(rawText),
                     pending: false,
                     error: !res.ok,
                     activity: undefined,
@@ -608,7 +616,9 @@ export function App() {
           return {
             ...prev,
             [mapping.folderPath]: list.map((m) =>
-              m.id === mapping.messageId ? { ...m, activity: text } : m
+              m.id === mapping.messageId
+                ? { ...m, activity: (m.text ?? '').trim() ? undefined : text }
+                : m
             ),
           }
         })
@@ -623,7 +633,9 @@ export function App() {
             return {
               ...prev,
               [evFolder]: list.map((m) =>
-                m.id === remotePendingId ? { ...m, activity: text } : m
+                m.id === remotePendingId
+                  ? { ...m, activity: (m.text ?? '').trim() ? undefined : text }
+                  : m
               ),
             }
           }
@@ -793,74 +805,6 @@ export function App() {
 
   // ── Messaging ──
 
-  const parseMentions = (text: string): string[] => {
-    const re = /@([\w\p{L}\p{N}_-]+)/gu
-    const found: string[] = []
-    let m
-    while ((m = re.exec(text)) !== null) found.push(m[1])
-    return found
-  }
-
-  /** Parse <!--NEEDS_PERMISSIONS: fileWrite, bash, network--> from agent output */
-  const parsePermissionRequest = (
-    text: string,
-    agentName: string
-  ): PermissionRequest | undefined => {
-    const re = /<!--NEEDS_PERMISSIONS:\s*([\w\s,]+)-->/
-    const match = re.exec(text)
-    if (!match) return undefined
-    const validKeys = ['fileWrite', 'bash', 'network'] as const
-    const perms = match[1]
-      .split(',')
-      .map((s) => s.trim())
-      .filter((s): s is 'fileWrite' | 'bash' | 'network' =>
-        validKeys.includes(s as any)
-      )
-    if (perms.length === 0) return undefined
-    const agent = octos.find(
-      (o) => o.name.toLowerCase() === agentName.toLowerCase()
-    )
-    return { permissions: perms, agentPath: agent?.path }
-  }
-
-  /** Strip the permission tag from displayed text */
-  const stripPermissionTag = (text: string): string =>
-    text.replace(/<!--NEEDS_PERMISSIONS:\s*[\w\s,]+-->/g, '').trim()
-
-  /**
-   * Parse structured <HANDOFF target="..." reason="..."> tags from an
-   * agent's reply. This is the ONLY way to trigger a chain to another
-   * agent — free @mentions in the body are just references.
-   *
-   * Format is forgiving about quote styles and whitespace, and `reason` is
-   * optional. Multiple tags are allowed (parallel fan-out).
-   */
-  const parseHandoffTags = (text: string): Array<{ target: string; reason: string }> => {
-    // Use `"` as the canonical delimiter (matching the prompt instruction).
-    // The reason text may contain single quotes, parentheses, URLs, etc. —
-    // `[^"]*` allows everything except the closing double-quote.
-    const re = /<HANDOFF\s+target\s*=\s*"([^"]+)"(?:\s+reason\s*=\s*"([^"]*)")?\s*\/?>/gi
-    const out: Array<{ target: string; reason: string }> = []
-    let m
-    while ((m = re.exec(text)) !== null) {
-      out.push({ target: m[1].trim(), reason: (m[2] || '').trim() })
-    }
-    return out
-  }
-
-  /** Strip <HANDOFF ...> tags from displayed text so users don't see the protocol. */
-  const stripHandoffTags = (text: string): string =>
-    text.replace(/<HANDOFF\s+target\s*=\s*"[^"]+"(?:\s+reason\s*=\s*"[^"]*")?\s*\/?>/gi, '').trim()
-
-  /**
-   * Clean protocol tags from message text. Used both at invoke-time (real-time
-   * response) AND at history-load time (room-history.json → messages state).
-   * Without this, reloading the app would show raw `<HANDOFF>` and
-   * `<!--NEEDS_PERMISSIONS-->` tags in the chat bubbles.
-   */
-  const sanitizeDisplayText = (text: string): string =>
-    stripHandoffTags(stripPermissionTag(text))
-
   // ── DM (1:1 chat) helpers ────────────────────────────────────────
   const send = (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
@@ -928,10 +872,7 @@ export function App() {
     bufferRef.current = null
     console.log('[FlushBuffer] folderPath:', folderPath, 'messages:', bufferedMessages.length, 'texts:', bufferedMessages.map(m => m.text))
 
-    let combinedText =
-      bufferedMessages.length === 1
-        ? bufferedMessages[0].text
-        : bufferedMessages.map((m, i) => `(${i + 1}) ${m.text}`).join('\n')
+    let combinedText = buildBufferedPrompt(bufferedMessages)
 
     // Collect all attachments from buffered messages
     const allAttachments: Attachment[] = bufferedMessages.flatMap(
@@ -1049,16 +990,18 @@ export function App() {
     console.log('[Routing] allMentions:', allMentions, 'octos:', octos.map(o => o.name), 'hidden:', octos.filter(o => o.hidden).map(o => o.name))
     let leader: OctoFile | null = null
     let collaborators: OctoFile[] = []
+    let explicitTargets: OctoFile[] = []
     let dispatcherModel: 'sonnet' | 'opus' | undefined
 
     if (allMentions.length > 0) {
       const isAll = allMentions.includes('all')
       const mentionedAgents = isAll
-        ? octos
+        ? octos.filter((r) => !r.hidden && !r.isolated)
         : octos.filter((r) =>
             allMentions.some((m) => r.name.toLowerCase() === m.toLowerCase())
           )
       if (mentionedAgents.length > 0) {
+        explicitTargets = mentionedAgents
         leader = mentionedAgents[0]
         collaborators = mentionedAgents.slice(1)
       }
@@ -1117,7 +1060,7 @@ export function App() {
           if (leaderMatch) {
             leader = leaderMatch
             collaborators = octos.filter((r) => (res.collaborators ?? []).includes(r.name))
-            dispatcherModel = res.model
+            dispatcherModel = res.model === 'sonnet' || res.model === 'opus' ? res.model : undefined
           }
         }
         // Fallback: if dispatcher failed or returned no leader, pick first visible agent
@@ -1151,6 +1094,14 @@ export function App() {
       }
     }
 
+    if (explicitTargets.length > 1) {
+      const called = new Set<string>(explicitTargets.map((agent) => agent.name.toLowerCase()))
+      for (const target of explicitTargets) {
+        invokeAgent(target, combinedText, userTs, 0, new Set(called), [], allAttachments, dispatcherModel)
+      }
+      return
+    }
+
     const called = new Set<string>([leader.name.toLowerCase()])
     invokeAgent(leader, combinedText, userTs, 0, called, collaborators, allAttachments, dispatcherModel)
   }
@@ -1176,7 +1127,10 @@ export function App() {
 
     // Chain tracking for completion reporting
     const chainKey = `chain-${userTs}`
-    if (depth === 0) {
+    const existingChain = activeChainRef.current.get(chainKey)
+    if (existingChain) {
+      existingChain.agents.add(target.name)
+    } else {
       activeChainRef.current.set(chainKey, {
         folderPath: folderPathAtStart,
         userTs,
@@ -1185,9 +1139,6 @@ export function App() {
         completedAgents: new Set(),
         startTs: Date.now(),
       })
-    } else {
-      const chain = activeChainRef.current.get(chainKey)
-      if (chain) chain.agents.add(target.name)
     }
 
     const pendingId = `p-${userTs}-${target.name}-${depth}-${Date.now()}`
@@ -1275,7 +1226,7 @@ export function App() {
       .map((a) => a.path)
 
     console.log('[InvokeAgent] 🚀 target:', target.name, 'depth:', depth, 'prompt:', prompt.slice(0, 100), 'model:', model, 'octoPath:', target.path)
-    let res: { ok: boolean; output: string; error?: string; usage?: import('./types').TokenUsage }
+    let res: { ok: boolean; output?: string; error?: string; usage?: TokenUsage }
     try {
       res = await window.api.sendMessage({
         folderPath: folderPathAtStart,
@@ -1306,8 +1257,10 @@ export function App() {
       release()
     }
 
+    const outputText = res.output ?? ''
+
     // Handle interrupted responses — remove the pending bubble silently
-    if (res.ok && res.output === '[interrupted]') {
+    if (res.ok && outputText === '[interrupted]') {
       setMessages((prev) => ({
         ...prev,
         [folderPathAtStart]: (prev[folderPathAtStart] || []).filter(
@@ -1317,14 +1270,14 @@ export function App() {
       return // Don't chain — bundled re-invocation will handle it
     }
 
-    console.log('[InvokeAgent] 📥 response for', target.name, '- ok:', res.ok, 'output length:', res.output?.length, 'error:', res.error, 'usage:', JSON.stringify(res.usage), 'output preview:', res.output?.slice(0, 200))
-    const rawText = res.ok ? res.output : `Error: ${res.error}`
-    const permReq = res.ok ? parsePermissionRequest(rawText, target.name) : undefined
+    console.log('[InvokeAgent] 📥 response for', target.name, '- ok:', res.ok, 'output length:', outputText.length, 'error:', res.error, 'usage:', JSON.stringify(res.usage), 'output preview:', outputText.slice(0, 200))
+    const rawText = res.ok ? outputText : `Error: ${res.error}`
+    const permReq = res.ok ? parsePermissionRequest(rawText, target.name, octosSnapshot) : undefined
     // Hide both the permission-request tag and the handoff tag from the
     // rendered bubble so users never see the protocol markup.
-    const displayText = stripHandoffTags(permReq ? stripPermissionTag(rawText) : rawText)
+    const displayText = sanitizeDisplayText(rawText)
 
-    const resUsage = res.ok ? (res as any).usage : undefined
+    const resUsage = res.ok ? res.usage : undefined
     console.log('[InvokeAgent] 🏷️ setting usage on message:', pendingId, 'resUsage:', JSON.stringify(resUsage), 'res.ok:', res.ok)
     setMessages((prev) => {
       const list = prev[folderPathAtStart] || []
@@ -1398,18 +1351,28 @@ export function App() {
       maybeReportChainCompletion()
       return
     }
-    const handoffs = parseHandoffTags(res.output)
+    const tagHandoffs = parseHandoffTags(outputText)
+    const handoffs = tagHandoffs.length > 0
+      ? tagHandoffs
+      : parseMentions(sanitizeDisplayText(outputText)).map((targetName) => ({
+          target: targetName,
+          reason: `Mentioned by @${target.name} in the reply`,
+        }))
     if (handoffs.length === 0) {
       maybeReportChainCompletion()
       return
     }
 
+    const seenNextTargets = new Set<string>()
     const nextTargets = handoffs
       .map((h) => {
         const ln = h.target.toLowerCase()
         if (ln === target.name.toLowerCase()) return null
         if (alreadyCalled.has(ln)) return null
+        if (seenNextTargets.has(ln)) return null
         const octo = octosSnapshot.find((r) => r.name.toLowerCase() === ln)
+        if (!octo || octo.isolated) return null
+        seenNextTargets.add(ln)
         return octo ? { octo, reason: h.reason } : null
       })
       .filter((x): x is { octo: OctoFile; reason: string } => x !== null)
@@ -1439,7 +1402,7 @@ export function App() {
     pendingHandoffsRef.current.set(pendingId, {
       folderPath: folderPathAtStart,
       speakerName: target.name,
-      speakerOutput: res.output,
+      speakerOutput: outputText,
       nextTargetPaths: nextTargets.map((n) => n.octo.path),
       nextTargetReasons: nextTargets.map((n) => n.reason),
       userTs,
@@ -1685,69 +1648,71 @@ export function App() {
         />
       )}
 
-      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'timeline' || centerTab === 'settings' || centerTab === 'tasks' ? 'center-panel--wide' : ''}`}>
-        {centerTab === 'chat' ? (
-          <ChatPanel
-            activeFolder={activeFolder}
-            activeWorkspace={activeWorkspace}
-            octos={octos}
-            folderMessages={folderMessages}
-            input={input}
-            setInput={setInput}
-            mentionOpen={mentionOpen}
-            setMentionOpen={setMentionOpen}
-            mentionQuery={mentionQuery}
-            setMentionQuery={setMentionQuery}
-            send={send}
-            onApproveHandoff={approveHandoff}
-            onDismissHandoff={dismissHandoff}
-            onConfirmInterrupt={confirmInterrupt}
-            onCancelInterrupt={cancelInterrupt}
-            onGrantPermission={grantPermission}
-            onDismissPermission={dismissPermission}
-            hasMoreMessages={!!hasMoreMessages[activeFolder || '']}
-            loadingMore={loadingMore}
-            onLoadMore={loadMoreMessages}
-            hasPendingAgents={folderMessages.some((m) => m.pending)}
-            leftSidebarOpen={leftSidebarOpen}
-            rightSidebarOpen={rightSidebarOpen}
-            onToggleLeftSidebar={() => setLeftSidebarOpen((v) => !v)}
-            onToggleRightSidebar={() => setRightSidebarOpen((v) => !v)}
-            onStopAll={async () => {
-              await window.api.stopAllAgents()
+      <div className={`center-panel ${centerTab === 'activity' || centerTab === 'settings' || centerTab === 'tasks' ? 'center-panel--wide' : ''}`}>
+        <Suspense fallback={null}>
+          {centerTab === 'chat' ? (
+            <ChatPanel
+              activeFolder={activeFolder}
+              activeWorkspace={activeWorkspace}
+              octos={octos}
+              folderMessages={folderMessages}
+              input={input}
+              setInput={setInput}
+              mentionOpen={mentionOpen}
+              setMentionOpen={setMentionOpen}
+              mentionQuery={mentionQuery}
+              setMentionQuery={setMentionQuery}
+              send={send}
+              onApproveHandoff={approveHandoff}
+              onDismissHandoff={dismissHandoff}
+              onConfirmInterrupt={confirmInterrupt}
+              onCancelInterrupt={cancelInterrupt}
+              onGrantPermission={grantPermission}
+              onDismissPermission={dismissPermission}
+              hasMoreMessages={!!hasMoreMessages[activeFolder || '']}
+              loadingMore={loadingMore}
+              onLoadMore={loadMoreMessages}
+              hasPendingAgents={folderMessages.some((m) => m.pending)}
+              leftSidebarOpen={leftSidebarOpen}
+              rightSidebarOpen={rightSidebarOpen}
+              onToggleLeftSidebar={() => setLeftSidebarOpen((v) => !v)}
+              onToggleRightSidebar={() => setRightSidebarOpen((v) => !v)}
+              onStopAll={async () => {
+                await window.api.stopAllAgents()
 
-              // Clear activeRunsRef entries for ALL folders (not just current)
-              activeRunsRef.current.clear()
+                // Clear activeRunsRef entries for ALL folders (not just current)
+                activeRunsRef.current.clear()
 
-              // Clear pending state from ALL folders, not just the current one
-              setMessages((prev) => {
-                const next = { ...prev }
-                for (const folderKey of Object.keys(next)) {
-                  next[folderKey] = (next[folderKey] || []).map((m) =>
-                    m.pending ? { ...m, pending: false, text: m.text || t('app.stopped') } : m,
-                  )
-                }
-                return next
-              })
-            }}
-            shortcuts={shortcutsRef.current}
-          />
-        ) : centerTab === 'activity' ? (
-          <ActivityPanel
-            activityLog={folderActivity}
-            octos={octos}
-            folderMessages={folderMessages}
-            folderPath={activeFolder ?? undefined}
-          />
-        ) : centerTab === 'tasks' ? (
-          <TaskBoard />
-        ) : centerTab === 'settings' ? (
-          <SettingsPanel onSettingsSaved={(s) => {
-            shortcutsRef.current = s.shortcuts?.textExpansions || []
-          }} />
-        ) : state.activeWorkspaceId ? (
-          <WikiPanel workspaceId={state.activeWorkspaceId} />
-        ) : null}
+                // Clear pending state from ALL folders, not just the current one
+                setMessages((prev) => {
+                  const next = { ...prev }
+                  for (const folderKey of Object.keys(next)) {
+                    next[folderKey] = (next[folderKey] || []).map((m) =>
+                      m.pending ? { ...m, pending: false, text: m.text || t('app.stopped') } : m,
+                    )
+                  }
+                  return next
+                })
+              }}
+              shortcuts={shortcutsRef.current}
+            />
+          ) : centerTab === 'activity' ? (
+            <ActivityPanel
+              activityLog={folderActivity}
+              octos={octos}
+              folderMessages={folderMessages}
+              folderPath={activeFolder ?? undefined}
+            />
+          ) : centerTab === 'tasks' ? (
+            <TaskBoard />
+          ) : centerTab === 'settings' ? (
+            <SettingsPanel onSettingsSaved={(s) => {
+              shortcutsRef.current = s.shortcuts?.textExpansions || []
+            }} />
+          ) : state.activeWorkspaceId ? (
+            <WikiPanel workspaceId={state.activeWorkspaceId} />
+          ) : null}
+        </Suspense>
       </div>
 
       {centerTab === 'chat' && rightSidebarOpen && (

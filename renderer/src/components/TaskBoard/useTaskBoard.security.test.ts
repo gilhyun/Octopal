@@ -22,16 +22,17 @@ import { ALL_STATUSES } from './types'
 const STORAGE_KEY = 'octopal-tasks'
 
 function makeTask(overrides: Partial<Task> & { status: TaskStatus }): Task {
+  const { status, ...rest } = overrides
   return {
     id: `task-${crypto.randomUUID()}`,
     title: 'Test task',
-    status: overrides.status,
+    status,
     priority: 'medium',
     autoAssigned: false,
     createdAt: Date.now(),
     updatedAt: Date.now(),
     history: [{ timestamp: Date.now(), type: 'created' }],
-    ...overrides,
+    ...rest,
   }
 }
 

@@ -12,12 +12,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Early_Beta-v0.1.42-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Tauri_2-FFC131?style=flat-square&logo=tauri&logoColor=black" />
   <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" />
   <img src="https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" />
   <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white" />
+  <img src="https://img.shields.io/badge/GPT-412991?style=flat-square&logo=openai&logoColor=white" />
 </p>
 
 <p align="center">
@@ -35,11 +37,11 @@
 
 ---
 
-## What is Octopal?
+## Octopal이란?
 
-Octopal은 클로드 코드 위에서 작동하는 AI 에이전트 팀 워크스페이스입니다. 프로젝트마다 스페이스를 만들고, 에이전트를 배치하고, 바로 협업을 시작하세요 — 내 컴퓨터, 내 폴더 안에서.
+Octopal은 여러 AI 프로바이더(Claude, GPT 등)를 지원하는 AI 에이전트 팀 워크스페이스입니다. 프로젝트마다 스페이스를 만들고, 서로 다른 모델의 에이전트를 배치하고, 바로 협업을 시작하세요 — 내 컴퓨터, 내 폴더 안에서.
 
-여러 프로젝트를 동시에 작업하는 헤비 클로드 사용자를 위해 만들어졌습니다.
+여러 프로젝트를 동시에 작업하는 파워 유저를 위해 만들어졌습니다.
 
 모든 에이전트 데이터는 프로젝트 폴더의 `octopal-agents/` 디렉토리에 저장됩니다. 각 에이전트가 `config.json`과 `prompt.md`를 가진 서브폴더로 관리됩니다.
 
@@ -67,6 +69,7 @@ Octopal은 클로드 코드 위에서 작동하는 AI 에이전트 팀 워크스
 | 💬 | **그룹 채팅** | 에이전트들이 서로, 그리고 당신과 자연스럽게 대화합니다. @멘션으로 지정하거나, 오케스트레이터가 자동 라우팅합니다. |
 | 🧠 | **히든 오케스트레이터** | 스마트 오케스트레이터가 컨텍스트를 읽고 적시에 적절한 에이전트를 호출합니다. 당신이 지시하면, 에이전트가 협업합니다. |
 | 📁 | **폴더 = 팀** | 폴더가 팀, 워크스페이스가 회사. 파일 정리하듯 에이전트 팀을 조직하세요. |
+| 🤖 | **멀티 모델** | Claude와 GPT 에이전트를 같은 방에서 운영하세요. 에이전트마다 다른 프로바이더 — 크로스모델 협업이 기본입니다. |
 | 🔗 | **Agent-to-Agent** | 에이전트끼리 @멘션으로 연쇄 협업을 일으킵니다. 당신이 개입하지 않아도 됩니다. |
 | 🔒 | **로컬 퍼스트, 프라이버시 퍼스트** | 모든 것이 내 컴퓨터에서 실행됩니다. 클라우드 서버도, 데이터 수집도 없어요 — 내 에이전트, 내 파일, 내 통제. |
 
@@ -76,7 +79,7 @@ Octopal은 클로드 코드 위에서 작동하는 AI 에이전트 팀 워크스
 2. **폴더 추가** — 폴더를 추가하면 `octopal-agents/` 디렉토리가 생성됩니다. 폴더가 팀, 서브폴더가 에이전트 — 바로 일할 준비 완료.
 3. **에이전트 만들고 채팅** — 각 에이전트에 역할을 부여하고 채팅을 시작하세요. @멘션으로 필요한 에이전트를 부르거나, 오케스트레이터에게 맡기세요.
 
-## Features
+## 주요 기능
 
 ### 채팅
 - 멀티 에이전트 그룹 채팅 — 대화를 중재하는 히든 에이전트가 당신의 질문에 답변할 수 있는 분야별 전문가 에이전트를 자동 호출합니다.
@@ -155,7 +158,7 @@ codex login                                        # OAuth 한 번
 > 필요 없습니다. Claude Pro/Max 또는 ChatGPT 구독이 없으면 API 키를
 > 붙여넣으세요.
 
-## Download
+## 다운로드
 
 👉 **[최신 버전 다운로드](https://github.com/gilhyun/Octopal/releases)** (macOS / Windows)
 
@@ -165,7 +168,7 @@ codex login                                        # OAuth 한 번
 >
 > - **Windows**: _Windows가 PC를 보호했습니다_ (SmartScreen) → **"추가 정보"** 클릭 → **"실행"**을 클릭하세요.
 
-## Getting Started
+## 개발 환경 세팅
 
 이 프로젝트는 **pnpm**을 씁니다 (`package.json`의 `packageManager` 필드로
 명시). 없다면 `corepack enable && corepack prepare pnpm@latest --activate`.
@@ -196,14 +199,14 @@ pnpm build
 > `createUpdaterArtifacts: false`로 출시되므로 기여자는 "private key
 > not set" 에러를 만나지 않습니다.
 
-## Tech Stack
+## 기술 스택
 
 | Layer | Tech |
 |-------|------|
 | Desktop | Tauri 2 (Rust 백엔드) |
 | Frontend | React 18 + TypeScript 5.6 |
 | Build | Vite 5 + Cargo |
-| AI Engine | Claude CLI |
+| AI Engine | Goose ACP (Claude + OpenAI 멀티 프로바이더) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Icons | Lucide React |
 | i18n | i18next + react-i18next |
@@ -211,7 +214,7 @@ pnpm build
 
 > **왜 Rust?** Octopal은 Electron 대신 [Tauri 2](https://tauri.app)를 사용합니다. Rust 기반 백엔드는 훨씬 작은 바이너리 크기(~10MB vs ~200MB), 낮은 메모리 사용량, 네이티브 OS 통합을 제공하면서도 동일한 React + TypeScript 프론트엔드를 유지합니다.
 
-## Project Structure
+## 프로젝트 구조
 
 ```
 Octopal/
@@ -265,7 +268,7 @@ Octopal/
 └── assets/                       # 로고, 아이콘
 ```
 
-## Architecture
+## 아키텍처
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -285,14 +288,19 @@ Octopal/
 │    └────┬────┘           └─────────────┘     │
 │         │                                     │
 │    ┌────▼────┐                               │
-│    │ Claude  │                               │
-│    │ CLI     │                               │
+│    │ Goose   │                               │
+│    │ ACP     │                               │
 │    │ (spawn) │                               │
-│    └─────────┘                               │
+│    └────┬────┘                               │
+│         │                                     │
+│    ┌────▼────────────────────┐               │
+│    │ Claude CLI │ OpenAI Codex│               │
+│    │ (Anthropic)│ (OpenAI)   │               │
+│    └─────────────────────────┘               │
 └──────────────────────────────────────────────┘
 ```
 
-## Data Storage
+## 데이터 저장
 
 | 항목 | 경로 |
 |------|------|
@@ -303,6 +311,6 @@ Octopal/
 | 위키 | `~/.octopal/wiki/{workspaceId}/` |
 | 설정 | `~/.octopal/settings.json` |
 
-## License
+## 라이선스
 
 [MIT License](LICENSE) © gilhyun

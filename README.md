@@ -12,12 +12,14 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Early_Beta-v0.1.42-orange?style=flat-square" />
   <img src="https://img.shields.io/badge/Tauri_2-FFC131?style=flat-square&logo=tauri&logoColor=black" />
   <img src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white" />
   <img src="https://img.shields.io/badge/React_18-61DAFB?style=flat-square&logo=react&logoColor=black" />
   <img src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white" />
   <img src="https://img.shields.io/badge/Vite-646CFF?style=flat-square&logo=vite&logoColor=white" />
   <img src="https://img.shields.io/badge/Claude-D97757?style=flat-square&logo=anthropic&logoColor=white" />
+  <img src="https://img.shields.io/badge/GPT-412991?style=flat-square&logo=openai&logoColor=white" />
 </p>
 
 <p align="center">
@@ -37,7 +39,7 @@
 
 ## What is Octopal?
 
-Octopal is a team workspace of AI agents that runs on top of Claude Code. Create a space for each project, assign agents, and start collaborating — all right on your computer, inside your folders.
+Octopal is a team workspace of AI agents — powered by multiple AI providers (Claude, GPT, and more). Create a space for each project, assign agents with different models, and start collaborating — all right on your computer, inside your folders.
 
 Built for power users who work on multiple projects simultaneously.
 
@@ -66,6 +68,7 @@ No complex setup, no cloud — just your computer and your AI agents.
 | 🐙 | **Octo Agents** | Define agents in `octopal-agents/` subfolders. Each folder is an independent agent with its own config, prompt, and capabilities. |
 | 💬 | **Group Chat** | Agents talk to each other and to you in a natural group chat. @mention to direct, or let the orchestrator route automatically. |
 | 🧠 | **Hidden Orchestrator** | A smart orchestrator reads the context and calls the right agent at the right time. You direct, agents collaborate. |
+| 🤖 | **Multi-Model** | Run Claude and GPT agents in the same room. Each agent can use a different provider — cross-model collaboration out of the box. |
 | 📁 | **Your Folders, Your Teams** | Each folder is a team, each workspace is a company. Organize agent teams the way you already organize files. |
 | 🔗 | **Agent-to-Agent** | Agents can @mention each other, triggering chain reactions of collaboration without your intervention. |
 | 🔒 | **Local-first, Privacy-first** | Everything runs on your machine. No cloud servers, no data collection — your agents, your files, your control. |
@@ -209,7 +212,7 @@ pnpm build
 | Desktop | Tauri 2 (Rust backend) |
 | Frontend | React 18 + TypeScript 5.6 |
 | Build | Vite 5 + Cargo |
-| AI Engine | Claude CLI |
+| AI Engine | Goose ACP (Claude + OpenAI multi-provider) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Icons | Lucide React |
 | i18n | i18next + react-i18next |
@@ -291,10 +294,15 @@ Octopal/
 │    └────┬────┘           └─────────────┘     │
 │         │                                     │
 │    ┌────▼────┐                               │
-│    │ Claude  │                               │
-│    │ CLI     │                               │
+│    │ Goose   │                               │
+│    │ ACP     │                               │
 │    │ (spawn) │                               │
-│    └─────────┘                               │
+│    └────┬────┘                               │
+│         │                                     │
+│    ┌────▼────────────────────┐               │
+│    │ Claude CLI │ OpenAI Codex│               │
+│    │ (Anthropic)│ (OpenAI)   │               │
+│    └─────────────────────────┘               │
 └──────────────────────────────────────────────┘
 ```
 

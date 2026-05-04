@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
     "devUrl": "http://localhost:5173",
-    "beforeBuildCommand": "vite build --config renderer/vite.config.ts",
+    "beforeBuildCommand": "vite build --config renderer/vite.config.mts",
     "frontendDist": "../dist/renderer"
   },
   "app": {

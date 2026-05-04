@@ -162,14 +162,10 @@ mod tests {
     }
 
     #[test]
-    fn bundled_anthropic_has_opus_4_7_present() {
-        // 2026-05-02 fix: claude-acp's model namespace is now first
-        // in the dropdown (current / claude-4-opus / …) since the
-        // CliSubscription path is the most common usage. The Anthropic
-        // API IDs (claude-opus-4-7 etc.) still need to be present so
-        // the API-key path's alias resolver can land on them — just
-        // not first anymore. ADR §6.8's newest-first ordering applied
-        // within each namespace group.
+    fn bundled_anthropic_uses_api_model_namespace_only() {
+        // The renderer shows this list without knowing the user's active
+        // Anthropic auth mode. Keep it in Anthropic API namespace and translate
+        // to claude-acp names at spawn time for CLI subscription users.
         let m: ProvidersManifest = serde_json::from_str(BUNDLED_MANIFEST).unwrap();
         let anthropic = m.get("anthropic").unwrap();
         let models = anthropic.models.as_slice().expect("static list");
@@ -179,10 +175,11 @@ mod tests {
         );
         assert!(models.contains(&"claude-sonnet-4-6".to_string()));
         assert!(models.contains(&"claude-haiku-4-5-20251001".to_string()));
-        // claude-acp namespace also present.
         assert!(
-            models.contains(&"current".to_string()),
-            "claude-acp 'current' alias must be present"
+            !models.contains(&"current".to_string())
+                && !models.contains(&"claude-4-opus".to_string())
+                && !models.contains(&"claude-4-sonnet".to_string()),
+            "renderer-facing list must not mix claude-acp names into the API namespace: {models:?}"
         );
     }
 

@@ -65,6 +65,8 @@ interface HistoryMessage {
   agentName: string
   text: string
   ts: number
+  attachments?: import('./types').Attachment[]
+  usage?: import('./types').TokenUsage
 }
 
 interface TextShortcut {
@@ -167,6 +169,7 @@ interface TestConnectionResult {
 
 interface Window {
   api: {
+    checkClaudeCli: () => Promise<{ installed: boolean; loggedIn: boolean }>
     loadState: () => Promise<AppState>
     createWorkspace: (name: string) => Promise<AppState>
     renameWorkspace: (id: string, name: string) => Promise<AppState>
@@ -349,6 +352,7 @@ interface Window {
       { ok: true } | { ok: false; error: string }
     >
     stopAllAgents: () => Promise<{ ok: true; stopped: number }>
+    stopAgent: (runId: string) => Promise<{ ok: true; stopped: boolean | null }>
     getPlatform: () => Promise<string>
 
     // MCP Health Check & Install
@@ -383,12 +387,12 @@ interface Window {
       decision: 'allow_once' | 'allow_always' | 'deny'
       targetPath?: string
       projectFolder?: string
-    }) => Promise<void>
+    }) => Promise<{ ok: boolean; granted: boolean; permanent: boolean }>
 
     // Settings
     loadSettings: () => Promise<AppSettings>
     saveSettings: (settings: AppSettings) => Promise<{ ok: true; invalidated?: string[] }>
-    getVersion: () => Promise<{ version: string; electron: string; node: string }>
+    getVersion: () => Promise<{ version: string; tauri: string; rust: string }>
 
     // Phase 4 — API keys (keyring-backed).
     // NOTE: no `loadApiKey` — keys stay Rust-internal after save.
@@ -427,7 +431,7 @@ interface Window {
     reprobeBestOpusModel?: () => Promise<string | null>
 
     // Multi-window
-    newWindow: () => Promise<{ ok: true; windowId: number } | { ok: false; error: string }>
+    newWindow: () => Promise<{ ok: true; label: string } | { ok: false; error: string }>
     getWindowCount: () => Promise<{ count: number; max: number }>
     onWindowLimitReached: (cb: (maxWindows: number) => void) => () => void
   }

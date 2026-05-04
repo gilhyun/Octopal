@@ -154,8 +154,8 @@
     "about": {
       "title": "Octopal 정보",
       "version": "버전",
-      "electron": "Electron",
-      "node": "Node.js",
+      "tauri": "Tauri",
+      "rust": "Rust",
       "github": "GitHub",
       "checkUpdates": "업데이트 확인",
       "checking": "확인 중...",
@@ -273,7 +273,9 @@
       "provider": "프로바이더",
       "model": "모델",
       "useWorkspaceDefault": "워크스페이스 기본값 사용",
+      "useProviderDefault": "프로바이더 기본값 사용",
       "workspaceDefault": "(워크스페이스 기본값)",
+      "providerDefault": "(프로바이더 기본값)",
       "effectiveHint": "이 에이전트는 provider={{provider}}, model={{model}}로 실행됩니다."
     },
     "createWorkspace": {

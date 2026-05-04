@@ -30,6 +30,19 @@ interface ProvidersTabProps {
   onChange: (patch: Partial<NonNullable<AppSettings['providers']>>) => void
 }
 
+function preferredModelFor(providerId: string, options: string[]): string {
+  if (providerId === 'anthropic') {
+    return options.find((m) => m === 'sonnet')
+      ?? options.find((m) => m === 'claude-sonnet-4-6')
+      ?? options[0]
+      ?? ''
+  }
+  if (providerId === 'openai') {
+    return options.find((m) => m === 'gpt-5') ?? options[0] ?? ''
+  }
+  return options[0] ?? ''
+}
+
 export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
   const { t } = useTranslation()
   const [manifest, setManifest] = useState<ProvidersManifest | null>(null)
@@ -129,6 +142,16 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
     () => availableModelsFor(providers.defaultProvider ?? 'anthropic'),
     [availableModelsFor, providers.defaultProvider],
   )
+  const defaultModelValue = defaultModelOptions.includes(providers.defaultModel ?? '')
+    ? providers.defaultModel
+    : preferredModelFor(providers.defaultProvider ?? 'anthropic', defaultModelOptions)
+
+  useEffect(() => {
+    if (!manifest) return
+    if (!defaultModelOptions.length) return
+    if (providers.defaultModel && defaultModelOptions.includes(providers.defaultModel)) return
+    onChange({ defaultModel: defaultModelValue })
+  }, [defaultModelOptions, defaultModelValue, manifest, onChange, providers.defaultModel])
 
   if (loading) {
     return (
@@ -195,7 +218,14 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
         <select
           className="settings-select"
           value={providers.defaultProvider ?? 'anthropic'}
-          onChange={(e) => onChange({ defaultProvider: e.target.value })}
+          onChange={(e) => {
+            const defaultProvider = e.target.value
+            const options = availableModelsFor(defaultProvider)
+            onChange({
+              defaultProvider,
+              defaultModel: preferredModelFor(defaultProvider, options),
+            })
+          }}
         >
           {Object.entries(manifest).map(([pid, entry]) => (
             <option key={pid} value={pid}>
@@ -212,7 +242,7 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
         </span>
         <select
           className="settings-select"
-          value={providers.defaultModel ?? 'claude-sonnet-4-6'}
+          value={defaultModelValue}
           onChange={(e) => onChange({ defaultModel: e.target.value })}
         >
           {defaultModelOptions.map((m) => (

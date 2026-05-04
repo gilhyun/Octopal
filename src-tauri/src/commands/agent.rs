@@ -3,7 +3,7 @@ use serde::{Serialize, Deserialize};
 use std::fs;
 use std::io::BufRead;
 use std::path::Path;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::claude_cli::claude_command;
 
@@ -71,6 +71,22 @@ pub struct UsageData {
     duration_ms: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     model: Option<String>,
+}
+
+impl UsageData {
+    /// Lightweight stub carrying only the model name — used by Goose ACP
+    /// where the sidecar doesn't emit token counts (ADR §6.5).
+    pub fn model_only(model: String) -> Self {
+        Self {
+            input_tokens: 0,
+            output_tokens: 0,
+            cache_read_tokens: None,
+            cache_creation_tokens: None,
+            cost_usd: None,
+            duration_ms: None,
+            model: Some(model),
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -197,6 +213,8 @@ pub async fn send_message(
     // App context — capabilities including agent creation
     system_parts.push("\nAbout Octopal:\n\
         - Create new agents by making a subfolder in octopal-agents/ with config.json and prompt.md. Example: to create a \"developer\" agent, write octopal-agents/developer/config.json with {\"name\":\"developer\",\"role\":\"...\",\"icon\":\"👨‍💻\",\"memory\":[]} and octopal-agents/developer/prompt.md with the role description.\n\
+        - Agent config.json supports optional provider/model fields. If the user asks for a GPT, ChatGPT, OpenAI, Codex, or 지피티 agent, set \"provider\":\"openai\" and default \"model\":\"gpt-5\" unless the user names a specific OpenAI model. Do NOT create a GPT/OpenAI agent with a Claude/Anthropic model.\n\
+        - If the user asks for a Claude or Anthropic agent, set \"provider\":\"anthropic\" and default \"model\":\"claude-sonnet-4-6\" unless they name a specific Anthropic model. If the user does not imply a provider, omit provider/model so the agent inherits workspace defaults.\n\
         - @name mentions trigger agent responses. Wiki (.md files in the wiki directory) shares knowledge across all agents and sessions.\n\
         - Permissions (file write, shell, network) are per-agent, controlled in settings. Activity log shows all tool calls in real time.\n\
         - Agents can suggest hiring specialized teammates when the task calls for it. If the user asks to hire/create a new agent, create the config.json and prompt.md files directly.".to_string());
@@ -538,17 +556,17 @@ pub async fn send_message(
             "opus".to_string()
         };
         // Phase 6: agent-binding model takes precedence over caller model.
-        // Only valid aliases are honored at this layer (concrete model IDs
-        // pass through `resolve_model_for_cli` below); a non-alias binding
-        // value falls through to caller / fallback.
-        let binding_alias = binding
+        // Accept both aliases and concrete IDs. `resolve_model_for_cli`
+        // only rewrites the `opus` alias when a newer explicit Opus is
+        // detected; concrete IDs pass through unchanged.
+        let binding_model = binding
             .model
             .as_deref()
-            .filter(|m| allowed.contains(m))
+            .filter(|m| !m.is_empty())
             .map(str::to_string);
         if auto_model {
             Some(
-                binding_alias
+                binding_model
                     .or_else(|| {
                         model.as_ref().and_then(|m| {
                             if allowed.contains(&m.as_str()) {
@@ -561,13 +579,14 @@ pub async fn send_message(
                     .unwrap_or(fallback),
             )
         } else {
-            Some(binding_alias.unwrap_or(fallback))
+            Some(binding_model.unwrap_or(fallback))
         }
     }; // settings guard dropped here
     if let Some(alias) = chosen_alias.clone() {
-        let resolved = crate::commands::model_probe::resolve_model_for_cli(&alias, &state);
+        let canonical = crate::commands::model_alias::resolve(&alias, "anthropic");
+        let resolved = crate::commands::model_probe::resolve_model_for_cli(&canonical, &state);
         eprintln!(
-            "[agent:model] agent={} alias={} resolved={} (auto_model_in={:?})",
+            "[agent:model] agent={} model={} resolved={} (auto_model_in={:?})",
             agent_name, alias, resolved, model
         );
         claude_args.push("--model".to_string());
@@ -1339,22 +1358,176 @@ pub fn get_platform() -> String {
     }
 }
 
-// ── MCP stubs ──
+// ── MCP health / install ──
 #[tauri::command]
 pub fn mcp_health_check(
-    _mcp_servers: serde_json::Value,
+    mcp_servers: serde_json::Value,
 ) -> serde_json::Value {
-    serde_json::json!({ "ok": true, "results": {} })
+    let Some(servers) = mcp_servers.as_object() else {
+        return serde_json::json!({
+            "ok": false,
+            "error": "mcpServers must be a JSON object"
+        });
+    };
+
+    let mut results = serde_json::Map::new();
+    for (name, cfg) in servers {
+        let result = validate_mcp_server_config(cfg);
+        results.insert(name.clone(), result);
+    }
+
+    serde_json::json!({
+        "ok": true,
+        "results": results
+    })
 }
 
 #[tauri::command]
-pub fn mcp_install_package(_package_name: String) -> serde_json::Value {
-    serde_json::json!({ "ok": false, "error": "MCP install not yet implemented in Tauri" })
+pub fn mcp_install_package(package_name: String) -> serde_json::Value {
+    if !is_safe_npm_package_name(&package_name) {
+        return serde_json::json!({
+            "ok": false,
+            "error": "Invalid npm package name"
+        });
+    }
+
+    let Some(npm) = crate::commands::binary_discovery::discover_binary("npm") else {
+        return serde_json::json!({
+            "ok": false,
+            "error": "npm was not found on PATH or known install directories"
+        });
+    };
+
+    let output = std::process::Command::new(npm)
+        .args(["install", "-g", &package_name])
+        .output();
+
+    match output {
+        Ok(out) if out.status.success() => serde_json::json!({ "ok": true }),
+        Ok(out) => {
+            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
+            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            serde_json::json!({
+                "ok": false,
+                "error": if stderr.is_empty() { stdout } else { stderr }
+            })
+        }
+        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+    }
+}
+
+fn validate_mcp_server_config(cfg: &serde_json::Value) -> serde_json::Value {
+    let Some(obj) = cfg.as_object() else {
+        return serde_json::json!({
+            "status": "spawn_error",
+            "error": "MCP server config must be an object"
+        });
+    };
+    let Some(command) = obj.get("command").and_then(|v| v.as_str()) else {
+        return serde_json::json!({
+            "status": "spawn_error",
+            "error": "MCP server config is missing a string `command`"
+        });
+    };
+    if command.trim().is_empty() {
+        return serde_json::json!({
+            "status": "spawn_error",
+            "error": "MCP server command is empty"
+        });
+    }
+
+    if !command_available(command) {
+        let package_name = infer_mcp_package_name(command, obj.get("args"));
+        return serde_json::json!({
+            "status": "package_missing",
+            "error": format!("Command `{command}` was not found"),
+            "packageName": package_name.unwrap_or_else(|| command.to_string())
+        });
+    }
+
+    serde_json::json!({ "status": "ok" })
+}
+
+fn command_available(command: &str) -> bool {
+    let has_path_separator = command.contains('/') || command.contains('\\');
+    if has_path_separator || Path::new(command).is_absolute() {
+        let path = Path::new(command);
+        if !path.is_file() {
+            return false;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            return fs::metadata(path)
+                .map(|m| m.permissions().mode() & 0o111 != 0)
+                .unwrap_or(false);
+        }
+        #[cfg(not(unix))]
+        {
+            return true;
+        }
+    }
+
+    crate::commands::binary_discovery::discover_binary(command).is_some()
+}
+
+fn infer_mcp_package_name(command: &str, args: Option<&serde_json::Value>) -> Option<String> {
+    let command_name = Path::new(command)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or(command);
+    if matches!(command_name, "npx" | "pnpx" | "bunx") {
+        let args = args.and_then(|v| v.as_array())?;
+        for arg in args.iter().filter_map(|v| v.as_str()) {
+            if arg == "-y" || arg == "--yes" || arg.starts_with("--package") {
+                continue;
+            }
+            if !arg.starts_with('-') && is_safe_npm_package_name(arg) {
+                return Some(arg.to_string());
+            }
+        }
+    }
+    if is_safe_npm_package_name(command_name) {
+        Some(command_name.to_string())
+    } else {
+        None
+    }
+}
+
+fn is_safe_npm_package_name(name: &str) -> bool {
+    if name.is_empty() || name.len() > 214 || name.contains("..") {
+        return false;
+    }
+    let valid_part = |part: &str| {
+        !part.is_empty()
+            && part.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')
+            })
+    };
+    if let Some(rest) = name.strip_prefix('@') {
+        let mut parts = rest.split('/');
+        let Some(scope) = parts.next() else { return false };
+        let Some(pkg) = parts.next() else { return false };
+        parts.next().is_none() && valid_part(scope) && valid_part(pkg)
+    } else {
+        !name.contains('/') && valid_part(name)
+    }
 }
 
 // ── Multi-window ──
+const MAX_WINDOWS: usize = 5;
+
 #[tauri::command]
 pub fn new_window(app_handle: tauri::AppHandle) -> serde_json::Value {
+    let current_count = app_handle.webview_windows().len();
+    if current_count >= MAX_WINDOWS {
+        let _ = app_handle.emit("window:limitReached", MAX_WINDOWS);
+        return serde_json::json!({
+            "ok": false,
+            "error": format!("Window limit reached ({MAX_WINDOWS})")
+        });
+    }
+
     let label = format!("window-{}", uuid::Uuid::new_v4());
 
     // Cross-platform builder. Methods like `title_bar_style`, `hidden_title`,
@@ -1385,8 +1558,11 @@ pub fn new_window(app_handle: tauri::AppHandle) -> serde_json::Value {
 }
 
 #[tauri::command]
-pub fn get_window_count() -> serde_json::Value {
-    serde_json::json!({ "count": 1, "max": 5 })
+pub fn get_window_count(app_handle: tauri::AppHandle) -> serde_json::Value {
+    serde_json::json!({
+        "count": app_handle.webview_windows().len(),
+        "max": MAX_WINDOWS
+    })
 }
 
 /// Called from the backend when OS opens an agent file (.json or legacy .octo).
@@ -1450,10 +1626,31 @@ pub fn open_octo_file(app_handle: &tauri::AppHandle, file_path: &str) {
 // ── File access respond ──
 #[tauri::command]
 pub fn respond_file_access(
-    _request_id: String,
-    _decision: String,
-    _target_path: Option<String>,
-    _project_folder: Option<String>,
+    request_id: String,
+    decision: String,
+    target_path: Option<String>,
+    project_folder: Option<String>,
+    state: State<'_, ManagedState>,
 ) -> serde_json::Value {
-    serde_json::json!({ "ok": true })
+    let granted = matches!(decision.as_str(), "allow_once" | "allow_always");
+    if decision == "allow_always" {
+        if let (Some(folder), Some(target)) = (project_folder.as_deref(), target_path.as_deref()) {
+            let target = Path::new(target);
+            let resolved = if target.is_absolute() {
+                target.to_path_buf()
+            } else {
+                Path::new(folder).join(target)
+            };
+            let key = format!("{}::{}", folder, resolved.to_string_lossy());
+            if let Ok(mut grants) = state.permanent_grants.lock() {
+                grants.insert(key);
+            }
+        }
+    }
+    serde_json::json!({
+        "ok": true,
+        "requestId": request_id,
+        "granted": granted,
+        "permanent": decision == "allow_always"
+    })
 }

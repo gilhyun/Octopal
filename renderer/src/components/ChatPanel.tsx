@@ -223,6 +223,7 @@ function formatDuration(ms: number): string {
 function TokenUsageBadge({ usage }: { usage: TokenUsage }) {
   const [expanded, setExpanded] = useState(false)
   const totalTokens = usage.inputTokens + usage.outputTokens
+  const hasTokenData = totalTokens > 0
 
   return (
     <div className="token-usage-badge">
@@ -231,7 +232,9 @@ function TokenUsageBadge({ usage }: { usage: TokenUsage }) {
         {usage.model && (
           <span className="token-usage-model-inline">{usage.model}</span>
         )}
-        <span className="token-usage-total">{formatTokenCount(totalTokens)} tokens</span>
+        {hasTokenData && (
+          <span className="token-usage-total">{formatTokenCount(totalTokens)} tokens</span>
+        )}
         {usage.costUsd != null && (
           <span className="token-usage-cost">{formatCost(usage.costUsd)}</span>
         )}
@@ -241,14 +244,18 @@ function TokenUsageBadge({ usage }: { usage: TokenUsage }) {
       </div>
       {expanded && (
         <div className="token-usage-detail">
-          <div className="token-usage-row">
-            <span className="token-usage-label">Input</span>
-            <span className="token-usage-value">{formatTokenCount(usage.inputTokens)}</span>
-          </div>
-          <div className="token-usage-row">
-            <span className="token-usage-label">Output</span>
-            <span className="token-usage-value">{formatTokenCount(usage.outputTokens)}</span>
-          </div>
+          {hasTokenData && (
+            <>
+              <div className="token-usage-row">
+                <span className="token-usage-label">Input</span>
+                <span className="token-usage-value">{formatTokenCount(usage.inputTokens)}</span>
+              </div>
+              <div className="token-usage-row">
+                <span className="token-usage-label">Output</span>
+                <span className="token-usage-value">{formatTokenCount(usage.outputTokens)}</span>
+              </div>
+            </>
+          )}
           {usage.cacheReadTokens != null && usage.cacheReadTokens > 0 && (
             <div className="token-usage-row">
               <span className="token-usage-label">Cache read</span>
@@ -969,7 +976,7 @@ export function ChatPanel({
               )}
               <div className={`bubble ${m.pending ? 'pending' : ''} ${m.error ? 'error' : ''}`}>
                 {!isUser && <div className="bubble-name">{m.agentName}</div>}
-                {m.pending && m.activity ? (
+                {m.pending && m.activity && !(m.text ?? '').trim() ? (
                   <div className="bubble-activity">
                     <span className="activity-dot" />
                     {m.activity}

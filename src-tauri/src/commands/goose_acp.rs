@@ -826,7 +826,6 @@ pub enum TurnEvent {
 #[derive(Debug, Clone)]
 pub struct TurnResult {
     pub stop_reason: String,
-    pub raw_response: Value,
 }
 
 /// Fire `session/prompt` and drain the stream until the prompt resolves.
@@ -891,7 +890,7 @@ where
                     .and_then(|v| v.as_str())
                     .unwrap_or("unknown")
                     .to_string();
-                return Ok(TurnResult { stop_reason, raw_response: resp });
+                return Ok(TurnResult { stop_reason });
             }
         }
     }
@@ -942,6 +941,7 @@ pub async fn open_turn_session(
 /// do a single spawn-then-throw-away flow. The pool path uses
 /// `spawn_initialized` + `open_turn_session` instead so the client can be
 /// reused across turns.
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 pub async fn spawn_agent(
     app: &AppHandle,
     cfg: GooseSpawnConfig,
@@ -1249,6 +1249,67 @@ pub struct RunAgentTurnParams {
     pub permissions: Option<OctoPermissions>,
 }
 
+fn default_model_for_provider(
+    provider: &str,
+    manifest: &crate::commands::providers_manifest::ProvidersManifest,
+) -> Option<String> {
+    match provider {
+        // Canonical Anthropic API namespace. Claude subscription mode is
+        // translated later by model_alias::resolve_for_goose_provider.
+        "anthropic" => Some("claude-sonnet-4-6".to_string()),
+        "openai" => Some("gpt-5".to_string()),
+        "google" => Some("gemini-2.5-pro".to_string()),
+        _ => manifest
+            .get(provider)
+            .and_then(|entry| entry.models.as_slice())
+            .and_then(|models| models.first())
+            .cloned(),
+    }
+}
+
+fn choose_raw_model(
+    binding: &crate::commands::agent_config::AgentBinding,
+    settings_default_provider: &str,
+    settings_default_model: &str,
+    caller_model: &str,
+    manifest: &crate::commands::providers_manifest::ProvidersManifest,
+) -> (String, String) {
+    let (provider, _) = crate::commands::agent_config::resolve_for_turn(
+        binding,
+        settings_default_provider,
+        settings_default_model,
+    );
+
+    if let Some(model) = binding.model.as_deref().filter(|s| !s.is_empty()) {
+        return (provider, model.to_string());
+    }
+
+    let provider_is_overridden = binding
+        .provider
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .map(|p| p != settings_default_provider)
+        .unwrap_or(false);
+
+    if provider_is_overridden {
+        if let Some(model) = default_model_for_provider(&provider, manifest) {
+            return (provider, model);
+        }
+    }
+
+    if !caller_model.is_empty() {
+        return (provider, caller_model.to_string());
+    }
+
+    let model = if settings_default_model.is_empty() {
+        default_model_for_provider(&provider, manifest)
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string())
+    } else {
+        settings_default_model.to_string()
+    };
+    (provider, model)
+}
+
 fn render_permission_response(
     req: &PermissionRequest,
     perms: Option<&OctoPermissions>,
@@ -1304,9 +1365,9 @@ fn render_permission_response(
 /// success the client goes back to the pool; on interrupt or error it's
 /// torn down (ADR §6.7, scope §3.1).
 ///
-/// On success the returned `SendResult.usage` is **always `None`** — Goose
-/// doesn't emit usage in `session/prompt` response (ADR §6.5/Q-B). UI
-/// must handle `None` gracefully (shows "N/A" per Plan §Risks #3).
+/// Goose doesn't emit token counts in `session/prompt` responses
+/// (ADR §6.5/Q-B), so successful turns return and persist a lightweight
+/// usage object with only the configured model name.
 ///
 /// Log prefix convention (scope §5 success criteria):
 ///   `[goose_acp_pool] MISS|HIT|drift|spawn|reuse|put|kill|evict key=…`
@@ -1333,16 +1394,15 @@ pub async fn run_agent_turn(
     let binding = crate::commands::agent_config::AgentBinding::read_or_default(
         std::path::Path::new(&params.octo_path),
     );
-    let (provider, settings_default_model_for_resolution) = {
+    let (provider, raw_model) = {
         let settings = state.settings.lock().map_err(|e| e.to_string())?;
-        let resolved_provider = binding
-            .provider
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .unwrap_or(settings.providers.default_provider.as_str())
-            .to_string();
-        // Take a string copy so the lock can drop before any await.
-        (resolved_provider, settings.providers.default_model.clone())
+        choose_raw_model(
+            &binding,
+            settings.providers.default_provider.as_str(),
+            settings.providers.default_model.as_str(),
+            params.model.as_str(),
+            &state.providers_manifest,
+        )
     };
 
     // ── Configured-provider check (Phase 4, scope §4.1) ──────────────
@@ -1404,77 +1464,10 @@ pub async fn run_agent_turn(
         .map_err(|e| format!("mkdir .octopal: {e}"))?;
     let xdg = GooseXdgRoots::under(&app_data_root);
 
-    // Phase 6 §4.1 model resolution. Priority (most → least specific):
-    //   1. binding.model      (per-agent config.json override)
-    //   2. params.model       (caller suggestion — usually a dispatcher
-    //                          override; ignored when empty)
-    //   3. settings.providers.default_model
-    //   4. "claude-sonnet-4-6" (built-in fallback for the very-first-run
-    //                           case where settings haven't been
-    //                           normalized yet)
-    let raw_model = binding
-        .model
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .or_else(|| {
-            if params.model.is_empty() {
-                None
-            } else {
-                Some(params.model.clone())
-            }
-        })
-        .unwrap_or_else(|| {
-            if settings_default_model_for_resolution.is_empty() {
-                "claude-sonnet-4-6".to_string()
-            } else {
-                settings_default_model_for_resolution.clone()
-            }
-        });
-
-    // 2026-05-02 fix: provider-aware model namespace mapping. Each
-    // Goose provider has its own model catalog and they don't agree
-    // on identifiers:
-    //
-    //   anthropic (API)    : claude-opus-4-7, claude-sonnet-4-6, …
-    //   claude-acp         : current, claude-4-opus, claude-4-sonnet,
-    //                        claude-haiku-4-5, claude-sonnet-4-5,
-    //                        claude-3-7-sonnet, claude-3-5-sonnet
-    //   chatgpt_codex      : gpt-5.4, gpt-5.3-codex, …, gpt-5-codex
-    //
-    // agent.rs::send_message passes the user's `opus`/`sonnet`/`haiku`
-    // alias through `resolve_model_for_cli` which substitutes the
-    // **Anthropic-API** ID — fine for the legacy claude path and
-    // Goose's `anthropic` provider, but claude-acp rejects those IDs
-    // at session/prompt and the turn hangs to timeout. Pre-fix
-    // symptom (user report 2026-05-02):
-    //   pool key: …::claude-opus-4-7::… → 120s timeout → kill
-    //
-    // We map the most common Anthropic-API IDs and the alias forms to
-    // their claude-acp equivalents. Unrecognized values pass through
-    // — Goose surfaces the per-provider error message in the stream
-    // if the model isn't in its catalog.
-    let model = if goose_provider == "claude-acp" {
-        match raw_model.as_str() {
-            // Aliases (Octopal's 3-tier system).
-            "opus" => "claude-4-opus".to_string(),
-            "sonnet" => "claude-4-sonnet".to_string(),
-            "haiku" => "claude-haiku-4-5".to_string(),
-            // Anthropic-API IDs that resolve_model_for_cli produces.
-            // The trailing `-N` doesn't map cleanly to claude-acp's
-            // catalog, so we collapse to the family name.
-            id if id.starts_with("claude-opus-4") => "claude-4-opus".to_string(),
-            id if id.starts_with("claude-sonnet-4") => "claude-4-sonnet".to_string(),
-            id if id.starts_with("claude-haiku-4") => "claude-haiku-4-5".to_string(),
-            id if id.starts_with("claude-3-7-sonnet") => "claude-3-7-sonnet".to_string(),
-            id if id.starts_with("claude-3-5-sonnet") => "claude-3-5-sonnet".to_string(),
-            // Pass-through (already in claude-acp form, OR unknown —
-            // let the provider surface the error).
-            other => other.to_string(),
-        }
-    } else {
-        raw_model
-    };
+    let model = crate::commands::model_alias::resolve_for_goose_provider(
+        &raw_model,
+        &goose_provider,
+    );
 
     // Phase 4 invariant (scope §4.1): keyring is read **only on MISS
     // path**. HIT path reuses a pooled sidecar that already has the key
@@ -1837,6 +1830,12 @@ pub async fn run_agent_turn(
     //     client is effectively dead. Shutdown is a no-op for the zombie.
     //   - turn_outcome Err → stream broke; not safe to reuse.
     //   - Otherwise → put back for the next turn.
+    if let Ok(result) = &turn_outcome {
+        eprintln!(
+            "[goose_acp_pool] turn_done key={} stop_reason={}",
+            pool_key, result.stop_reason
+        );
+    }
     let turn_ok = turn_outcome.is_ok();
     let reuse = !was_interrupted && turn_ok;
 
@@ -1889,6 +1888,7 @@ pub async fn run_agent_turn(
     }
 
     let output = collected_text.trim().to_string();
+    let usage = crate::commands::agent::UsageData::model_only(model);
 
     // ── Persist: .octo history[] + room-history.json ────────────────
     // Byte-identical to legacy's write path (agent.rs:1078-1146).
@@ -1940,6 +1940,7 @@ pub async fn run_agent_turn(
         "agentName": params.agent_name,
         "text": output,
         "ts": chrono::Utc::now().timestamp_millis() as f64,
+        "usage": serde_json::to_value(&usage).unwrap_or_default(),
     }));
     std::fs::write(
         &room_history_path,
@@ -1951,7 +1952,7 @@ pub async fn run_agent_turn(
         ok: true,
         output: Some(output),
         error: None,
-        usage: None, // ADR §6.5 / Q-B: Goose doesn't emit usage
+        usage: Some(usage),
     })
 }
 
@@ -1963,6 +1964,78 @@ mod tests {
 
     fn xdg(tmp: &Path) -> GooseXdgRoots {
         GooseXdgRoots::under(tmp)
+    }
+
+    fn manifest() -> crate::commands::providers_manifest::ProvidersManifest {
+        serde_json::from_value(serde_json::json!({
+            "anthropic": {
+                "displayName": "Anthropic",
+                "models": ["claude-opus-4-7", "claude-sonnet-4-6"],
+                "authMethods": []
+            },
+            "openai": {
+                "displayName": "OpenAI",
+                "models": ["gpt-5.4", "gpt-5"],
+                "authMethods": []
+            },
+            "google": {
+                "displayName": "Google",
+                "models": ["gemini-2.5-pro"],
+                "authMethods": []
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn choose_raw_model_provider_override_uses_provider_default() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: Some("openai".to_string()),
+            model: None,
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "anthropic",
+            "claude-sonnet-4-6",
+            "",
+            &manifest(),
+        );
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5");
+    }
+
+    #[test]
+    fn choose_raw_model_agent_model_override_wins() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-5.4".to_string()),
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "anthropic",
+            "claude-sonnet-4-6",
+            "opus",
+            &manifest(),
+        );
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5.4");
+    }
+
+    #[test]
+    fn choose_raw_model_model_only_override_keeps_workspace_provider() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: None,
+            model: Some("claude-haiku-4-5-20251001".to_string()),
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "anthropic",
+            "claude-sonnet-4-6",
+            "",
+            &manifest(),
+        );
+        assert_eq!(provider, "anthropic");
+        assert_eq!(model, "claude-haiku-4-5-20251001");
     }
 
     #[test]
