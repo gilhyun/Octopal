@@ -111,10 +111,6 @@ No complex setup, no cloud — just your computer and your AI agents.
 - Multi-folder management (add/remove folders)
 - `octopal-agents/` change detection (file system watch)
 
-<p align="center">
-  <img src="screenshot2.png" alt="Octopal Features" width="800" />
-</p>
-
 ## Prerequisites
 
 To build Octopal from source you need two things on your machine:

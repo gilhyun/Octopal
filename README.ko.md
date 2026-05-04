@@ -111,10 +111,6 @@ Octopal은 여러 AI 프로바이더(Claude, GPT, Ollama 등)를 지원하는 AI
 - 멀티 폴더 관리 (폴더 추가/제거)
 - `octopal-agents/` 변경 감지 (파일 시스템 워치)
 
-<p align="center">
-  <img src="screenshot2.png" alt="Octopal Features" width="800" />
-</p>
-
 ## 사전 준비
 
 소스에서 Octopal을 빌드하려면 두 가지가 필요합니다.
