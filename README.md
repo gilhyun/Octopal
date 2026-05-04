@@ -72,6 +72,8 @@ No complex setup, no cloud — just your computer and your AI agents.
 | 💬 | **Group Chat** | Agents talk to each other and to you in a natural group chat. @mention to direct, or let the orchestrator route automatically. |
 | 🧠 | **Hidden Orchestrator** | A smart orchestrator reads the context and calls the right agent at the right time. You direct, agents collaborate. |
 | 🤖 | **Multi-Model** | Run Claude and GPT agents in the same room. Each agent can use a different provider — cross-model collaboration out of the box. |
+| 🎯 | **Per-Agent Model** | Assign a specific model to each agent — GPT-4o for coding, Claude for writing, Ollama for local inference. Mix and match freely. |
+| 🏠 | **Local Models (Ollama)** | Connect Ollama or any OpenAI-compatible local server. Run agents fully offline with your own hardware — no API keys needed. |
 | 📁 | **Your Folders, Your Teams** | Each folder is a team, each workspace is a company. Organize agent teams the way you already organize files. |
 | 🔗 | **Agent-to-Agent** | Agents can @mention each other, triggering chain reactions of collaboration without your intervention. |
 | 🔒 | **Local-first, Privacy-first** | Everything runs on your machine. No cloud servers, no data collection — your agents, your files, your control. |
