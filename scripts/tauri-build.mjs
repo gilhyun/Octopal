@@ -236,7 +236,15 @@ try {
     stdio: "inherit",
     env: childEnv,
     cwd: projectRoot,
+    // Windows cannot reliably launch .cmd shims through execFile without
+    // a shell. macOS/Linux keep the direct executable path.
+    shell: isWindows,
   });
 } catch (err) {
+  if (err.status == null) {
+    console.error(`❌ Failed to launch Tauri CLI: ${err.message}`);
+  } else {
+    console.error(`❌ Tauri build failed with exit code ${err.status}`);
+  }
   process.exit(err.status ?? 1);
 }
