@@ -25,7 +25,7 @@ use tauri::State;
 
 /// Model names to probe, in priority order. First available one wins when the
 /// user's effective model tier is `opus`.
-pub const OPUS_CANDIDATES: &[&str] = &["claude-opus-4-6"];
+pub const OPUS_CANDIDATES: &[&str] = &["claude-opus-4-7", "claude-opus-4-6"];
 
 /// Synchronously probe a specific model name. Returns `Ok(true)` if the CLI
 /// recognizes the model and the account has access, `Ok(false)` otherwise.

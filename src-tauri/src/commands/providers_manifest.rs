@@ -178,9 +178,10 @@ mod tests {
         let anthropic = m.get("anthropic").unwrap();
         let models = anthropic.models.as_slice().expect("static list");
         assert!(
-            models.contains(&"claude-opus-4-6".to_string()),
-            "claude-opus-4-6 must be present (alias target for API path); got {models:?}"
+            models.contains(&"claude-opus-4-7".to_string()),
+            "claude-opus-4-7 must be present (alias target for API path); got {models:?}"
         );
+        assert!(models.contains(&"claude-opus-4-6".to_string()));
         assert!(models.contains(&"claude-sonnet-4-6".to_string()));
         assert!(models.contains(&"claude-haiku-4-5".to_string()));
         assert!(

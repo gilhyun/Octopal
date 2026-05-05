@@ -133,6 +133,11 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
     : defaultModelOptions.includes(providers.defaultModel ?? '')
       ? providers.defaultModel
       : preferredModelForProvider(providers.defaultProvider ?? 'anthropic', defaultModelOptions)
+  const defaultProvider = providers.defaultProvider ?? 'anthropic'
+  const plannerUsesAnthropicOverride = defaultProvider === 'anthropic'
+  const inheritedPlannerValue = defaultProviderUsesDynamicModels
+    ? `${defaultProviderEntry?.displayName ?? defaultProvider}: ${defaultModelValue || t('settings.providers.localModelPlaceholder')}`
+    : `${defaultProviderEntry?.displayName ?? defaultProvider}: ${defaultModelValue || t('settings.providers.notSet')}`
 
   useEffect(() => {
     if (!manifest) return
@@ -264,19 +269,32 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
       <div className="settings-field">
         <span className="settings-toggle-info">
           <span className="settings-label">{t('settings.providers.plannerModel')}</span>
-          <span className="settings-desc">{t('settings.providers.plannerModelDesc')}</span>
+          <span className="settings-desc">
+            {plannerUsesAnthropicOverride
+              ? t('settings.providers.plannerModelDesc')
+              : t('settings.providers.plannerModelInheritedDesc')}
+          </span>
         </span>
-        <select
-          className="settings-select"
-          value={providers.plannerModel ?? 'claude-haiku-4-5-20251001'}
-          onChange={(e) => onChange({ plannerModel: e.target.value })}
-        >
-          {availableModelsFor('anthropic').map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        {plannerUsesAnthropicOverride ? (
+          <select
+            className="settings-select"
+            value={providers.plannerModel ?? 'claude-haiku-4-5-20251001'}
+            onChange={(e) => onChange({ plannerModel: e.target.value })}
+          >
+            {availableModelsFor('anthropic', authModes.anthropic).map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        ) : (
+          <input
+            className="settings-input"
+            value={inheritedPlannerValue}
+            disabled
+            readOnly
+          />
+        )}
       </div>
 
       {/* Per-provider cards */}

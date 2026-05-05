@@ -159,6 +159,44 @@ fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
     }
 }
 
+const SCRUBBED_CHILD_ENV_KEYS: &[&str] = &[
+    // Provider credentials must come from Octopal's selected auth mode, not
+    // from a stale shell/App LaunchServices environment. This matters most for
+    // CLI subscription mode: an invalid ANTHROPIC_API_KEY in the parent env
+    // can make Claude CLI bypass its logged-in subscription and fail with 401.
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "GOOGLE_API_KEY",
+    "GEMINI_API_KEY",
+    "DATABRICKS_TOKEN",
+    // Provider selection/control is owned by the GooseSpawnConfig below.
+    "GOOSE_PROVIDER",
+    "GOOSE_MODEL",
+    "OLLAMA_HOST",
+    "CLAUDE_CODE_COMMAND",
+    "CLAUDE_AGENT_ACP_COMMAND",
+    "CODEX_COMMAND",
+    "GEMINI_CLI_COMMAND",
+];
+
+fn should_scrub_child_env(key: &str) -> bool {
+    SCRUBBED_CHILD_ENV_KEYS
+        .iter()
+        .any(|scrubbed| scrubbed.eq_ignore_ascii_case(key))
+}
+
+fn seed_filtered_parent_env<I>(env: &mut HashMap<String, String>, parent_env: I)
+where
+    I: IntoIterator<Item = (String, String)>,
+{
+    for (key, value) in parent_env {
+        if !should_scrub_child_env(&key) {
+            env.insert(key, value);
+        }
+    }
+}
+
 /// Map an Octopal (UI provider, auth mode) pair to the Goose-facing provider
 /// id. Pure function — the entire point is to keep routing decisions
 /// testable without spawning a sidecar.
@@ -326,6 +364,7 @@ pub struct GooseSpawnConfig {
 /// will fail to write its sqlite session store).
 pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
     let mut env: HashMap<String, String> = HashMap::new();
+    seed_filtered_parent_env(&mut env, std::env::vars());
 
     // XDG isolation — the entire reason Octopal can coexist with a globally
     // installed `goose` without touching the user's own config.
@@ -519,6 +558,7 @@ impl AcpClient {
             .sidecar("goose")
             .map_err(|e| format!("sidecar resolve: {e}"))?
             .args(["acp"])
+            .env_clear()
             .envs(env);
 
         let (mut rx, child) = cmd
@@ -2722,11 +2762,11 @@ mod tests {
     #[test]
     fn env_builder_cli_subscription_shape() {
         // End-to-end env shape for the CliSubscription path: provider
-        // reported to goose is `claude-code`, no ANTHROPIC_API_KEY, and
+        // reported to goose is `claude-acp`, no ANTHROPIC_API_KEY, and
         // PATH is present.
         let tmp = std::env::temp_dir().join("octopal-env-cli-sub-shape");
         let cfg = GooseSpawnConfig {
-            provider: "claude-code".into(),
+            provider: "claude-acp".into(),
             model: "claude-sonnet-4-6".into(),
             api_key: None, // always None for CliSubscription — it's the contract
             ollama_host: None,
@@ -2738,7 +2778,7 @@ mod tests {
         let env = build_goose_env(&cfg);
         assert_eq!(
             env.get("GOOSE_PROVIDER").map(|s| s.as_str()),
-            Some("claude-code"),
+            Some("claude-acp"),
         );
         assert!(
             env.get("ANTHROPIC_API_KEY").is_none(),
@@ -2750,6 +2790,29 @@ mod tests {
         );
         // XDG still enforced — cli_subscription doesn't exempt isolation.
         assert!(env.get("XDG_CONFIG_HOME").is_some());
+    }
+
+    #[test]
+    fn env_builder_scrubs_parent_credentials_and_control_env() {
+        let mut env = HashMap::new();
+        seed_filtered_parent_env(
+            &mut env,
+            [
+                ("ANTHROPIC_API_KEY".to_string(), "bad-key".to_string()),
+                ("OpenAI_Api_Key".to_string(), "also-bad".to_string()),
+                ("GOOSE_PROVIDER".to_string(), "anthropic".to_string()),
+                ("CLAUDE_AGENT_ACP_COMMAND".to_string(), "/tmp/nope".to_string()),
+                ("HOME".to_string(), "/Users/example".to_string()),
+                ("PATH".to_string(), "/usr/bin".to_string()),
+            ],
+        );
+
+        assert!(env.get("ANTHROPIC_API_KEY").is_none());
+        assert!(env.get("OpenAI_Api_Key").is_none());
+        assert!(env.get("GOOSE_PROVIDER").is_none());
+        assert!(env.get("CLAUDE_AGENT_ACP_COMMAND").is_none());
+        assert_eq!(env.get("HOME").map(|s| s.as_str()), Some("/Users/example"));
+        assert_eq!(env.get("PATH").map(|s| s.as_str()), Some("/usr/bin"));
     }
 
     #[test]

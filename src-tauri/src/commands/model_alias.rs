@@ -5,7 +5,7 @@
 //!
 //! | Alias    | Provider    | Resolved ID                       |
 //! |----------|-------------|-----------------------------------|
-//! | opus     | anthropic   | `claude-opus-4-6`                 |
+//! | opus     | anthropic   | `claude-opus-4-7`                 |
 //! | sonnet   | anthropic   | `claude-sonnet-4-6`               |
 //! | haiku    | anthropic   | `claude-haiku-4-5`                |
 //!
@@ -30,11 +30,11 @@
 /// The dispatcher also reuses this on the planner path.
 pub fn resolve(alias_or_id: &str, provider: &str) -> String {
     match (alias_or_id, provider) {
-        ("opus", "anthropic") => "claude-opus-4-6".to_string(),
+        ("opus", "anthropic") => "claude-opus-4-7".to_string(),
         ("sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
         ("haiku", "anthropic") => "claude-haiku-4-5".to_string(),
         ("current", "anthropic") => "claude-sonnet-4-6".to_string(),
-        ("claude-4-opus", "anthropic") => "claude-opus-4-6".to_string(),
+        ("claude-4-opus", "anthropic") => "claude-opus-4-7".to_string(),
         ("claude-4-sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
         ("claude-haiku-4-5", "anthropic") => "claude-haiku-4-5".to_string(),
         _ => alias_or_id.to_string(),
@@ -86,7 +86,7 @@ mod tests {
 
     #[test]
     fn anthropic_aliases_resolve() {
-        assert_eq!(resolve("opus", "anthropic"), "claude-opus-4-6");
+        assert_eq!(resolve("opus", "anthropic"), "claude-opus-4-7");
         assert_eq!(resolve("sonnet", "anthropic"), "claude-sonnet-4-6");
         assert_eq!(resolve("haiku", "anthropic"), "claude-haiku-4-5");
     }
@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn anthropic_api_path_accepts_legacy_claude_acp_names() {
         assert_eq!(resolve("current", "anthropic"), "claude-sonnet-4-6");
-        assert_eq!(resolve("claude-4-opus", "anthropic"), "claude-opus-4-6");
+        assert_eq!(resolve("claude-4-opus", "anthropic"), "claude-opus-4-7");
         assert_eq!(resolve("claude-4-sonnet", "anthropic"), "claude-sonnet-4-6");
         assert_eq!(resolve("claude-haiku-4-5", "anthropic"), "claude-haiku-4-5");
     }
@@ -102,6 +102,7 @@ mod tests {
     #[test]
     fn concrete_anthropic_ids_passthrough() {
         for id in [
+            "claude-opus-4-7",
             "claude-opus-4-6",
             "claude-haiku-4-5",
             "claude-sonnet-4-5-20250929",
@@ -140,7 +141,7 @@ mod tests {
     #[test]
     fn goose_provider_resolution_maps_anthropic_api_to_claude_acp() {
         assert_eq!(
-            resolve_for_goose_provider("claude-opus-4-6", "claude-acp"),
+            resolve_for_goose_provider("claude-opus-4-7", "claude-acp"),
             "claude-4-opus"
         );
         assert_eq!(
