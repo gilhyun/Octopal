@@ -419,6 +419,18 @@ interface Window {
     detectBinary?: (name: string) => Promise<ClaudeDetection>
     /** Write auth mode for a provider. Invalidates the pool on change. */
     setAuthMode?: (provider: string, mode: AuthMode) => Promise<void>
+    /**
+     * For CLI-subscription providers that own a browser OAuth flow
+     * (currently OpenAI / ChatGPT Codex), run a tiny preflight turn so
+     * sign-in happens during setup instead of the first real agent message.
+     */
+    preflightCliSubscription?: (provider: string) => Promise<{
+      ok: boolean
+      provider: string
+      goose_provider: string
+      model: string
+      elapsed_ms: number
+    }>
     /** Demote provider auth mode to `none`. Does not touch the keyring. */
     clearAuthMode?: (provider: string) => Promise<void>
     /** Read current auth mode for a provider (`none` if no entry). */

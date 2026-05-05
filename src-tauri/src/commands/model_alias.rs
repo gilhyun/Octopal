@@ -44,6 +44,22 @@ pub fn resolve(alias_or_id: &str, provider: &str) -> String {
 /// Normalize an Octopal model setting for the Goose provider we are about
 /// to spawn. Anthropic API and Claude subscription mode use different model
 /// namespaces, so the same saved agent model must be translated at the edge.
+pub const CHATGPT_CODEX_MODELS: &[&str] = &[
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5.1-codex-mini",
+    "gpt-5.1-codex-max",
+];
+
+pub fn default_for_goose_provider(goose_provider: &str) -> Option<&'static str> {
+    match goose_provider {
+        "chatgpt_codex" => Some(CHATGPT_CODEX_MODELS[0]),
+        _ => None,
+    }
+}
+
 pub fn resolve_for_goose_provider(model: &str, goose_provider: &str) -> String {
     match goose_provider {
         "anthropic" => resolve(model, "anthropic"),
@@ -60,6 +76,13 @@ pub fn resolve_for_goose_provider(model: &str, goose_provider: &str) -> String {
             id if id.starts_with("claude-3-5-sonnet") => "claude-3-5-sonnet".to_string(),
             other => other.to_string(),
         },
+        "chatgpt_codex" => {
+            if CHATGPT_CODEX_MODELS.contains(&model) {
+                model.to_string()
+            } else {
+                CHATGPT_CODEX_MODELS[0].to_string()
+            }
+        }
         _ => model.to_string(),
     }
 }
@@ -149,6 +172,26 @@ mod tests {
         assert_eq!(
             resolve_for_goose_provider("gemini-2.5-pro", "google"),
             "gemini-2.5-pro"
+        );
+    }
+
+    #[test]
+    fn chatgpt_codex_accepts_only_subscription_catalog() {
+        assert_eq!(
+            resolve_for_goose_provider("gpt-5.4", "chatgpt_codex"),
+            "gpt-5.4"
+        );
+        assert_eq!(
+            resolve_for_goose_provider("gpt-5.3-codex", "chatgpt_codex"),
+            "gpt-5.3-codex"
+        );
+        assert_eq!(
+            resolve_for_goose_provider("opus", "chatgpt_codex"),
+            "gpt-5.4"
+        );
+        assert_eq!(
+            resolve_for_goose_provider("gpt-5.5", "chatgpt_codex"),
+            "gpt-5.4"
         );
     }
 }

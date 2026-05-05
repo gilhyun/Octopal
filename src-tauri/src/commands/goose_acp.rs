@@ -1234,6 +1234,123 @@ use crate::commands::agent::SendResult;
 use crate::state::ManagedState;
 use tauri::{Emitter, State};
 
+#[derive(Serialize)]
+pub struct CliSubscriptionPreflightResult {
+    pub ok: bool,
+    pub provider: String,
+    pub goose_provider: String,
+    pub model: String,
+    pub elapsed_ms: u64,
+}
+
+#[tauri::command]
+pub async fn preflight_cli_subscription(
+    app: AppHandle,
+    provider: String,
+    state: State<'_, ManagedState>,
+) -> Result<CliSubscriptionPreflightResult, String> {
+    let start = Instant::now();
+    let auth_mode = crate::state::AuthMode::CliSubscription;
+    let goose_provider = resolve_goose_provider(&provider, auth_mode)
+        .ok_or_else(|| format!("Provider \"{provider}\" does not support CLI subscription mode"))?
+        .to_string();
+    let model = crate::commands::model_alias::default_for_goose_provider(&goose_provider)
+        .map(str::to_string)
+        .or_else(|| default_model_for_provider(&provider, &state.providers_manifest))
+        .unwrap_or_else(|| "claude-sonnet-4-6".to_string());
+
+    let app_data_root = dirs::home_dir()
+        .ok_or_else(|| "home_dir not available".to_string())?
+        .join(".octopal");
+    std::fs::create_dir_all(&app_data_root)
+        .map_err(|e| format!("mkdir .octopal: {e}"))?;
+    let sandbox = app_data_root.join("auth-preflight");
+    std::fs::create_dir_all(&sandbox)
+        .map_err(|e| format!("mkdir auth-preflight: {e}"))?;
+
+    let mut cfg = GooseSpawnConfig {
+        provider: goose_provider.clone(),
+        model: model.clone(),
+        api_key: None,
+        ollama_host: None,
+        xdg: GooseXdgRoots::under(&app_data_root),
+        permissions: None,
+        cwd: sandbox,
+        cli_command: None,
+    };
+
+    if provider == "anthropic" {
+        if let Some(abs) = crate::commands::binary_discovery::discover_binary("claude") {
+            cfg.cli_command = Some(abs);
+        }
+    } else if provider == "openai" {
+        if let Some(abs) = crate::commands::binary_discovery::discover_binary("codex") {
+            cfg.cli_command = Some(abs);
+        }
+    }
+
+    let client = spawn_initialized(&app, &cfg).await?;
+    let session_id = match open_turn_session(&client, &cfg).await {
+        Ok(sid) => sid,
+        Err(e) => {
+            client.shutdown().await;
+            return Err(format!("preflight session/new: {e}"));
+        }
+    };
+    let mut stream = match client.take_stream().await {
+        Some(s) => s,
+        None => {
+            client.shutdown().await;
+            return Err("preflight stream unavailable".to_string());
+        }
+    };
+
+    let result = run_turn(
+        &client,
+        &mut stream,
+        &session_id,
+        "Reply with exactly: OK",
+        Duration::from_secs(GOOSE_PROMPT_TIMEOUT_SECS),
+        |_| None,
+    )
+    .await;
+    client.shutdown().await;
+    result.map_err(|e| {
+        friendly_cli_auth_error(&provider, &e).unwrap_or_else(|| format!("preflight prompt: {e}"))
+    })?;
+
+    Ok(CliSubscriptionPreflightResult {
+        ok: true,
+        provider,
+        goose_provider,
+        model,
+        elapsed_ms: start.elapsed().as_millis() as u64,
+    })
+}
+
+fn friendly_cli_auth_error(provider: &str, err: &str) -> Option<String> {
+    if provider != "openai" {
+        return None;
+    }
+    let lower = err.to_ascii_lowercase();
+    if lower.contains("another oauth flow is already in progress") {
+        return Some(
+            "ChatGPT login is already open in your browser. Finish that sign-in, then send your message again.".to_string(),
+        );
+    }
+    if lower.contains("authentication error") || lower.contains("oauth") {
+        return Some(
+            "ChatGPT login is required. Complete the browser sign-in, then send your message again.".to_string(),
+        );
+    }
+    if lower.contains("timeout") {
+        return Some(
+            "ChatGPT sign-in may still be waiting in your browser. Finish that sign-in, then try again.".to_string(),
+        );
+    }
+    None
+}
+
 /// Parameters `agent.rs::send_message` passes to the goose path.
 ///
 /// `system_prompt` and `contextual_prompt` are pre-built by the caller so
@@ -1282,6 +1399,51 @@ fn default_model_for_provider(
     }
 }
 
+fn model_belongs_to_provider(
+    provider: &str,
+    model: &str,
+    manifest: &crate::commands::providers_manifest::ProvidersManifest,
+) -> bool {
+    if model.trim().is_empty() {
+        return false;
+    }
+    if provider == "anthropic"
+        && matches!(
+            model,
+            "opus"
+                | "sonnet"
+                | "haiku"
+                | "current"
+                | "claude-4-opus"
+                | "claude-4-sonnet"
+                | "claude-haiku-4-5"
+        )
+    {
+        return true;
+    }
+    if provider == "anthropic" && model.starts_with("claude-") {
+        return true;
+    }
+    manifest
+        .get(provider)
+        .and_then(|entry| entry.models.as_slice())
+        .map(|models| models.iter().any(|m| m == model))
+        .unwrap_or(false)
+}
+
+fn choose_model_for_provider(
+    provider: &str,
+    preferred_model: &str,
+    manifest: &crate::commands::providers_manifest::ProvidersManifest,
+) -> String {
+    if model_belongs_to_provider(provider, preferred_model, manifest) {
+        preferred_model.to_string()
+    } else {
+        default_model_for_provider(provider, manifest)
+            .unwrap_or_else(|| "claude-sonnet-4-6".to_string())
+    }
+}
+
 fn choose_raw_model(
     binding: &crate::commands::agent_config::AgentBinding,
     settings_default_provider: &str,
@@ -1296,7 +1458,10 @@ fn choose_raw_model(
     );
 
     if let Some(model) = binding.model.as_deref().filter(|s| !s.is_empty()) {
-        return (provider, model.to_string());
+        return (
+            provider.clone(),
+            choose_model_for_provider(&provider, model, manifest),
+        );
     }
 
     let provider_is_overridden = binding
@@ -1312,16 +1477,11 @@ fn choose_raw_model(
         }
     }
 
-    if !caller_model.is_empty() {
+    if !caller_model.is_empty() && model_belongs_to_provider(&provider, caller_model, manifest) {
         return (provider, caller_model.to_string());
     }
 
-    let model = if settings_default_model.is_empty() {
-        default_model_for_provider(&provider, manifest)
-            .unwrap_or_else(|| "claude-sonnet-4-6".to_string())
-    } else {
-        settings_default_model.to_string()
-    };
+    let model = choose_model_for_provider(&provider, settings_default_model, manifest);
     (provider, model)
 }
 
@@ -1449,9 +1609,9 @@ pub async fn run_agent_turn(
                      Add one in Settings → Providers."
                 ),
                 crate::state::AuthMode::CliSubscription => format!(
-                    "Claude CLI subscription mode is only supported for the \
-                     Anthropic provider in this build. Switch to API key mode \
-                     in Settings → Providers, or select Anthropic."
+                    "CLI subscription mode is not supported for provider \
+                     \"{provider}\" in this build. Switch to API key mode \
+                     in Settings → Providers, or select a supported provider."
                 ),
                 crate::state::AuthMode::ApiKey => format!(
                     "Provider \"{provider}\" is not supported in this build."
@@ -1890,6 +2050,14 @@ pub async fn run_agent_turn(
     // The stream/IO error from the killed child is expected, not a failure.
     if !was_interrupted {
         if let Err(e) = turn_outcome {
+            if let Some(message) = friendly_cli_auth_error(&provider, &e) {
+                return Ok(SendResult {
+                    ok: false,
+                    output: None,
+                    error: Some(message),
+                    usage: None,
+                });
+            }
             return Ok(SendResult {
                 ok: false,
                 output: None,
@@ -2031,6 +2199,65 @@ mod tests {
         );
         assert_eq!(provider, "openai");
         assert_eq!(model, "gpt-5.4");
+    }
+
+    #[test]
+    fn choose_raw_model_rejects_caller_claude_alias_for_openai_default() {
+        let binding = crate::commands::agent_config::AgentBinding::default();
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "openai",
+            "gpt-5.4",
+            "opus",
+            &manifest(),
+        );
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5.4");
+    }
+
+    #[test]
+    fn choose_raw_model_repairs_stale_openai_workspace_model() {
+        let binding = crate::commands::agent_config::AgentBinding::default();
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "openai",
+            "claude-sonnet-4-6",
+            "",
+            &manifest(),
+        );
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5");
+    }
+
+    #[test]
+    fn choose_raw_model_repairs_invalid_openai_agent_model() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: Some("openai".to_string()),
+            model: Some("opus".to_string()),
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "openai",
+            "gpt-5.4",
+            "",
+            &manifest(),
+        );
+        assert_eq!(provider, "openai");
+        assert_eq!(model, "gpt-5");
+    }
+
+    #[test]
+    fn friendly_cli_auth_error_rewrites_openai_oauth_race() {
+        let message = friendly_cli_auth_error(
+            "openai",
+            "Authentication error: Another OAuth flow is already in progress; please try again later.",
+        )
+        .unwrap();
+        assert!(message.contains("Finish that sign-in"));
+        let timeout = friendly_cli_auth_error("openai", "session/prompt: timeout after 120s")
+            .unwrap();
+        assert!(timeout.contains("Finish that sign-in"));
+        assert!(friendly_cli_auth_error("anthropic", "oauth").is_none());
     }
 
     #[test]

@@ -265,6 +265,8 @@ export function createTauriApi(): typeof window.api {
     detectBinary: (name) => invoke('detect_binary', { name }),
     setAuthMode: (provider, mode) =>
       invoke('set_auth_mode_cmd', { provider, mode }),
+    preflightCliSubscription: (provider) =>
+      invoke('preflight_cli_subscription', { provider }),
     clearAuthMode: (provider) =>
       invoke('clear_auth_mode_cmd', { provider }),
     getAuthMode: (provider) =>

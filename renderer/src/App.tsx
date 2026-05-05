@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { mergeWithPending } from './utils'
 import { useTranslation } from 'react-i18next'
+import { Loader2 } from 'lucide-react'
 import './i18n'
 import type { ActivityLogEntry, AgentProposal, Attachment, Message, TokenUsage } from './types'
 import { LeftSidebar } from './components/LeftSidebar'
@@ -12,6 +13,7 @@ import { WelcomeModal } from './components/modals/WelcomeModal'
 import { OpenFolderModal } from './components/modals/OpenFolderModal'
 import { EditAgentModal } from './components/modals/EditAgentModal'
 import { ClaudeLoginModal } from './components/modals/ClaudeLoginModal'
+import { AiProviderOnboardingModal } from './components/modals/AiProviderOnboardingModal'
 import { FileAccessApprovalModal, type FileAccessDecision } from './components/modals/FileAccessApprovalModal'
 import { ToastContainer, showToast } from './components/Toast'
 import { expandShortcut } from './shortcut-expander'
@@ -29,6 +31,12 @@ const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((m) =
 const TaskBoard = lazy(() => import('./components/TaskBoard').then((m) => ({ default: m.TaskBoard })))
 const WikiPanel = lazy(() => import('./components/WikiPanel').then((m) => ({ default: m.WikiPanel })))
 
+type StartupCliPreflight = {
+  provider: string
+  status: 'checking' | 'error'
+  error?: string
+}
+
 /** Race a promise against a timeout. Rejects with a descriptive error if ms elapses. */
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timer: ReturnType<typeof setTimeout>
@@ -36,6 +44,19 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
     timer = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms)
   })
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer))
+}
+
+async function hasConfiguredDefaultAiProvider(settings: AppSettings): Promise<boolean> {
+  const manifest = await (window.api.getProvidersManifest?.() ?? Promise.resolve(null))
+  if (!manifest) return true
+  const provider = settings.providers?.defaultProvider
+  if (!provider || !manifest[provider]) return false
+
+  const [mode, hasKey] = await Promise.all([
+    window.api.getAuthMode?.(provider) ?? Promise.resolve<AuthMode>('none'),
+    window.api.hasApiKey?.(provider) ?? Promise.resolve(false),
+  ])
+  return mode === 'cli_subscription' || (mode === 'api_key' && hasKey)
 }
 
 export function App() {
@@ -54,6 +75,9 @@ export function App() {
   const [showCreateAgent, setShowCreateAgent] = useState(false)
   const [showCreateWorkspace, setShowCreateWorkspace] = useState(false)
   const [showWelcome, setShowWelcome] = useState(false)
+  const [showAiProviderOnboarding, setShowAiProviderOnboarding] = useState(false)
+  const [startupAiReady, setStartupAiReady] = useState(false)
+  const [startupCliPreflight, setStartupCliPreflight] = useState<StartupCliPreflight | null>(null)
   const [editingAgent, setEditingAgent] = useState<OctoFile | null>(null)
   const [claudeCliStatus, setClaudeCliStatus] = useState<{ installed: boolean; loggedIn: boolean } | null>(null)
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false)
@@ -127,6 +151,23 @@ export function App() {
 
   const activeWorkspace = state.workspaces.find((w) => w.id === state.activeWorkspaceId) || null
 
+  const preflightStartupCliSubscription = async (provider: string) => {
+    setStartupAiReady(false)
+    setStartupCliPreflight({ provider, status: 'checking' })
+    try {
+      await window.api.preflightCliSubscription?.(provider)
+      setStartupCliPreflight(null)
+      setStartupAiReady(true)
+    } catch (e: any) {
+      setStartupCliPreflight({
+        provider,
+        status: 'error',
+        error: e?.message ?? String(e),
+      })
+      setStartupAiReady(false)
+    }
+  }
+
   // ── MCP Health Check ──
 
   // Check MCP health for all agents that have MCP servers configured
@@ -164,17 +205,50 @@ export function App() {
   // Load state on mount + apply saved language
   useEffect(() => {
     window.api.getPlatform().then((p) => setPlatform(p))
-    window.api.checkClaudeCli().then((status) => {
-      if (!status.installed || !status.loggedIn) {
-        setClaudeCliStatus(status)
-      }
-    })
-    window.api.loadSettings().then((settings) => {
-      if (settings.general.language && settings.general.language !== i18n.language) {
-        i18n.changeLanguage(settings.general.language)
-      }
-      shortcutsRef.current = settings.shortcuts?.textExpansions || []
-    })
+    window.api.loadSettings()
+      .then(async (settings) => {
+        if (settings.general.language && settings.general.language !== i18n.language) {
+          i18n.changeLanguage(settings.general.language)
+        }
+        shortcutsRef.current = settings.shortcuts?.textExpansions || []
+
+        const legacyClaude = settings.providers?.useLegacyClaudeCli === true
+        if (legacyClaude) {
+          const status = await window.api.checkClaudeCli()
+          if (!status.installed || !status.loggedIn) {
+            setClaudeCliStatus(status)
+            setStartupAiReady(false)
+            return
+          }
+          setStartupAiReady(true)
+          return
+        }
+
+        try {
+          const providerConfigured = await hasConfiguredDefaultAiProvider(settings)
+          if (!providerConfigured) {
+            setShowAiProviderOnboarding(true)
+            return
+          }
+
+          const defaultProvider = settings.providers?.defaultProvider
+          const authMode = defaultProvider
+            ? await (window.api.getAuthMode?.(defaultProvider) ?? Promise.resolve<AuthMode>('none'))
+            : 'none'
+          if (defaultProvider === 'openai' && authMode === 'cli_subscription') {
+            await preflightStartupCliSubscription(defaultProvider)
+            return
+          }
+          setStartupAiReady(true)
+        } catch {
+          setShowAiProviderOnboarding(true)
+          setStartupAiReady(false)
+        }
+      })
+      .catch(() => {
+        setShowAiProviderOnboarding(true)
+        setStartupAiReady(false)
+      })
     window.api.loadState().then(async (s) => {
       if (s.workspaces.length === 0) {
         // 첫 실행: "Personal" 스페이스 자동 생성 후 웰컴 모달
@@ -282,6 +356,7 @@ export function App() {
       setOctos([])
       return
     }
+    if (!startupAiReady) return
 
     const folder = activeFolder // capture for async closures
 
@@ -565,7 +640,7 @@ export function App() {
     }
 
     bootstrap()
-  }, [activeFolder])
+  }, [activeFolder, startupAiReady])
 
   // Load older messages (called when user scrolls to top)
   const loadMoreMessages = async () => {
@@ -1990,7 +2065,7 @@ export function App() {
         />
       )}
 
-      {showWelcome && (
+      {showWelcome && startupAiReady && !startupCliPreflight && (
         <WelcomeModal
           onPickFolder={async () => {
             if (!state.activeWorkspaceId) return
@@ -2004,7 +2079,7 @@ export function App() {
         />
       )}
 
-      {!showWelcome && activeWorkspace && activeWorkspace.folders.length === 0 && (
+      {!showAiProviderOnboarding && startupAiReady && !startupCliPreflight && !showWelcome && activeWorkspace && activeWorkspace.folders.length === 0 && (
         <OpenFolderModal
           onPickFolder={async () => {
             if (!state.activeWorkspaceId) return
@@ -2017,11 +2092,71 @@ export function App() {
         />
       )}
 
+      {showAiProviderOnboarding && (
+        <AiProviderOnboardingModal
+          onComplete={() => {
+            setShowAiProviderOnboarding(false)
+            setClaudeCliStatus(null)
+            setStartupAiReady(true)
+          }}
+        />
+      )}
+
+      {startupCliPreflight && (
+        <div className="modal-backdrop modal-backdrop--blocking">
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">{t('modals.cliPreflight.title')}</div>
+            <div className="modal-hint">
+              {startupCliPreflight.status === 'checking'
+                ? t('modals.cliPreflight.checking')
+                : t('modals.cliPreflight.needsRetry')}
+            </div>
+            {startupCliPreflight.status === 'checking' ? (
+              <div style={{ marginTop: 14, opacity: 0.75 }}>
+                <Loader2 size={14} className="spin" style={{ marginRight: 6, verticalAlign: 'middle' }} />
+                {t('modals.cliPreflight.opening')}
+              </div>
+            ) : (
+              <>
+                {startupCliPreflight.error && (
+                  <div className="provider-card-error" style={{ marginTop: 12 }}>
+                    {startupCliPreflight.error}
+                  </div>
+                )}
+                <div className="modal-actions">
+                  <button
+                    className="btn-secondary"
+                    onClick={() => {
+                      setStartupCliPreflight(null)
+                      setStartupAiReady(true)
+                    }}
+                  >
+                    {t('modals.cliPreflight.skip')}
+                  </button>
+                  <button
+                    className="btn-primary"
+                    onClick={() => preflightStartupCliSubscription(startupCliPreflight.provider)}
+                  >
+                    {t('modals.cliPreflight.retry')}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {claudeCliStatus && (!claudeCliStatus.installed || !claudeCliStatus.loggedIn) && (
         <ClaudeLoginModal
           installed={claudeCliStatus.installed}
-          onDismiss={() => setClaudeCliStatus(null)}
-          onStatusChange={(status) => setClaudeCliStatus(status)}
+          onDismiss={() => {
+            setClaudeCliStatus(null)
+            setStartupAiReady(true)
+          }}
+          onStatusChange={(status) => {
+            setClaudeCliStatus(status)
+            if (status.installed && status.loggedIn) setStartupAiReady(true)
+          }}
         />
       )}
 

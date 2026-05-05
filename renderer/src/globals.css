@@ -6457,14 +6457,33 @@ button {
   accent-color: var(--brand-accent, #b85a5a);
 }
 
+.provider-card-mode-option.is-ready input[type='radio'] {
+  accent-color: #4fb06d;
+}
+
 .provider-card-cli-panel {
   display: flex;
   flex-direction: column;
   gap: 8px;
   padding: 10px 12px;
-  background: rgba(184, 90, 90, 0.06);
-  border: 1px solid rgba(184, 90, 90, 0.18);
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(255, 255, 255, 0.08);
   border-radius: 5px;
+}
+
+.provider-card-cli-panel.ready {
+  background: rgba(79, 176, 109, 0.08);
+  border-color: rgba(79, 176, 109, 0.28);
+}
+
+.provider-card-cli-panel.missing {
+  background: rgba(184, 90, 90, 0.06);
+  border-color: rgba(184, 90, 90, 0.18);
+}
+
+.provider-card-cli-panel.checking {
+  background: rgba(194, 138, 74, 0.07);
+  border-color: rgba(194, 138, 74, 0.2);
 }
 
 .provider-card-cli-header {
@@ -6473,7 +6492,19 @@ button {
   gap: 6px;
   font-size: 11px;
   font-weight: 600;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.provider-card-cli-panel.ready .provider-card-cli-header {
+  color: rgba(222, 255, 232, 0.9);
+}
+
+.provider-card-cli-panel.missing .provider-card-cli-header {
   color: rgba(255, 240, 240, 0.85);
+}
+
+.provider-card-cli-panel.checking .provider-card-cli-header {
+  color: rgba(255, 238, 210, 0.88);
 }
 
 .provider-card-cli-desc {

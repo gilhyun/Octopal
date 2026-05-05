@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next'
 import { AlertTriangle, Info, KeyRound, Loader2 } from 'lucide-react'
 import { ProviderCard } from './ProviderCard'
 import { ProviderCardWithCli } from './ProviderCardWithCli'
+import { modelOptionsForProviderAuth, preferredModelForProvider } from '../../provider-models'
 
 /**
  * Settings → Providers tab (Phase 4, scope §3.4).
@@ -28,19 +29,6 @@ interface ProvidersTabProps {
    */
   providers: NonNullable<AppSettings['providers']>
   onChange: (patch: Partial<NonNullable<AppSettings['providers']>>) => void
-}
-
-function preferredModelFor(providerId: string, options: string[]): string {
-  if (providerId === 'anthropic') {
-    return options.find((m) => m === 'sonnet')
-      ?? options.find((m) => m === 'claude-sonnet-4-6')
-      ?? options[0]
-      ?? ''
-  }
-  if (providerId === 'openai') {
-    return options.find((m) => m === 'gpt-5') ?? options[0] ?? ''
-  }
-  return options[0] ?? ''
 }
 
 export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
@@ -123,35 +111,43 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
   // (providers.json) ∪ Goose catalog (deferred — Phase 5) ∪ custom.
   // Phase 3+4 keeps it simple — static list from manifest + aliases.
   const availableModelsFor = useCallback(
-    (providerId: string): string[] => {
-      if (!manifest) return []
-      const entry = manifest[providerId]
-      if (!entry) return []
-      const baseList = Array.isArray(entry.models) ? entry.models : []
-      // For anthropic, expose alias sentinels at the top — resolved on
-      // Rust side via commands::model_alias (§2.3).
-      if (providerId === 'anthropic') {
-        return ['opus', 'sonnet', 'haiku', ...baseList]
-      }
-      return baseList
+    (providerId: string, authMode?: AuthMode): string[] => {
+      return modelOptionsForProviderAuth(providerId, authMode, manifest)
     },
     [manifest],
   )
 
   const defaultModelOptions = useMemo(
-    () => availableModelsFor(providers.defaultProvider ?? 'anthropic'),
-    [availableModelsFor, providers.defaultProvider],
+    () => {
+      const provider = providers.defaultProvider ?? 'anthropic'
+      return availableModelsFor(provider, authModes[provider])
+    },
+    [authModes, availableModelsFor, providers.defaultProvider],
   )
-  const defaultModelValue = defaultModelOptions.includes(providers.defaultModel ?? '')
-    ? providers.defaultModel
-    : preferredModelFor(providers.defaultProvider ?? 'anthropic', defaultModelOptions)
+  const defaultProviderEntry = manifest?.[providers.defaultProvider ?? 'anthropic']
+  const defaultProviderUsesDynamicModels = defaultProviderEntry
+    ? !Array.isArray(defaultProviderEntry.models)
+    : false
+  const defaultModelValue = defaultProviderUsesDynamicModels
+    ? providers.defaultModel ?? ''
+    : defaultModelOptions.includes(providers.defaultModel ?? '')
+      ? providers.defaultModel
+      : preferredModelForProvider(providers.defaultProvider ?? 'anthropic', defaultModelOptions)
 
   useEffect(() => {
     if (!manifest) return
+    if (defaultProviderUsesDynamicModels) return
     if (!defaultModelOptions.length) return
     if (providers.defaultModel && defaultModelOptions.includes(providers.defaultModel)) return
     onChange({ defaultModel: defaultModelValue })
-  }, [defaultModelOptions, defaultModelValue, manifest, onChange, providers.defaultModel])
+  }, [
+    defaultModelOptions,
+    defaultModelValue,
+    defaultProviderUsesDynamicModels,
+    manifest,
+    onChange,
+    providers.defaultModel,
+  ])
 
   if (loading) {
     return (
@@ -220,10 +216,12 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
           value={providers.defaultProvider ?? 'anthropic'}
           onChange={(e) => {
             const defaultProvider = e.target.value
-            const options = availableModelsFor(defaultProvider)
+            const options = availableModelsFor(defaultProvider, authModes[defaultProvider])
             onChange({
               defaultProvider,
-              defaultModel: preferredModelFor(defaultProvider, options),
+              defaultModel: options.length
+                ? preferredModelForProvider(defaultProvider, options)
+                : '',
             })
           }}
         >
@@ -240,17 +238,27 @@ export function ProvidersTab({ providers, onChange }: ProvidersTabProps) {
           <span className="settings-label">{t('settings.providers.defaultModel')}</span>
           <span className="settings-desc">{t('settings.providers.defaultModelDesc')}</span>
         </span>
-        <select
-          className="settings-select"
-          value={defaultModelValue}
-          onChange={(e) => onChange({ defaultModel: e.target.value })}
-        >
-          {defaultModelOptions.map((m) => (
-            <option key={m} value={m}>
-              {m}
-            </option>
-          ))}
-        </select>
+        {defaultProviderUsesDynamicModels ? (
+          <input
+            className="settings-input"
+            value={defaultModelValue}
+            onChange={(e) => onChange({ defaultModel: e.target.value })}
+            placeholder={t('settings.providers.localModelPlaceholder')}
+            spellCheck={false}
+          />
+        ) : (
+          <select
+            className="settings-select"
+            value={defaultModelValue}
+            onChange={(e) => onChange({ defaultModel: e.target.value })}
+          >
+            {defaultModelOptions.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        )}
       </div>
 
       <div className="settings-field">

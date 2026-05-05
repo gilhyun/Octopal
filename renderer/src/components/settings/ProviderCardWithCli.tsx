@@ -12,6 +12,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
+import { cliDisplayName, cliVersionLabel } from '../../cli-display'
 
 /**
  * Phase 5a-finalize §3.5: provider card that supports BOTH api_key and
@@ -135,6 +136,13 @@ export function ProviderCardWithCli({
   // ── State derivation ─────────────────────────────────────────────
   const cliFound = detection?.found === true
   const cliAmbiguous = detection !== null && !detection.found && detection.path !== null
+  const cliName = cliDisplayName(cliBinaryName)
+  const cliVersion = cliVersionLabel(cliBinaryName, detection?.version)
+  const cliPanelState = detecting
+    ? 'checking'
+    : cliFound
+      ? 'ready'
+      : 'missing'
 
   // Effective mode: what the UI currently *shows*. When neither side is
   // configured this falls back to api_key so the keyless state reads
@@ -194,6 +202,9 @@ export function ProviderCardWithCli({
     setBusy('flip')
     setError(null)
     try {
+      if (providerId === 'openai') {
+        await window.api.preflightCliSubscription?.(providerId)
+      }
       await window.api.setAuthMode?.(providerId, 'cli_subscription')
       onChanged()
     } catch (e: any) {
@@ -241,19 +252,22 @@ export function ProviderCardWithCli({
         setDetection(d)
         if (d?.found) {
           setCliTestOk(true)
-          setCliTestMessage(t('settings.providers.cliTestOk', { cliName: cliBinaryName }))
+          setCliTestMessage(t('settings.providers.cliTestOk', { cliName }))
         } else if (d?.path) {
           setCliTestOk(false)
           setCliTestMessage(
             t('settings.providers.cliTestAmbiguous', {
-              cliName: cliBinaryName,
+              cliName,
               path: d.path,
               error: d.error ?? '',
             }),
           )
         } else {
           setCliTestOk(false)
-          setCliTestMessage(t('settings.providers.cliTestMissing', { cliName: cliBinaryName }))
+          setCliTestMessage(t('settings.providers.cliTestMissing', {
+            cliName,
+            cliCommand: cliBinaryName,
+          }))
         }
       } else {
         const result = await window.api.testProviderConnection?.(providerId)
@@ -264,7 +278,7 @@ export function ProviderCardWithCli({
     } finally {
       setBusy(null)
     }
-  }, [cliBinaryName, effectiveMode, providerId, t])
+  }, [cliBinaryName, cliName, effectiveMode, providerId, t])
 
   // ── Render ───────────────────────────────────────────────────────
 
@@ -272,7 +286,7 @@ export function ProviderCardWithCli({
     authMode === 'none'
       ? t('settings.providers.notSet')
       : authMode === 'cli_subscription'
-        ? t('settings.providers.activeCli', { cliName: cliBinaryName })
+        ? t('settings.providers.activeCli', { cliName })
         : t('settings.providers.active')
   const statusActive = authMode !== 'none'
 
@@ -299,7 +313,7 @@ export function ProviderCardWithCli({
           {detecting && (
             <div className="provider-card-hint">
               <Loader2 size={14} className="spin" />
-              {t('settings.providers.cliDetecting', { cliName: cliBinaryName })}
+              {t('settings.providers.cliDetecting', { cliName })}
             </div>
           )}
 
@@ -317,7 +331,7 @@ export function ProviderCardWithCli({
                 <KeyRound size={14} />
                 <span>{t('settings.providers.modeApiKey')}</span>
               </label>
-              <label className="provider-card-mode-option">
+              <label className={`provider-card-mode-option ${cliFound ? 'is-ready' : ''}`}>
                 <input
                   type="radio"
                   name={`${providerId}-authmode`}
@@ -424,7 +438,7 @@ export function ProviderCardWithCli({
           {!detecting &&
             (state === 'cli_only' ||
               (state === 'both' && effectiveMode === 'cli_subscription')) && (
-              <div className="provider-card-cli-panel">
+              <div className={`provider-card-cli-panel ${cliPanelState}`}>
                 <div className="provider-card-cli-header">
                   <Terminal size={14} />
                   <span>{cliMethodLabel}</span>
@@ -432,15 +446,16 @@ export function ProviderCardWithCli({
                 <p className="provider-card-cli-desc">
                   {cliAmbiguous
                     ? t('settings.providers.cliAmbiguous', {
-                        cliName: cliBinaryName,
+                        cliName,
+                        cliCommand: cliBinaryName,
                         path: detection?.path ?? '',
                       })
-                    : detection?.version
+                    : cliVersion
                       ? t('settings.providers.cliReadyWithVersion', {
-                          cliName: cliBinaryName,
-                          version: detection.version,
+                          cliName,
+                          version: cliVersion,
                         })
-                      : t('settings.providers.cliReady', { cliName: cliBinaryName })}
+                      : t('settings.providers.cliReady', { cliName })}
                 </p>
                 <div className="provider-card-actions">
                   {/* In cli_only state, show Activate iff we're not
@@ -453,7 +468,7 @@ export function ProviderCardWithCli({
                       disabled={busy !== null || !cliFound}
                     >
                       {busy === 'flip' && <Loader2 size={14} className="spin" />}
-                      {t('settings.providers.activateCli', { cliName: cliBinaryName })}
+                      {t('settings.providers.activateCli', { cliName })}
                     </button>
                   )}
                   {authMode === 'cli_subscription' && (
@@ -486,7 +501,7 @@ export function ProviderCardWithCli({
                     target="_blank"
                     rel="noreferrer noopener"
                   >
-                    {t('settings.providers.cliInstallLink', { cliName: cliBinaryName })}
+                    {t('settings.providers.cliInstallLink', { cliName })}
                   </a>
                 )}
                 {cliInstallUrl ? '.' : ''}

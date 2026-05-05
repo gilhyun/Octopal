@@ -258,6 +258,7 @@ pub fn run() {
             // Goose ACP sidecar (Phase 2+)
             commands::goose_acp::check_goose_sidecar,
             commands::goose_acp::acp_smoke_test,
+            commands::goose_acp::preflight_cli_subscription,
             // DEBUG-ONLY: live pipeline test command. Not compiled into
             // release builds (see goose_acp::acp_turn_test doc).
             #[cfg(debug_assertions)]

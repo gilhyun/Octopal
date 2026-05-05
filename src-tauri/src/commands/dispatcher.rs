@@ -470,19 +470,28 @@ fn choose_planner_runtime(
 ) -> Result<PlannerRuntime, String> {
     let mut candidates: Vec<(String, String)> = Vec::new();
 
-    // The planner model setting is currently Anthropic-shaped in the UI, so
-    // prefer Anthropic when it is configured. If it is not, fall through to the
-    // workspace provider instead of pairing a Claude model with OpenAI/Google.
-    push_candidate(
-        &mut candidates,
-        "anthropic",
-        settings.providers_planner_model_or_default().as_str(),
-    );
-    push_candidate(
-        &mut candidates,
-        settings.default_provider.as_str(),
-        settings.default_model.as_str(),
-    );
+    // Prefer the workspace-selected provider so choosing Codex/OpenAI in
+    // onboarding also moves the hidden dispatcher onto that provider. Keep the
+    // Anthropic planner model only for Anthropic-default workspaces, or as a
+    // fallback if another default provider is not configured.
+    if settings.default_provider == "anthropic" {
+        push_candidate(
+            &mut candidates,
+            "anthropic",
+            settings.providers_planner_model_or_default().as_str(),
+        );
+    } else {
+        push_candidate(
+            &mut candidates,
+            settings.default_provider.as_str(),
+            settings.default_model.as_str(),
+        );
+        push_candidate(
+            &mut candidates,
+            "anthropic",
+            settings.providers_planner_model_or_default().as_str(),
+        );
+    }
     for provider in settings.configured_providers.keys() {
         push_candidate(&mut candidates, provider, "");
     }
@@ -1020,7 +1029,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_runtime_prefers_anthropic_planner_when_configured() {
+    fn planner_runtime_prefers_default_provider_even_when_anthropic_configured() {
         let mut configured = BTreeMap::new();
         configured.insert("anthropic".to_string(), AuthMode::ApiKey);
         configured.insert("openai".to_string(), AuthMode::ApiKey);
@@ -1028,6 +1037,26 @@ mod tests {
             use_legacy_claude_cli: false,
             default_provider: "openai".to_string(),
             default_model: "gpt-5.5".to_string(),
+            planner_model: "claude-haiku-4-5-20251001".to_string(),
+            configured_providers: configured,
+            api_key_stored: BTreeMap::new(),
+        };
+
+        let runtime = choose_planner_runtime(&settings, &manifest()).unwrap();
+
+        assert_eq!(runtime.provider, "openai");
+        assert_eq!(runtime.raw_model, "gpt-5.5");
+        assert_eq!(runtime.goose_provider, "openai");
+    }
+
+    #[test]
+    fn planner_runtime_uses_anthropic_planner_for_anthropic_default() {
+        let mut configured = BTreeMap::new();
+        configured.insert("anthropic".to_string(), AuthMode::ApiKey);
+        let settings = ProvidersSettings {
+            use_legacy_claude_cli: false,
+            default_provider: "anthropic".to_string(),
+            default_model: "claude-sonnet-4-6".to_string(),
             planner_model: "claude-haiku-4-5-20251001".to_string(),
             configured_providers: configured,
             api_key_stored: BTreeMap::new(),
@@ -1061,6 +1090,27 @@ mod tests {
         assert_eq!(runtime.raw_model, "gpt-5");
         assert_eq!(runtime.goose_provider, "openai");
         assert_eq!(runtime.goose_model, "gpt-5");
+    }
+
+    #[test]
+    fn planner_runtime_uses_ollama_workspace_default_model() {
+        let mut configured = BTreeMap::new();
+        configured.insert("ollama".to_string(), AuthMode::ApiKey);
+        let settings = ProvidersSettings {
+            use_legacy_claude_cli: false,
+            default_provider: "ollama".to_string(),
+            default_model: "llama3.1".to_string(),
+            planner_model: "claude-haiku-4-5-20251001".to_string(),
+            configured_providers: configured,
+            api_key_stored: BTreeMap::new(),
+        };
+
+        let runtime = choose_planner_runtime(&settings, &manifest()).unwrap();
+
+        assert_eq!(runtime.provider, "ollama");
+        assert_eq!(runtime.raw_model, "llama3.1");
+        assert_eq!(runtime.goose_provider, "ollama");
+        assert_eq!(runtime.goose_model, "llama3.1");
     }
 
     #[test]
