@@ -25,6 +25,7 @@ import {
   parsePermissionRequest,
   sanitizeDisplayText,
 } from './chat-protocol'
+import { normalizeModelForProviderAuth } from './provider-models'
 
 const ActivityPanel = lazy(() => import('./components/ActivityPanel').then((m) => ({ default: m.ActivityPanel })))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
@@ -236,6 +237,24 @@ export function App() {
             ? await (window.api.getAuthMode?.(defaultProvider) ?? Promise.resolve<AuthMode>('none'))
             : 'none'
           if (defaultProvider === 'openai' && authMode === 'cli_subscription') {
+            const manifest = await (window.api.getProvidersManifest?.() ?? Promise.resolve(null))
+            const defaultModel = normalizeModelForProviderAuth(
+              defaultProvider,
+              authMode,
+              settings.providers?.defaultModel,
+              manifest,
+            )
+            if (defaultModel && defaultModel !== settings.providers?.defaultModel) {
+              await window.api.saveSettings({
+                ...settings,
+                providers: {
+                  ...(settings.providers ?? {}),
+                  useLegacyClaudeCli: false,
+                  defaultProvider,
+                  defaultModel,
+                },
+              })
+            }
             await preflightStartupCliSubscription(defaultProvider)
             return
           }

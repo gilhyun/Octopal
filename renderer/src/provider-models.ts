@@ -42,3 +42,15 @@ export function preferredModelForProvider(providerId: string, options: string[])
   }
   return options[0] ?? ''
 }
+
+export function normalizeModelForProviderAuth(
+  providerId: string,
+  authMode: AuthMode | 'host_only' | null | undefined,
+  model: string | null | undefined,
+  manifest: ProvidersManifest | null,
+): string {
+  const options = modelOptionsForProviderAuth(providerId, authMode, manifest)
+  if (options.length === 0) return model ?? ''
+  if (model && options.includes(model)) return model
+  return preferredModelForProvider(providerId, options)
+}

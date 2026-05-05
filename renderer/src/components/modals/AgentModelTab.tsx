@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
+import { modelOptionsForProviderAuth, preferredModelForProvider } from '../../provider-models'
 
 /**
  * Phase 6 §5.1 — Model tab body shared by EditAgentModal and
@@ -44,19 +45,6 @@ interface AgentModelTabProps {
   onModelChange: (next: string | undefined) => void
 }
 
-function preferredModelFor(providerId: string, options: string[]): string {
-  if (providerId === 'anthropic') {
-    return options.find((m) => m === 'sonnet')
-      ?? options.find((m) => m === 'claude-sonnet-4-6')
-      ?? options[0]
-      ?? ''
-  }
-  if (providerId === 'openai') {
-    return options.find((m) => m === 'gpt-5') ?? options[0] ?? ''
-  }
-  return options[0] ?? ''
-}
-
 export function AgentModelTab({
   provider,
   model,
@@ -67,6 +55,7 @@ export function AgentModelTab({
 
   const [manifest, setManifest] = useState<ProvidersManifest | null>(null)
   const [workspaceDefaultProvider, setWorkspaceDefaultProvider] = useState('anthropic')
+  const [authModes, setAuthModes] = useState<Record<string, AuthMode>>({})
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
@@ -77,9 +66,21 @@ export function AgentModelTab({
           window.api.getProvidersManifest?.() ?? Promise.resolve(null),
           window.api.loadSettings().catch(() => null),
         ])
+        const modes = m
+          ? Object.fromEntries(await Promise.all(
+            Object.keys(m).map(async (pid) => {
+              const mode = await (
+                window.api.getAuthMode?.(pid)
+                ?? Promise.resolve(settings?.providers?.configuredProviders?.[pid] ?? 'none')
+              )
+              return [pid, mode] as const
+            }),
+          ))
+          : {}
         if (!cancelled) {
           setManifest(m)
           setWorkspaceDefaultProvider(settings?.providers?.defaultProvider ?? 'anthropic')
+          setAuthModes(modes)
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -94,19 +95,15 @@ export function AgentModelTab({
   const modelInherits = !model
   const effectiveProvider = provider ?? workspaceDefaultProvider
 
-  // For Anthropic, prepend the alias sentinels so users can pick
-  // "opus"/"sonnet"/"haiku" alongside concrete IDs (mirrors the
-  // Settings → Providers default-model dropdown).
   const modelOptions = useMemo<string[]>(() => {
-    if (!manifest || !effectiveProvider) return []
-    const entry = manifest[effectiveProvider]
-    if (!entry) return []
-    const baseList = Array.isArray(entry.models) ? entry.models : []
-    if (effectiveProvider === 'anthropic') {
-      return ['opus', 'sonnet', 'haiku', ...baseList]
-    }
-    return baseList
-  }, [effectiveProvider, manifest])
+    return modelOptionsForProviderAuth(effectiveProvider, authModes[effectiveProvider], manifest)
+  }, [authModes, effectiveProvider, manifest])
+
+  useEffect(() => {
+    if (modelInherits || !model || !modelOptions.length) return
+    if (modelOptions.includes(model)) return
+    onModelChange(preferredModelForProvider(effectiveProvider, modelOptions))
+  }, [effectiveProvider, model, modelInherits, modelOptions, onModelChange])
 
   if (loading) {
     return (
@@ -194,7 +191,7 @@ export function AgentModelTab({
               } else {
                 // Pre-select a safe provider-local default so the dropdown
                 // isn't visually empty after re-enabling.
-                onModelChange(preferredModelFor(effectiveProvider, modelOptions))
+                onModelChange(preferredModelForProvider(effectiveProvider, modelOptions))
               }
             }}
           />

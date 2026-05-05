@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest'
-import { modelOptionsForProviderAuth, preferredModelForProvider } from './provider-models'
+import {
+  modelOptionsForProviderAuth,
+  normalizeModelForProviderAuth,
+  preferredModelForProvider,
+} from './provider-models'
 
 const manifest: ProvidersManifest = {
   openai: {
@@ -32,6 +36,21 @@ describe('provider model helpers', () => {
     const models = modelOptionsForProviderAuth('openai', 'api_key', manifest)
     expect(models).toEqual(['gpt-5.5', 'gpt-5.4', 'gpt-5'])
     expect(preferredModelForProvider('openai', models)).toBe('gpt-5.5')
+  })
+
+  it('normalizes stale Codex CLI selections to the supported default', () => {
+    expect(normalizeModelForProviderAuth(
+      'openai',
+      'cli_subscription',
+      'gpt-5.5',
+      manifest,
+    )).toBe('gpt-5.4')
+    expect(normalizeModelForProviderAuth(
+      'openai',
+      'api_key',
+      'gpt-5.5',
+      manifest,
+    )).toBe('gpt-5.5')
   })
 
   it('adds Anthropic aliases above manifest models', () => {
