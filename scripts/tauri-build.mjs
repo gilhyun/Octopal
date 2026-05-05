@@ -158,6 +158,24 @@ function resolveCargoDir() {
   process.exit(1);
 }
 
+function prependPath(env, dirs) {
+  const pathKey =
+    Object.keys(env).find((key) => key.toLowerCase() === "path") || "PATH";
+  const currentPath = env[pathKey] || "";
+  env[pathKey] = [...dirs.filter(Boolean), currentPath]
+    .filter(Boolean)
+    .join(delimiter);
+
+  // Windows treats env names case-insensitively, but Node's child_process can
+  // pass only one case variant through. Keep exactly one PATH key so the value
+  // we just built is the value the Tauri CLI receives.
+  for (const key of Object.keys(env)) {
+    if (key !== pathKey && key.toLowerCase() === "path") {
+      delete env[key];
+    }
+  }
+}
+
 const tauriCli = join(
   projectRoot,
   "node_modules",
@@ -180,11 +198,7 @@ checkXcodeFirstLaunch();
 const cargoDir = resolveCargoDir();
 const childEnv = { ...process.env };
 const nodeBinDir = join(projectRoot, "node_modules", ".bin");
-childEnv.PATH = `${nodeBinDir}${delimiter}${childEnv.PATH ?? ""}`;
-if (cargoDir) {
-  // Prepend cargo dir so `tauri build`'s internal `cargo` invocations succeed.
-  childEnv.PATH = `${cargoDir}${delimiter}${childEnv.PATH}`;
-}
+prependPath(childEnv, [cargoDir, nodeBinDir]);
 
 const hasSigningKey = !!process.env.TAURI_SIGNING_PRIVATE_KEY;
 // Filter out bare "--" separators injected by pnpm so that args like

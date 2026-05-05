@@ -1,6 +1,6 @@
 [package]
 name = "octopal"
-version = "0.1.52"
+version = "0.1.53"
 description = "Chat with your .octo agents"
 authors = ["Studio H"]
 edition = "2021"
