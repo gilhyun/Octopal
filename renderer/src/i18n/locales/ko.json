@@ -262,7 +262,7 @@
       "opening": "ChatGPT 로그인을 기다리는 중...",
       "needsRetry": "브라우저에서 로그인을 마친 뒤 다시 확인하고 폴더를 열어주세요.",
       "retry": "로그인했어요",
-      "skip": "일단 건너뛰기"
+      "skip": "다른 AI 선택"
     },
     "createAgent": {
       "title": "새 에이전트",

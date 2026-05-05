@@ -22,8 +22,8 @@ import { ProvidersTab } from './settings/ProvidersTab'
 
 type SettingsTab = 'general' | 'agents' | 'providers' | 'appearance' | 'shortcuts' | 'advanced' | 'about'
 
-// Converts an explicit Claude model name (e.g. `claude-opus-4-7`) into a
-// compact user-facing label (`Opus 4.7`). Falls back to the raw model name
+// Converts an explicit Claude model name (e.g. `claude-opus-4-6`) into a
+// compact user-facing label (`Opus 4.6`). Falls back to the raw model name
 // if the format doesn't match so we never hide information from the user.
 function prettyOpusLabel(model: string): string {
   const match = model.match(/^claude-([a-z]+)-(\d+)-(\d+)$/i)
@@ -61,7 +61,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
   >('idle')
   const [updateError, setUpdateError] = useState<string | null>(null)
   const [downloadProgress, setDownloadProgress] = useState<number>(0)
-  // Newest explicit Opus model name (e.g. `claude-opus-4-7`) detected on this
+  // Newest explicit Opus model name (e.g. `claude-opus-4-6`) detected on this
   // machine, or `null` while the probe is still running / no premium model.
   const [bestOpusModel, setBestOpusModel] = useState<string | null>(null)
 

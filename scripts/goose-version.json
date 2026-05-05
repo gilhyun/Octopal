@@ -1,5 +1,5 @@
 {
-  "version": "v1.31.0",
+  "version": "v2.0.0-rc-04-27-0",
   "comment": "Pinned Goose release bundled as sidecar. See docs/goose-integration-notes.md §1 D1. Update this file and re-run build to bump.",
   "assets": {
     "aarch64-apple-darwin": "goose-aarch64-apple-darwin.tar.bz2",

@@ -324,7 +324,7 @@ interface ChatPanelProps {
   setMentionOpen: (v: boolean) => void
   mentionQuery: string
   setMentionQuery: (v: string) => void
-  send: (attachments?: Attachment[]) => void
+  send: (attachments?: Attachment[]) => void | Promise<void>
   onApproveHandoff: (messageId: string) => void
   onDismissHandoff: (messageId: string) => void
   onApproveAgentProposal: (messageId: string) => void

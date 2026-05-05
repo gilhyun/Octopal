@@ -1,7 +1,7 @@
 # ADR: Goose 2.0 Integration for Octopal v0.2.0
 
-**Status:** Spike complete (Phase 0). Decisions locked pending API-key smoke test.
-**Date:** 2026-04-18
+**Status:** Adopted with Goose v2.0.0 release-candidate sidecar.
+**Date:** 2026-05-05
 **Supersedes:** Claude CLI as the sole AI engine (v0.1.42)
 **Scope:** Single source of truth for Phase 1~10 implementation. See `reactive-floating-feather.md` for the executable plan.
 
@@ -11,7 +11,7 @@
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D1 | **Goose v1.31.0** pinned as bundled sidecar | Latest stable (2026-04-17). "Goose 2.0" is a product brand (Rust rewrite), not a semver |
+| D1 | **Goose v2.0.0-rc-04-27-0** pinned as bundled sidecar | Aligns Octopal with Goose's ACP-centered 2.0 direction. Treat as release-candidate runtime and smoke-test before each app release |
 | D2 | **Interface: ACP** (`goose acp` JSON-RPC 2.0 stdio) | `session/request_permission` official method → Permission D실현. protocolVersion + capability negotiation → drift-resilient |
 | D3 | **Extension control via CLI flags/ACP params** (`--with-builtin`, `--with-extension`) | Recipe YAML file generation unnecessary. No disk I/O, no GC complexity |
 | D4 | **Isolation via XDG 3-tuple** (CONFIG/DATA/STATE_HOME) | `GOOSE_CONFIG_DIR` does NOT exist in v1.31.0 (`goose info` confirmed). XDG is the only reliable path |
@@ -184,7 +184,7 @@ Fine-grained fileWrite/bash/network combinations remain fully supported.
 {
   "anthropic": {
     "displayName": "Anthropic",
-    "models": ["claude-opus-4-7","claude-sonnet-4-5","claude-haiku-4-5"],
+    "models": ["claude-opus-4-6","claude-sonnet-4-6","claude-haiku-4-5"],
     "authMethods": [
       {"id":"api_key","label":"API Key","goose_provider":"anthropic"},
       {"id":"cli_subscription","label":"Claude CLI Subscription","goose_provider":"claude-code","detectBinary":"claude"}
@@ -433,11 +433,10 @@ Stop button / timeout →  SIGTERM sidecar PID
 
 ### 6.8 Model ID resolution — ⚠️ dot-notation is a display alias only
 
-**Stage-3 live probe overturned the earlier §6.8 assumption.** Goose's
-`session/new` (and `session/load`) response advertises a catalog using
-**dot notation** (`claude-sonnet-4.6`, `claude-opus-4.6`, …), but when
-that string is passed as `GOOSE_MODEL` it is **forwarded verbatim to
-Anthropic's API**, which returns 404:
+**2026-05-05 v2.0.0-rc probe update.** Goose's `session/load` response now
+advertises Anthropic models in dash-form IDs, matching what `GOOSE_MODEL`
+must receive. Older dot-notation display aliases are still treated as
+display-only and must not be persisted or passed through.
 
 ```
 Resource not found (404): model: claude-sonnet-4.5.
@@ -449,38 +448,41 @@ Available models for this provider:
 ```
 
 **The correct form is dash + digits** (optionally with a date suffix).
-Goose v1.31.0 advertises dot aliases in its ACP catalog but does NOT
-resolve them to real IDs before API call — that's a Goose behavior we
-have to work around, not a naming convention we can adopt.
+Octopal normalizes semantic aliases and Claude ACP names at the spawn edge
+so provider-specific namespaces do not leak across auth modes.
 
 **Binding consequences for Octopal:**
 
-- **`GOOSE_MODEL` must receive the Anthropic-native ID** (dash form). Current (2026-04-19) Anthropic catalog:
-  - ✅ `claude-opus-4-7` (latest Opus, released 2026-04-16 — **not** yet in Goose v1.31.0's ACP catalog; see §6.8a staleness risk)
-  - ✅ `claude-sonnet-4-6` (Feb 2026, current daily-driver default)
+- **`GOOSE_MODEL` must receive the Anthropic-native ID** (dash form). Current Goose v2.0.0-rc catalog:
+  - ✅ `claude-opus-4-6` (current Opus alias target)
+  - ✅ `claude-sonnet-4-6` (current daily-driver default)
+  - ✅ `claude-haiku-4-5` (current Haiku alias target)
   - ✅ `claude-sonnet-4-5-20250929` (dated form of prior Sonnet, still valid)
-  - ✅ `claude-opus-4-6` (prior Opus, still valid)
   - ✅ `claude-haiku-4-5-20251001` (latest Haiku — also accepted as bare `claude-haiku-4-5`)
   - ❌ `claude-sonnet-4.6` (dot form — 404s)
 - Phase 3 defaults (split by tier):
   - `default_model = "claude-sonnet-4-6"` — practical daily driver
-  - `default_opus  = "claude-opus-4-7"`  — top-tier fallback when user picks "Latest Opus" or `opus` alias
-- Phase 4 `providers.json` anthropic `models: ["claude-opus-4-7","claude-sonnet-4-6","claude-haiku-4-5-20251001", "claude-opus-4-6","claude-sonnet-4-5-20250929", ...]` — ordered newest-first.
+  - `default_opus  = "claude-opus-4-6"`  — top-tier fallback when user picks "Latest Opus" or `opus` alias
+- Phase 4 `providers.json` anthropic list follows the v2.0.0-rc `session/load` dash-form catalog.
 - Phase 3 `model_alias.rs` resolution map (updated):
-  - `(opus, anthropic) → "claude-opus-4-7"` (was `4-6`; bump)
+  - `(opus, anthropic) → "claude-opus-4-6"`
   - `(sonnet, anthropic) → "claude-sonnet-4-6"`
-  - `(haiku, anthropic) → "claude-haiku-4-5-20251001"`
-- Phase 10 regression suite: assert `claude-opus-4-7` spawns cleanly (proves Goose accepts IDs not in its own catalog); assert `claude-sonnet-4.6` (dot) fails with a 404 message we surface in activity stream.
-- Adaptive `model_probe` analog: **keep it.** `model_probe.rs` already probes `claude-opus-4-7` against the Claude CLI — the mechanism is reusable against Goose on the Anthropic provider (empty prompt + `GOOSE_MODEL=<candidate>` → spawn dies quickly with 404 if unavailable, streams tokens if available). Phase 4 adaptive detection runs against Goose at startup to pick the best Opus the user's key actually has access to.
+  - `(haiku, anthropic) → "claude-haiku-4-5"`
+- Phase 10 regression suite: assert `claude-opus-4-6` spawns cleanly; assert `claude-sonnet-4.6` (dot) fails with a 404 message we surface in activity stream.
+- Adaptive `model_probe` analog: **keep it.** `model_probe.rs` probes Opus candidates against the Claude CLI. The mechanism remains reusable against Goose on the Anthropic provider (empty prompt + `GOOSE_MODEL=<candidate>` → spawn dies quickly with 404 if unavailable, streams tokens if available).
 
 **Why keep the dot-alias catalog around?** It's useful UX-facing *display* data:
 `session/load` reveals provider modules + human-readable display names. Phase 4 providers.json UI can use the catalog for display strings but must **never** write dot-form to `GOOSE_MODEL`.
 
 ### 6.8a Model catalog staleness — `availableModels` is a hint, not truth
 
-**New risk surfaced by the Opus 4.7 catalog gap.** Goose v1.31.0's `session/load` response advertises a fixed list (`claude-sonnet-4.6`, `claude-opus-4.6`, `claude-haiku-4.5`, …) compiled into the binary at Goose release time. When Anthropic ships a new model (Opus 4.7, 2026-04-16), **Goose's catalog does not update** — users would be stuck on 4.6 until the Goose team cuts a new release and Octopal re-bundles it.
+**Risk:** Goose's `session/load` response advertises a fixed list compiled into
+the bundled binary at Goose release time. When providers ship a newer model,
+Goose's catalog can lag until the Goose team cuts a release and Octopal
+re-bundles it.
 
-**But:** the catalog is display-only. Goose happily forwards any `GOOSE_MODEL` env string to the Anthropic API, which resolves it server-side. Opus 4.7 works through Goose v1.31.0 today despite not appearing in the ACP catalog.
+**But:** the catalog is display-only. Goose forwards `GOOSE_MODEL` to the
+provider API, which resolves it server-side.
 
 **Octopal's strategy: merge Goose catalog + Octopal curated list.**
 

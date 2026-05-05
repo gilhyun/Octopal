@@ -179,9 +179,11 @@ checkXcodeFirstLaunch();
 
 const cargoDir = resolveCargoDir();
 const childEnv = { ...process.env };
+const nodeBinDir = join(projectRoot, "node_modules", ".bin");
+childEnv.PATH = `${nodeBinDir}${delimiter}${childEnv.PATH ?? ""}`;
 if (cargoDir) {
   // Prepend cargo dir so `tauri build`'s internal `cargo` invocations succeed.
-  childEnv.PATH = `${cargoDir}${delimiter}${childEnv.PATH ?? ""}`;
+  childEnv.PATH = `${cargoDir}${delimiter}${childEnv.PATH}`;
 }
 
 const hasSigningKey = !!process.env.TAURI_SIGNING_PRIVATE_KEY;

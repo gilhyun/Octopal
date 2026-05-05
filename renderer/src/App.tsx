@@ -101,6 +101,14 @@ export function App() {
   // runId -> { folderPath, messageId } so activity events can find the right bubble
   const runMapRef = useRef<Map<string, { folderPath: string; messageId: string }>>(new Map())
 
+  // Provider CLI preflight can open OAuth. Keep one in flight so folder-open,
+  // startup, and onboarding completion never trigger duplicate browser flows.
+  const cliPreflightInFlightRef = useRef<{
+    provider: string
+    promise: Promise<boolean>
+  } | null>(null)
+  const cliPreflightSucceededRef = useRef<Set<string>>(new Set())
+
   // Per-agent FIFO lock — key is `${folderPath}::${agentNameLower}`.
   // When an invokeAgent call starts, it awaits the previous promise on this key,
   // then replaces it with its own. This guarantees a single agent is never running
@@ -152,20 +160,103 @@ export function App() {
 
   const activeWorkspace = state.workspaces.find((w) => w.id === state.activeWorkspaceId) || null
 
-  const preflightStartupCliSubscription = async (provider: string) => {
-    setStartupAiReady(false)
-    setStartupCliPreflight({ provider, status: 'checking' })
+  const preflightStartupCliSubscription = async (provider: string): Promise<boolean> => {
+    const existing = cliPreflightInFlightRef.current
+    if (existing?.provider === provider) return existing.promise
+
+    let promise!: Promise<boolean>
+    promise = (async () => {
+      setStartupAiReady(false)
+      setStartupCliPreflight({ provider, status: 'checking' })
+      try {
+        await window.api.preflightCliSubscription?.(provider)
+        cliPreflightSucceededRef.current.add(provider)
+        setStartupCliPreflight(null)
+        setStartupAiReady(true)
+        return true
+      } catch (e: any) {
+        setStartupCliPreflight({
+          provider,
+          status: 'error',
+          error: e?.message ?? String(e),
+        })
+        setStartupAiReady(false)
+        return false
+      } finally {
+        if (cliPreflightInFlightRef.current?.promise === promise) {
+          cliPreflightInFlightRef.current = null
+        }
+      }
+    })()
+
+    cliPreflightInFlightRef.current = { provider, promise }
+    return promise
+  }
+
+  const prepareAiProviderForWork = async (): Promise<boolean> => {
     try {
-      await window.api.preflightCliSubscription?.(provider)
+      const settings = await window.api.loadSettings()
+      shortcutsRef.current = settings.shortcuts?.textExpansions || []
+
+      const legacyClaude = settings.providers?.useLegacyClaudeCli === true
+      if (legacyClaude) {
+        const status = await window.api.checkClaudeCli()
+        if (!status.installed || !status.loggedIn) {
+          setClaudeCliStatus(status)
+          setStartupAiReady(false)
+          return false
+        }
+        setStartupCliPreflight(null)
+        setStartupAiReady(true)
+        return true
+      }
+
+      const providerConfigured = await hasConfiguredDefaultAiProvider(settings)
+      if (!providerConfigured) {
+        setShowAiProviderOnboarding(true)
+        setStartupAiReady(false)
+        return false
+      }
+
+      const defaultProvider = settings.providers?.defaultProvider
+      const authMode = defaultProvider
+        ? await (window.api.getAuthMode?.(defaultProvider) ?? Promise.resolve<AuthMode>('none'))
+        : 'none'
+
+      if (defaultProvider && authMode === 'cli_subscription') {
+        if (cliPreflightSucceededRef.current.has(defaultProvider)) {
+          setStartupCliPreflight(null)
+          setStartupAiReady(true)
+          return true
+        }
+        const manifest = await (window.api.getProvidersManifest?.() ?? Promise.resolve(null))
+        const defaultModel = normalizeModelForProviderAuth(
+          defaultProvider,
+          authMode,
+          settings.providers?.defaultModel,
+          manifest,
+        )
+        if (defaultModel && defaultModel !== settings.providers?.defaultModel) {
+          await window.api.saveSettings({
+            ...settings,
+            providers: {
+              ...(settings.providers ?? {}),
+              useLegacyClaudeCli: false,
+              defaultProvider,
+              defaultModel,
+            },
+          })
+        }
+        return preflightStartupCliSubscription(defaultProvider)
+      }
+
       setStartupCliPreflight(null)
       setStartupAiReady(true)
-    } catch (e: any) {
-      setStartupCliPreflight({
-        provider,
-        status: 'error',
-        error: e?.message ?? String(e),
-      })
+      return true
+    } catch {
+      setShowAiProviderOnboarding(true)
       setStartupAiReady(false)
+      return false
     }
   }
 
@@ -212,57 +303,7 @@ export function App() {
           i18n.changeLanguage(settings.general.language)
         }
         shortcutsRef.current = settings.shortcuts?.textExpansions || []
-
-        const legacyClaude = settings.providers?.useLegacyClaudeCli === true
-        if (legacyClaude) {
-          const status = await window.api.checkClaudeCli()
-          if (!status.installed || !status.loggedIn) {
-            setClaudeCliStatus(status)
-            setStartupAiReady(false)
-            return
-          }
-          setStartupAiReady(true)
-          return
-        }
-
-        try {
-          const providerConfigured = await hasConfiguredDefaultAiProvider(settings)
-          if (!providerConfigured) {
-            setShowAiProviderOnboarding(true)
-            return
-          }
-
-          const defaultProvider = settings.providers?.defaultProvider
-          const authMode = defaultProvider
-            ? await (window.api.getAuthMode?.(defaultProvider) ?? Promise.resolve<AuthMode>('none'))
-            : 'none'
-          if (defaultProvider === 'openai' && authMode === 'cli_subscription') {
-            const manifest = await (window.api.getProvidersManifest?.() ?? Promise.resolve(null))
-            const defaultModel = normalizeModelForProviderAuth(
-              defaultProvider,
-              authMode,
-              settings.providers?.defaultModel,
-              manifest,
-            )
-            if (defaultModel && defaultModel !== settings.providers?.defaultModel) {
-              await window.api.saveSettings({
-                ...settings,
-                providers: {
-                  ...(settings.providers ?? {}),
-                  useLegacyClaudeCli: false,
-                  defaultProvider,
-                  defaultModel,
-                },
-              })
-            }
-            await preflightStartupCliSubscription(defaultProvider)
-            return
-          }
-          setStartupAiReady(true)
-        } catch {
-          setShowAiProviderOnboarding(true)
-          setStartupAiReady(false)
-        }
+        await prepareAiProviderForWork()
       })
       .catch(() => {
         setShowAiProviderOnboarding(true)
@@ -959,13 +1000,16 @@ export function App() {
 
   // ── Workspace / Folder actions ──
 
-  const pickFolder = async () => {
-    if (!state.activeWorkspaceId) return
+  const pickFolder = async (): Promise<string | null> => {
+    if (!state.activeWorkspaceId) return null
+    const ready = await prepareAiProviderForWork()
+    if (!ready) return null
     const p = await window.api.pickFolder(state.activeWorkspaceId)
-    if (!p) return
+    if (!p) return null
     const fresh = await window.api.loadState()
     setState(fresh)
     setActiveFolder(p)
+    return p
   }
 
   const removeFolder = async (p: string) => {
@@ -994,11 +1038,14 @@ export function App() {
   // ── Messaging ──
 
   // ── DM (1:1 chat) helpers ────────────────────────────────────────
-  const send = (attachments?: Attachment[]) => {
+  const send = async (attachments?: Attachment[]) => {
     const hasText = input.trim().length > 0
     const hasAttachments = attachments && attachments.length > 0
-    console.log('[Send] input:', JSON.stringify(input.trim()), 'hasText:', hasText, 'hasAttachments:', hasAttachments, 'activeFolder:', activeFolder)
-    if ((!hasText && !hasAttachments) || !activeFolder) return
+    const folderPath = activeFolder
+    console.log('[Send] input:', JSON.stringify(input.trim()), 'hasText:', hasText, 'hasAttachments:', hasAttachments, 'activeFolder:', folderPath)
+    if ((!hasText && !hasAttachments) || !folderPath) return
+    const ready = await prepareAiProviderForWork()
+    if (!ready) return
 
     // Expand text shortcuts before sending — saves tokens & enables Layer 0 routing
     let text = input.trim()
@@ -1022,8 +1069,8 @@ export function App() {
     }
     setMessages((prev) => ({
       ...prev,
-      [activeFolder]: [
-        ...(prev[activeFolder] || []),
+      [folderPath]: [
+        ...(prev[folderPath] || []),
         userMessage,
       ],
     }))
@@ -1031,7 +1078,7 @@ export function App() {
     // Persist the user message immediately to room-log.json so it survives
     // reloads even if no agent responds (or a hot-reload kills the chain).
     window.api.appendUserMessage({
-      folderPath: activeFolder,
+      folderPath,
       message: {
         id: userMessage.id,
         ts,
@@ -1041,9 +1088,9 @@ export function App() {
     })
 
     // Add to buffer
-    if (!bufferRef.current || bufferRef.current.folderPath !== activeFolder) {
+    if (!bufferRef.current || bufferRef.current.folderPath !== folderPath) {
       if (bufferRef.current?.timer) clearTimeout(bufferRef.current.timer)
-      bufferRef.current = { folderPath: activeFolder, messages: [], timer: null }
+      bufferRef.current = { folderPath, messages: [], timer: null }
     }
     bufferRef.current.messages.push({ text, ts, attachments: hasAttachments ? attachments : undefined })
 
@@ -2087,12 +2134,8 @@ export function App() {
       {showWelcome && startupAiReady && !startupCliPreflight && (
         <WelcomeModal
           onPickFolder={async () => {
-            if (!state.activeWorkspaceId) return
-            const p = await window.api.pickFolder(state.activeWorkspaceId)
+            const p = await pickFolder()
             if (!p) return // picker cancelled → keep modal open
-            const fresh = await window.api.loadState()
-            setState(fresh)
-            setActiveFolder(p)
             setShowWelcome(false)
           }}
         />
@@ -2101,22 +2144,18 @@ export function App() {
       {!showAiProviderOnboarding && startupAiReady && !startupCliPreflight && !showWelcome && activeWorkspace && activeWorkspace.folders.length === 0 && (
         <OpenFolderModal
           onPickFolder={async () => {
-            if (!state.activeWorkspaceId) return
-            const p = await window.api.pickFolder(state.activeWorkspaceId)
+            const p = await pickFolder()
             if (!p) return // picker cancelled → keep modal open
-            const fresh = await window.api.loadState()
-            setState(fresh)
-            setActiveFolder(p)
           }}
         />
       )}
 
       {showAiProviderOnboarding && (
         <AiProviderOnboardingModal
-          onComplete={() => {
+          onComplete={async () => {
             setShowAiProviderOnboarding(false)
             setClaudeCliStatus(null)
-            setStartupAiReady(true)
+            await prepareAiProviderForWork()
           }}
         />
       )}
@@ -2147,7 +2186,8 @@ export function App() {
                     className="btn-secondary"
                     onClick={() => {
                       setStartupCliPreflight(null)
-                      setStartupAiReady(true)
+                      setStartupAiReady(false)
+                      setShowAiProviderOnboarding(true)
                     }}
                   >
                     {t('modals.cliPreflight.skip')}

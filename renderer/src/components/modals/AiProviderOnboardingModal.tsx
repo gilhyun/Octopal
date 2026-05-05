@@ -5,7 +5,7 @@ import { cliDisplayName, cliVersionLabel } from '../../cli-display'
 import { modelOptionsForProviderAuth, preferredModelForProvider } from '../../provider-models'
 
 interface AiProviderOnboardingModalProps {
-  onComplete: () => void
+  onComplete: () => void | Promise<void>
 }
 
 export function AiProviderOnboardingModal({ onComplete }: AiProviderOnboardingModalProps) {
@@ -119,9 +119,6 @@ export function AiProviderOnboardingModal({ onComplete }: AiProviderOnboardingMo
         if (!cliMethod?.detectBinary || cliDetection?.found !== true) {
           throw new Error(t('modals.aiOnboarding.cliMissingError'))
         }
-        if (selectedProvider === 'openai') {
-          await window.api.preflightCliSubscription?.(selectedProvider)
-        }
         await window.api.setAuthMode?.(selectedProvider, 'cli_subscription')
       } else {
         const value = secret.trim()
@@ -146,7 +143,7 @@ export function AiProviderOnboardingModal({ onComplete }: AiProviderOnboardingMo
         ...settings,
         providers,
       })
-      onComplete()
+      await onComplete()
     } catch (e: any) {
       setError(e?.message ?? String(e))
     } finally {

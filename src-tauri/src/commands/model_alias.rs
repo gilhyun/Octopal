@@ -5,9 +5,9 @@
 //!
 //! | Alias    | Provider    | Resolved ID                       |
 //! |----------|-------------|-----------------------------------|
-//! | opus     | anthropic   | `claude-opus-4-7`                 |
+//! | opus     | anthropic   | `claude-opus-4-6`                 |
 //! | sonnet   | anthropic   | `claude-sonnet-4-6`               |
-//! | haiku    | anthropic   | `claude-haiku-4-5-20251001`       |
+//! | haiku    | anthropic   | `claude-haiku-4-5`                |
 //!
 //! Why hardcoded, not `providers.json`-driven: aliases are a semantic
 //! commitment ("latest Opus") bound to the Octopal release cycle. Driving
@@ -30,13 +30,13 @@
 /// The dispatcher also reuses this on the planner path.
 pub fn resolve(alias_or_id: &str, provider: &str) -> String {
     match (alias_or_id, provider) {
-        ("opus", "anthropic") => "claude-opus-4-7".to_string(),
+        ("opus", "anthropic") => "claude-opus-4-6".to_string(),
         ("sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
-        ("haiku", "anthropic") => "claude-haiku-4-5-20251001".to_string(),
+        ("haiku", "anthropic") => "claude-haiku-4-5".to_string(),
         ("current", "anthropic") => "claude-sonnet-4-6".to_string(),
-        ("claude-4-opus", "anthropic") => "claude-opus-4-7".to_string(),
+        ("claude-4-opus", "anthropic") => "claude-opus-4-6".to_string(),
         ("claude-4-sonnet", "anthropic") => "claude-sonnet-4-6".to_string(),
-        ("claude-haiku-4-5", "anthropic") => "claude-haiku-4-5-20251001".to_string(),
+        ("claude-haiku-4-5", "anthropic") => "claude-haiku-4-5".to_string(),
         _ => alias_or_id.to_string(),
     }
 }
@@ -44,14 +44,7 @@ pub fn resolve(alias_or_id: &str, provider: &str) -> String {
 /// Normalize an Octopal model setting for the Goose provider we are about
 /// to spawn. Anthropic API and Claude subscription mode use different model
 /// namespaces, so the same saved agent model must be translated at the edge.
-pub const CHATGPT_CODEX_MODELS: &[&str] = &[
-    "gpt-5.4",
-    "gpt-5.3-codex",
-    "gpt-5.2-codex",
-    "gpt-5.1-codex",
-    "gpt-5.1-codex-mini",
-    "gpt-5.1-codex-max",
-];
+pub const CHATGPT_CODEX_MODELS: &[&str] = &["gpt-5.4", "gpt-5.3-codex"];
 
 pub fn default_for_goose_provider(goose_provider: &str) -> Option<&'static str> {
     match goose_provider {
@@ -93,27 +86,24 @@ mod tests {
 
     #[test]
     fn anthropic_aliases_resolve() {
-        assert_eq!(resolve("opus", "anthropic"), "claude-opus-4-7");
+        assert_eq!(resolve("opus", "anthropic"), "claude-opus-4-6");
         assert_eq!(resolve("sonnet", "anthropic"), "claude-sonnet-4-6");
-        assert_eq!(resolve("haiku", "anthropic"), "claude-haiku-4-5-20251001");
+        assert_eq!(resolve("haiku", "anthropic"), "claude-haiku-4-5");
     }
 
     #[test]
     fn anthropic_api_path_accepts_legacy_claude_acp_names() {
         assert_eq!(resolve("current", "anthropic"), "claude-sonnet-4-6");
-        assert_eq!(resolve("claude-4-opus", "anthropic"), "claude-opus-4-7");
+        assert_eq!(resolve("claude-4-opus", "anthropic"), "claude-opus-4-6");
         assert_eq!(resolve("claude-4-sonnet", "anthropic"), "claude-sonnet-4-6");
-        assert_eq!(
-            resolve("claude-haiku-4-5", "anthropic"),
-            "claude-haiku-4-5-20251001"
-        );
+        assert_eq!(resolve("claude-haiku-4-5", "anthropic"), "claude-haiku-4-5");
     }
 
     #[test]
     fn concrete_anthropic_ids_passthrough() {
         for id in [
-            "claude-opus-4-7",
             "claude-opus-4-6",
+            "claude-haiku-4-5",
             "claude-sonnet-4-5-20250929",
             "claude-haiku-4-5-20251001",
         ] {
@@ -136,10 +126,7 @@ mod tests {
         assert_eq!(resolve("gemini-2.5-pro", "google"), "gemini-2.5-pro");
         assert_eq!(resolve("llama3:70b", "ollama"), "llama3:70b");
         // Hypothetical future Anthropic model Octopal hasn't curated yet.
-        assert_eq!(
-            resolve("claude-opus-4-8", "anthropic"),
-            "claude-opus-4-8"
-        );
+        assert_eq!(resolve("claude-opus-4-8", "anthropic"), "claude-opus-4-8");
     }
 
     #[test]
@@ -153,7 +140,7 @@ mod tests {
     #[test]
     fn goose_provider_resolution_maps_anthropic_api_to_claude_acp() {
         assert_eq!(
-            resolve_for_goose_provider("claude-opus-4-7", "claude-acp"),
+            resolve_for_goose_provider("claude-opus-4-6", "claude-acp"),
             "claude-4-opus"
         );
         assert_eq!(

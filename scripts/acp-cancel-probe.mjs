@@ -2,7 +2,7 @@
 /**
  * ACP SIGTERM timing probe (Phase 2 Q-C resolution).
  *
- * Measures how fast Goose v1.31.0 actually stops after a process-level
+ * Measures how fast the pinned Goose ACP runtime actually stops after a process-level
  * SIGTERM mid-turn. This data sets the grace timeout before SIGKILL in
  * `AcpClient::shutdown()` (ADR §6.7). `session/cancel` does NOT exist
  * (method probe confirmed -32601), so SIGTERM is the only cancel lever

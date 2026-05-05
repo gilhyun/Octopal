@@ -436,7 +436,7 @@ interface Window {
     /** Read current auth mode for a provider (`none` if no entry). */
     getAuthMode?: (provider: string) => Promise<AuthMode>
 
-    // Model probe — detects which explicit Opus version (e.g. claude-opus-4-7)
+    // Model probe — detects which explicit Opus version (e.g. claude-opus-4-6)
     // is available to the user's Claude CLI. Returns null until the startup
     // probe finishes, or the full model name when a newer Opus is accessible.
     getBestOpusModel?: () => Promise<string | null>

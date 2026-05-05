@@ -2,8 +2,8 @@
 /**
  * ACP method existence probe — no API credits required.
  *
- * Goose v1.31.0's `session/cancel` returns -32601 (Method not found), even
- * though the ACP spec lists it. We need to find what Goose actually uses
+ * The pinned Goose ACP runtime's `session/cancel` returns -32601 (Method not
+ * found), even though the ACP spec lists it. We need to find what Goose actually uses
  * for cancellation/termination so Phase 2's Stop-button + dispatcher
  * timeout plumbing can target a real method.
  *

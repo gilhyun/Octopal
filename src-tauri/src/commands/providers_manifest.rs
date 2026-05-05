@@ -66,13 +66,21 @@ pub struct AuthMethod {
     #[serde(rename = "goose_provider")]
     pub goose_provider: String,
     /// Phase 5 fields, accepted and stored but not yet consumed.
-    #[serde(rename = "detectBinary", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "detectBinary",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub detect_binary: Option<String>,
     /// Phase 5a-finalize §3.5: docs URL for the install-guide link
     /// rendered when the CLI binary isn't detected. Optional —
     /// providers without a public install page just don't render
     /// the link.
-    #[serde(rename = "installUrl", default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "installUrl",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
     pub install_url: Option<String>,
 }
 
@@ -170,11 +178,11 @@ mod tests {
         let anthropic = m.get("anthropic").unwrap();
         let models = anthropic.models.as_slice().expect("static list");
         assert!(
-            models.contains(&"claude-opus-4-7".to_string()),
-            "claude-opus-4-7 must be present (alias target for API path); got {models:?}"
+            models.contains(&"claude-opus-4-6".to_string()),
+            "claude-opus-4-6 must be present (alias target for API path); got {models:?}"
         );
         assert!(models.contains(&"claude-sonnet-4-6".to_string()));
-        assert!(models.contains(&"claude-haiku-4-5-20251001".to_string()));
+        assert!(models.contains(&"claude-haiku-4-5".to_string()));
         assert!(
             !models.contains(&"current".to_string())
                 && !models.contains(&"claude-4-opus".to_string())

@@ -262,7 +262,7 @@
       "opening": "Waiting for ChatGPT sign-in...",
       "needsRetry": "Finish the browser sign-in, then check again before opening a folder.",
       "retry": "I signed in",
-      "skip": "Skip for now"
+      "skip": "Choose another AI"
     },
     "createAgent": {
       "title": "New agent",

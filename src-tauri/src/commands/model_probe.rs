@@ -1,4 +1,4 @@
-//! Detects whether premium Claude models (e.g. Opus 4.7) are available on the
+//! Detects whether premium Claude models (e.g. Opus 4.6) are available on the
 //! user's machine.
 //!
 //! The `claude` CLI routes requests through whatever auth the user has
@@ -25,7 +25,7 @@ use tauri::State;
 
 /// Model names to probe, in priority order. First available one wins when the
 /// user's effective model tier is `opus`.
-pub const OPUS_CANDIDATES: &[&str] = &["claude-opus-4-7"];
+pub const OPUS_CANDIDATES: &[&str] = &["claude-opus-4-6"];
 
 /// Synchronously probe a specific model name. Returns `Ok(true)` if the CLI
 /// recognizes the model and the account has access, `Ok(false)` otherwise.
@@ -156,7 +156,7 @@ pub async fn reprobe_best_opus_model(
 
 /// Resolve the model alias the user picked (e.g. "opus") to the concrete
 /// model name we should pass to `--model`. When the alias is `opus` and a
-/// newer explicit model (like `claude-opus-4-7`) has been detected, we
+/// newer explicit model (like `claude-opus-4-6`) has been detected, we
 /// substitute it. Otherwise we pass the alias through unchanged.
 pub fn resolve_model_for_cli(alias: &str, state: &ManagedState) -> String {
     if alias == "opus" {

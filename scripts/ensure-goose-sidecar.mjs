@@ -6,7 +6,8 @@
  * and usable standalone via `node scripts/ensure-goose-sidecar.mjs`.
  *
  * Reads the pinned version from scripts/goose-version.json, downloads the
- * matching release asset from GitHub (block/goose), extracts the `goose`
+ * matching release asset from GitHub (block/goose, currently redirected to
+ * aaif-goose/goose), extracts the `goose`
  * binary into src-tauri/binaries/goose-<triple>[.exe], ad-hoc codesigns on
  * macOS, and caches archives under scripts/.cache/goose/<version>/.
  *
@@ -25,6 +26,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
@@ -66,6 +68,64 @@ function sha256OfFile(path) {
   const h = createHash("sha256");
   h.update(readFileSync(path));
   return h.digest("hex");
+}
+
+function normalizeVersion(version) {
+  return String(version || "").trim().replace(/^v/, "");
+}
+
+function versionMarkerPath(outPath) {
+  return `${outPath}.version`;
+}
+
+function readVersionMarker(outPath) {
+  try {
+    return normalizeVersion(readFileSync(versionMarkerPath(outPath), "utf8"));
+  } catch {
+    return "";
+  }
+}
+
+function writeVersionMarker(outPath, version) {
+  writeFileSync(versionMarkerPath(outPath), `${normalizeVersion(version)}\n`);
+}
+
+function probeBinaryVersion(outPath) {
+  const raw = execFileSync(outPath, ["--version"], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+  }).trim();
+  const match = raw.match(/(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)/);
+  return normalizeVersion(match?.[1] ?? raw);
+}
+
+function existingBinaryMatchesPinnedVersion(outPath, version, outName) {
+  if (!existsSync(outPath)) return false;
+
+  const wanted = normalizeVersion(version);
+  const markerVersion = readVersionMarker(outPath);
+  if (markerVersion === wanted) {
+    const size = statSync(outPath).size;
+    console.log(`✓ Goose sidecar already present: ${outName} (${(size / 1024 / 1024).toFixed(1)} MB, ${wanted})`);
+    return true;
+  }
+
+  try {
+    const actual = probeBinaryVersion(outPath);
+    if (actual === wanted) {
+      writeVersionMarker(outPath, version);
+      const size = statSync(outPath).size;
+      console.log(`✓ Goose sidecar already present: ${outName} (${(size / 1024 / 1024).toFixed(1)} MB, ${wanted})`);
+      return true;
+    }
+    console.log(`↻ Replacing stale Goose sidecar: ${outName} (${actual || "unknown"} → ${wanted})`);
+  } catch (err) {
+    console.log(`↻ Replacing unverified Goose sidecar: ${outName} (${err.message})`);
+  }
+
+  rmSync(outPath, { force: true });
+  rmSync(versionMarkerPath(outPath), { force: true });
+  return false;
 }
 
 async function downloadRelease(version, assetName, destPath) {
@@ -174,9 +234,7 @@ export async function ensureGooseSidecar({ triple } = {}) {
   const outName = isWindows ? `goose-${target}.exe` : `goose-${target}`;
   const outPath = join(binariesDir, outName);
 
-  if (existsSync(outPath)) {
-    const size = statSync(outPath).size;
-    console.log(`✓ Goose sidecar already present: ${outName} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+  if (existingBinaryMatchesPinnedVersion(outPath, version, outName)) {
     return outPath;
   }
 
@@ -205,18 +263,18 @@ export async function ensureGooseSidecar({ triple } = {}) {
 
   const sha = sha256OfFile(outPath);
   const size = statSync(outPath).size;
+  writeVersionMarker(outPath, version);
   console.log(`✓ Installed ${outName} (${(size / 1024 / 1024).toFixed(1)} MB, sha256 ${sha.slice(0, 12)}…)`);
   return outPath;
 }
 
 export async function ensureGooseUniversalSidecar() {
+  const { version } = loadVersion();
   const target = "universal-apple-darwin";
   const outName = `goose-${target}`;
   const outPath = join(binariesDir, outName);
 
-  if (existsSync(outPath)) {
-    const size = statSync(outPath).size;
-    console.log(`✓ Goose sidecar already present: ${outName} (${(size / 1024 / 1024).toFixed(1)} MB)`);
+  if (existingBinaryMatchesPinnedVersion(outPath, version, outName)) {
     return outPath;
   }
 
@@ -237,6 +295,7 @@ export async function ensureGooseUniversalSidecar() {
 
   const sha = sha256OfFile(outPath);
   const size = statSync(outPath).size;
+  writeVersionMarker(outPath, version);
   console.log(`✓ Installed ${outName} (${(size / 1024 / 1024).toFixed(1)} MB, sha256 ${sha.slice(0, 12)}…)`);
   return outPath;
 }

@@ -97,7 +97,7 @@ default), with a `[agent:model]` warning log:
 
 `model` accepted values: any non-empty string. We don't validate
 against the manifest list because:
-- providers.json's `models` array can lag behind reality (Goose v1.31.0
+- providers.json's `models` array can lag behind reality (the bundled Goose
   catalog stale per ADR §6.8a)
 - Anthropic supports aliases (`opus`/`sonnet`/`haiku`) that aren't in
   the concrete model list
@@ -193,7 +193,7 @@ agent" — adjacent to permissions which is "what the agent can do".)
 │                                                 │
 │  Model      [opus (alias)        ▾]            │
 │             Available: opus, sonnet, haiku,     │
-│                        claude-opus-4-7, …       │
+│                        claude-opus-4-6, …       │
 │                                                 │
 │  ⓘ Leave both fields default to inherit the     │
 │    workspace's defaults from Settings → Providers │
