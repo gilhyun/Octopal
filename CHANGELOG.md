@@ -2,6 +2,13 @@
 
 All notable changes to Octopal will be documented in this file.
 
+## [0.1.55] - 2026-07-11
+
+### Fixes
+
+- Fixed Ollama/local-provider chat routing so the saved workspace model is used instead of being replaced by the Claude default model.
+- Passed the saved Ollama host URL into Goose agent sessions.
+
 ## [0.1.43] - 2026-05-04
 
 ### Major Changes

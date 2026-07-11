@@ -1439,6 +1439,16 @@ fn default_model_for_provider(
     }
 }
 
+fn provider_uses_dynamic_models(
+    provider: &str,
+    manifest: &crate::commands::providers_manifest::ProvidersManifest,
+) -> bool {
+    matches!(
+        manifest.get(provider).map(|entry| &entry.models),
+        Some(crate::commands::providers_manifest::ModelList::Dynamic(_))
+    )
+}
+
 fn model_belongs_to_provider(
     provider: &str,
     model: &str,
@@ -1464,6 +1474,9 @@ fn model_belongs_to_provider(
     if provider == "anthropic" && model.starts_with("claude-") {
         return true;
     }
+    if provider_uses_dynamic_models(provider, manifest) {
+        return true;
+    }
     manifest
         .get(provider)
         .and_then(|entry| entry.models.as_slice())
@@ -1478,6 +1491,8 @@ fn choose_model_for_provider(
 ) -> String {
     if model_belongs_to_provider(provider, preferred_model, manifest) {
         preferred_model.to_string()
+    } else if provider_uses_dynamic_models(provider, manifest) {
+        String::new()
     } else {
         default_model_for_provider(provider, manifest)
             .unwrap_or_else(|| "claude-sonnet-4-6".to_string())
@@ -1515,9 +1530,15 @@ fn choose_raw_model(
         if let Some(model) = default_model_for_provider(&provider, manifest) {
             return (provider, model);
         }
+        if provider_uses_dynamic_models(&provider, manifest) {
+            return (provider, String::new());
+        }
     }
 
-    if !caller_model.is_empty() && model_belongs_to_provider(&provider, caller_model, manifest) {
+    if !provider_uses_dynamic_models(&provider, manifest)
+        && !caller_model.is_empty()
+        && model_belongs_to_provider(&provider, caller_model, manifest)
+    {
         return (provider, caller_model.to_string());
     }
 
@@ -1619,6 +1640,16 @@ pub async fn run_agent_turn(
             &state.providers_manifest,
         )
     };
+    if raw_model.trim().is_empty() {
+        return Ok(SendResult {
+            ok: false,
+            output: None,
+            error: Some(format!(
+                "No model selected for provider \"{provider}\". Choose a model in Settings → Providers, or set one on this agent."
+            )),
+            usage: None,
+        });
+    }
 
     // ── Configured-provider check (Phase 4, scope §4.1) ──────────────
     // Reads the settings flag, NOT the keyring. This means opening the
@@ -1763,7 +1794,11 @@ pub async fn run_agent_turn(
                      Add one in Settings → Providers."
                 )
             })?;
-        cfg.api_key = Some(key);
+        if cfg.provider == "ollama" {
+            cfg.ollama_host = Some(key.trim_end_matches('/').to_string());
+        } else {
+            cfg.api_key = Some(key);
+        }
         Ok(())
     };
     // Phase 5a-finalize §3.3: counterpart to fill_api_key for the
@@ -2202,6 +2237,11 @@ mod tests {
                 "displayName": "Google",
                 "models": ["gemini-2.5-pro"],
                 "authMethods": []
+            },
+            "ollama": {
+                "displayName": "Ollama (Local)",
+                "models": "dynamic",
+                "authMethods": []
             }
         }))
         .unwrap()
@@ -2284,6 +2324,54 @@ mod tests {
         );
         assert_eq!(provider, "openai");
         assert_eq!(model, "gpt-5");
+    }
+
+    #[test]
+    fn choose_raw_model_ollama_keeps_workspace_model_and_ignores_caller_alias() {
+        let binding = crate::commands::agent_config::AgentBinding::default();
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "ollama",
+            "qwen3.5:27b",
+            "opus",
+            &manifest(),
+        );
+        assert_eq!(provider, "ollama");
+        assert_eq!(model, "qwen3.5:27b");
+    }
+
+    #[test]
+    fn choose_raw_model_ollama_agent_model_override_wins() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: Some("ollama".to_string()),
+            model: Some("frob/qwen3.5-instruct:4b".to_string()),
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "anthropic",
+            "claude-sonnet-4-6",
+            "opus",
+            &manifest(),
+        );
+        assert_eq!(provider, "ollama");
+        assert_eq!(model, "frob/qwen3.5-instruct:4b");
+    }
+
+    #[test]
+    fn choose_raw_model_ollama_provider_only_does_not_reuse_claude_default() {
+        let binding = crate::commands::agent_config::AgentBinding {
+            provider: Some("ollama".to_string()),
+            model: None,
+        };
+        let (provider, model) = choose_raw_model(
+            &binding,
+            "anthropic",
+            "claude-sonnet-4-6",
+            "",
+            &manifest(),
+        );
+        assert_eq!(provider, "ollama");
+        assert_eq!(model, "");
     }
 
     #[test]
