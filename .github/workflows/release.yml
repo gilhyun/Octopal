@@ -76,6 +76,9 @@ jobs:
       - name: Audit Rust dependencies
         run: cargo audit --file src-tauri/Cargo.lock
 
+      - name: Prepare pinned Goose sidecar
+        run: node scripts/ensure-goose-sidecar.mjs
+
       - name: Run Rust tests
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets
 
