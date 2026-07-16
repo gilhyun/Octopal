@@ -26,6 +26,8 @@ import {
   sanitizeDisplayText,
 } from './chat-protocol'
 import { normalizeModelForProviderAuth } from './provider-models'
+import { mergeGrantedPermissions } from './permissions'
+import { createLatestRequestGate } from './latest-request'
 
 const ActivityPanel = lazy(() => import('./components/ActivityPanel').then((m) => ({ default: m.ActivityPanel })))
 const SettingsPanel = lazy(() => import('./components/SettingsPanel').then((m) => ({ default: m.SettingsPanel })))
@@ -88,6 +90,13 @@ export function App() {
   const [leftSidebarOpen, setLeftSidebarOpen] = useState(true)
   const [rightSidebarOpen, setRightSidebarOpen] = useState(true)
   const [platform, setPlatform] = useState<string>('darwin')
+  const activeFolderRef = useRef(activeFolder)
+  activeFolderRef.current = activeFolder
+  const refreshOctosForFolder = async (folderPath: string) => {
+    const refreshed = await window.api.listOctos(folderPath)
+    if (activeFolderRef.current === folderPath) setOctos(refreshed)
+    return refreshed
+  }
 
   // File access approval modal state
   const [fileAccessRequest, setFileAccessRequest] = useState<{
@@ -409,23 +418,31 @@ export function App() {
   // Track folders that have already bootstrapped their default agent so we
   // don't re-trigger during the same session (e.g. when re-selecting a folder).
   const bootstrappedFoldersRef = useRef<Set<string>>(new Set())
+  const folderLoadGateRef = useRef(createLatestRequestGate())
 
   // Load octos + history when folder changes (paged — last PAGE_SIZE messages)
   useEffect(() => {
-    if (!activeFolder) {
+    const request = folderLoadGateRef.current.begin()
+
+    if (!activeFolder || !startupAiReady) {
       setOctos([])
-      return
+      return request.cancel
     }
-    if (!startupAiReady) return
+
+    // Never render or route with the previous folder's agents while the new
+    // folder snapshot is still loading.
+    setOctos([])
 
     const folder = activeFolder // capture for async closures
 
     const bootstrap = async () => {
       const existingOctos = await window.api.listOctos(folder)
+      if (!request.isCurrent()) return
       setOctos(existingOctos)
 
       // Load history
       const { messages: history, hasMore } = await window.api.loadHistoryPaged({ folderPath: folder, limit: PAGE_SIZE })
+      if (!request.isCurrent()) return
       setHasMoreMessages((prev) => ({ ...prev, [folder]: hasMore }))
       setMessages((prev) => {
         // Preserve in-memory pending messages (not yet persisted to disk)
@@ -543,6 +560,7 @@ export function App() {
         })
 
         runMapRef.current.delete(runId)
+        if (!request.isCurrent()) return
 
         setMessages((prev) => {
           const list = prev[folder] || []
@@ -587,6 +605,7 @@ export function App() {
       let hydratedAgentProposals = new Map<string, AgentProposal>()
       try {
         const raw = await window.api.readPendingState(folder)
+        if (!request.isCurrent()) return
         const entries = (raw?.handoffs ?? {}) as Record<string, any>
         for (const [id, ctx] of Object.entries(entries)) {
           hydratedHandoffs.set(id, {
@@ -630,6 +649,7 @@ export function App() {
         // Non-fatal — fall through with empty hydration
       }
 
+      if (!request.isCurrent()) return
       setMessages((prev) => {
         const existing = prev[folder] || []
         // Preserve pending messages and unresolved permission requests (in-memory only)
@@ -699,7 +719,10 @@ export function App() {
       })
     }
 
-    bootstrap()
+    void bootstrap().catch((error) => {
+      if (request.isCurrent()) console.error(`[Octopal] Failed to load folder ${folder}:`, error)
+    })
+    return request.cancel
   }, [activeFolder, startupAiReady])
 
   // Load older messages (called when user scrolls to top)
@@ -756,7 +779,7 @@ export function App() {
     const unsubscribe = window.api.onOctosChanged((changedFolder) => {
       if (changedFolder === activeFolder) {
         // Refresh the agent list in the sidebar
-        window.api.listOctos(changedFolder).then(setOctos)
+        void refreshOctosForFolder(changedFolder)
 
         // Refresh chat messages (merge with in-flight pending messages)
         window.api.loadHistoryPaged({ folderPath: changedFolder, limit: PAGE_SIZE }).then(({ messages: history, hasMore }) => {
@@ -1843,8 +1866,7 @@ export function App() {
       }
     })
 
-    const refreshed = await window.api.listOctos(ctx.folderPath)
-    if (activeFolder === ctx.folderPath) setOctos(refreshed)
+    await refreshOctosForFolder(ctx.folderPath)
   }
 
   const dismissAgentProposal = (messageId: string) => {
@@ -1912,24 +1934,27 @@ export function App() {
 
   const grantPermission = async (messageId: string) => {
     if (!activeFolder) return
-    const folderMsgs = messages[activeFolder] || []
+    const folderPath = activeFolder
+    const folderMsgs = messages[folderPath] || []
     const msg = folderMsgs.find((m) => m.id === messageId)
     if (!msg?.permissionRequest?.agentPath) return
 
     const { permissions, agentPath } = msg.permissionRequest
-    const permUpdate: OctoPermissions = {}
-    for (const p of permissions) {
-      permUpdate[p] = true
-    }
+    // Read the latest config before merging so a grant never replaces existing
+    // booleans or drops allowPaths/denyPaths from the agent's policy.
+    const latestOctos = await window.api.listOctos(folderPath)
+    const currentAgent = latestOctos.find((agent) => agent.path === agentPath)
+    if (!currentAgent) return
+    const permUpdate = mergeGrantedPermissions(currentAgent.permissions, permissions)
     const res = await window.api.updateOcto({ octoPath: agentPath, permissions: permUpdate })
     if (!res.ok) return
 
     // Mark as granted in UI
     setMessages((prev) => {
-      const list = prev[activeFolder] || []
+      const list = prev[folderPath] || []
       return {
         ...prev,
-        [activeFolder]: list.map((m) =>
+        [folderPath]: list.map((m) =>
           m.id === messageId && m.permissionRequest
             ? { ...m, permissionRequest: { ...m.permissionRequest, granted: true } }
             : m
@@ -1937,8 +1962,8 @@ export function App() {
       }
     })
     // Refresh octo list so future calls use updated permissions
-    const updatedOctos = await window.api.listOctos(activeFolder)
-    setOctos(updatedOctos)
+    const updatedOctos = await window.api.listOctos(folderPath)
+    if (activeFolderRef.current === folderPath) setOctos(updatedOctos)
 
     // Auto re-invoke the agent after permission grant
     // Find the agent that requested permissions
@@ -2096,11 +2121,11 @@ export function App() {
           onClose={() => setEditingAgent(null)}
           onSaved={() => {
             setEditingAgent(null)
-            if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
+            if (activeFolder) void refreshOctosForFolder(activeFolder)
           }}
           onDeleted={() => {
             setEditingAgent(null)
-            if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
+            if (activeFolder) void refreshOctosForFolder(activeFolder)
           }}
         />
       )}
@@ -2110,11 +2135,11 @@ export function App() {
           folderPath={activeFolder}
           onClose={() => {
             setShowCreateAgent(false)
-            if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
+            if (activeFolder) void refreshOctosForFolder(activeFolder)
           }}
           onCreated={() => {
             setShowCreateAgent(false)
-            if (activeFolder) window.api.listOctos(activeFolder).then(setOctos)
+            if (activeFolder) void refreshOctosForFolder(activeFolder)
           }}
         />
       )}

@@ -402,7 +402,7 @@ fn normalize_parsed_route(parsed: &Value, agent_names: &[String]) -> HeuristicRo
 fn default_model_for_provider(provider: &str, manifest: &ProvidersManifest) -> Option<String> {
     match provider {
         "anthropic" => Some("claude-sonnet-4-6".to_string()),
-        "openai" => Some("gpt-5".to_string()),
+        "openai" => Some("gpt-5.6-sol".to_string()),
         "google" => Some("gemini-2.5-pro".to_string()),
         _ => manifest
             .get(provider)
@@ -1087,9 +1087,9 @@ mod tests {
         let runtime = choose_planner_runtime(&settings, &manifest()).unwrap();
 
         assert_eq!(runtime.provider, "openai");
-        assert_eq!(runtime.raw_model, "gpt-5");
+        assert_eq!(runtime.raw_model, "gpt-5.6-sol");
         assert_eq!(runtime.goose_provider, "openai");
-        assert_eq!(runtime.goose_model, "gpt-5");
+        assert_eq!(runtime.goose_model, "gpt-5.6-sol");
     }
 
     #[test]

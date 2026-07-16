@@ -24,9 +24,11 @@
 //!   - Method names are snake_case (`session/set_mode`, not `setMode`).
 
 use crate::commands::goose_acp_mapper::{
-    translate_notification, translate_permission_request, MappedEvent, PermissionRequest,
+    normalize_tool, translate_notification, translate_permission_request, MappedEvent,
+    NormalizedTool, PermissionRequest,
 };
 use crate::state::OctoPermissions;
+use glob::{MatchOptions, Pattern};
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -40,6 +42,70 @@ use tauri_plugin_shell::ShellExt;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 const GOOSE_PROMPT_TIMEOUT_SECS: u64 = 300;
+const STREAM_BUFFER_CAPACITY: usize = 1024;
+const RAW_EVENT_TAIL_CAPACITY: usize = 128;
+const STDERR_TAIL_CAPACITY: usize = 200;
+const MAX_STDOUT_BUFFER_BYTES: usize = 1024 * 1024;
+const MAX_RAW_EVENT_BYTES: usize = 32 * 1024;
+const MAX_STREAM_FIELD_BYTES: usize = 64 * 1024;
+const MAX_STDERR_ITEM_BYTES: usize = 16 * 1024;
+const MAX_COLLECTED_TEXT_BYTES: usize = 8 * 1024 * 1024;
+
+fn push_bounded<T>(items: &mut Vec<T>, item: T, capacity: usize) {
+    if items.len() >= capacity {
+        let remove = items.len() + 1 - capacity;
+        items.drain(..remove);
+    }
+    items.push(item);
+}
+
+fn truncate_utf8(mut value: String, max_bytes: usize) -> String {
+    if value.len() <= max_bytes {
+        return value;
+    }
+    let mut end = max_bytes;
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value.push_str("…[truncated]");
+    value
+}
+
+/// Append only the UTF-8 prefix that fits in the remaining byte budget.
+/// Returns the emitted prefix plus whether any bytes were omitted.
+fn append_bounded_text<'a>(
+    target: &mut String,
+    addition: &'a str,
+    max_bytes: usize,
+) -> (&'a str, bool) {
+    let remaining = max_bytes.saturating_sub(target.len());
+    let mut end = addition.len().min(remaining);
+    while !addition.is_char_boundary(end) {
+        end -= 1;
+    }
+    let accepted = &addition[..end];
+    target.push_str(accepted);
+    (accepted, end < addition.len())
+}
+
+fn bounded_mapped_event(event: MappedEvent) -> MappedEvent {
+    match event {
+        MappedEvent::Activity { text } => MappedEvent::Activity {
+            text: truncate_utf8(text, MAX_STREAM_FIELD_BYTES),
+        },
+        MappedEvent::ActivityLog { tool, target } => MappedEvent::ActivityLog {
+            tool: truncate_utf8(tool, 1024),
+            target: truncate_utf8(target, MAX_STREAM_FIELD_BYTES),
+        },
+        MappedEvent::AssistantTextChunk { text } => MappedEvent::AssistantTextChunk {
+            text: truncate_utf8(text, MAX_STREAM_FIELD_BYTES),
+        },
+        MappedEvent::AssistantThoughtChunk { text } => MappedEvent::AssistantThoughtChunk {
+            text: truncate_utf8(text, MAX_STREAM_FIELD_BYTES),
+        },
+    }
+}
 
 // ── check_goose_sidecar ────────────────────────────────────────────────
 
@@ -121,7 +187,9 @@ async fn dev_fallback_check() -> Result<Value, String> {
         .arg("--version")
         .output()
         .map_err(|e| format!("dev goose --version failed: {e}"))?;
-    let version = String::from_utf8_lossy(&version_out.stdout).trim().to_string();
+    let version = String::from_utf8_lossy(&version_out.stdout)
+        .trim()
+        .to_string();
     Ok(serde_json::to_value(GooseSidecarCheck {
         found: version_out.status.success(),
         version,
@@ -150,8 +218,7 @@ fn provider_api_key_env(goose_provider: &str) -> Option<&'static str> {
         "google" => Some("GOOGLE_API_KEY"),
         "databricks" => Some("DATABRICKS_TOKEN"),
         // CLI-subscription providers + Ollama: no API key env
-        "claude-code" | "claude-acp" | "gemini-cli" | "gemini-oauth" | "codex"
-        | "ollama" => None,
+        "claude-code" | "claude-acp" | "gemini-cli" | "gemini-oauth" | "codex" | "ollama" => None,
         // Unknown provider: don't guess. Caller falls back to no key injection
         // and the agent will surface the provider's own "missing credentials"
         // error in the stream.
@@ -311,8 +378,7 @@ impl GooseXdgRoots {
     /// Create the 3 directories if missing. Idempotent.
     pub fn ensure(&self) -> Result<(), String> {
         for p in [&self.config, &self.data, &self.state] {
-            std::fs::create_dir_all(p)
-                .map_err(|e| format!("mkdir {}: {e}", p.display()))?;
+            std::fs::create_dir_all(p).map_err(|e| format!("mkdir {}: {e}", p.display()))?;
         }
         Ok(())
     }
@@ -387,9 +453,7 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
     env.insert("GOOSE_MODEL".into(), cfg.model.clone());
 
     // Provider-specific credentials.
-    if let (Some(name), Some(key)) =
-        (provider_api_key_env(&cfg.provider), cfg.api_key.as_deref())
-    {
+    if let (Some(name), Some(key)) = (provider_api_key_env(&cfg.provider), cfg.api_key.as_deref()) {
         env.insert(name.into(), key.to_string());
     }
 
@@ -469,21 +533,120 @@ pub fn build_goose_env(cfg: &GooseSpawnConfig) -> HashMap<String, String> {
 
 /// Map Octopal's per-agent permission toggles to an ACP session mode id.
 ///
-/// The rule is deliberately coarse: only full-lockdown agents get `chat`
-/// mode. Everything else goes through `auto` + the fine-grained permission
-/// resolver (stage 7). `approve`/`smart_approve` modes are not used —
-/// they're for interactive human-in-the-loop, which doesn't match Octopal's
-/// agent-as-delegate model.
+/// Any explicit capability uses `approve`: Goose emits a permission request
+/// for every tool and Octopal answers it via `render_permission_response`.
+/// This keeps workspace path containment active even when all three toggles
+/// are enabled. Missing or fully locked policies use protocol-level `chat`.
 pub fn permissions_to_mode_id(perms: Option<&OctoPermissions>) -> &'static str {
-    let Some(p) = perms else { return "auto" };
-    let file_write = p.file_write.unwrap_or(true);
-    let bash = p.bash.unwrap_or(true);
-    let network = p.network.unwrap_or(true);
+    let Some(p) = perms else { return "chat" };
+    let file_write = p.file_write.unwrap_or(false);
+    let bash = p.bash.unwrap_or(false);
+    let network = p.network.unwrap_or(false);
     if !file_write && !bash && !network {
         "chat"
     } else {
-        "auto"
+        "approve"
     }
+}
+
+fn extract_tool_path(req: &PermissionRequest) -> Option<&str> {
+    let input = req.raw_input.as_ref()?.as_object()?;
+    ["path", "file_path", "directory", "dir", "root"]
+        .into_iter()
+        .find_map(|key| input.get(key).and_then(Value::as_str))
+}
+
+fn workspace_relative_tool_path(folder: &Path, requested: &str) -> Option<String> {
+    let root = std::fs::canonicalize(folder).ok()?;
+    let resolved =
+        crate::commands::path_guard::normalized_contained_target(&root, Path::new(requested))
+            .ok()?;
+    let relative = resolved.strip_prefix(&root).ok()?;
+    let normalized = relative
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(segment) => segment.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/");
+    Some(if normalized.is_empty() {
+        ".".to_string()
+    } else {
+        normalized
+    })
+}
+
+fn wiki_relative_tool_path(folder: &Path, requested: &str) -> Option<String> {
+    if !Path::new(requested).is_absolute() {
+        return None;
+    }
+    workspace_relative_tool_path(folder, requested)
+}
+
+fn matches_path_pattern(pattern: &str, relative: &str) -> bool {
+    let pattern = pattern.trim().replace('\\', "/");
+    if pattern.is_empty() {
+        return false;
+    }
+    Pattern::new(&pattern).is_ok_and(|compiled| {
+        compiled.matches_with(
+            relative,
+            MatchOptions {
+                case_sensitive: !(cfg!(windows) || cfg!(target_os = "macos")),
+                require_literal_separator: true,
+                require_literal_leading_dot: false,
+            },
+        )
+    })
+}
+
+fn tool_path_allowed(
+    req: &PermissionRequest,
+    perms: &OctoPermissions,
+    folder: Option<&Path>,
+    wiki_folder: Option<&Path>,
+) -> bool {
+    let Some(requested) = extract_tool_path(req) else {
+        return false;
+    };
+    let relative = folder
+        .and_then(|root| workspace_relative_tool_path(root, requested))
+        .or_else(|| {
+            wiki_folder.and_then(|root| {
+                wiki_relative_tool_path(root, requested).map(|relative| format!("wiki/{relative}"))
+            })
+        });
+    let Some(relative) = relative else {
+        return false;
+    };
+
+    let denied = perms.deny_paths.as_ref().is_some_and(|patterns| {
+        patterns.iter().any(|pattern| {
+            let normalized = pattern.trim().replace('\\', "/");
+            !normalized.is_empty()
+                && (Pattern::new(&normalized).is_err()
+                    || matches_path_pattern(&normalized, &relative))
+        })
+    });
+    if denied {
+        return false;
+    }
+
+    let allow_patterns = perms
+        .allow_paths
+        .as_ref()
+        .map(|patterns| {
+            patterns
+                .iter()
+                .filter(|pattern| !pattern.trim().is_empty())
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    allow_patterns.is_empty()
+        || allow_patterns
+            .iter()
+            .any(|pattern| matches_path_pattern(pattern, &relative))
 }
 
 // ── AcpClient (JSON-RPC 2.0 over stdio) ───────────────────────────────
@@ -521,8 +684,15 @@ pub struct IncomingPermissionRequest {
 pub enum StreamItem {
     Mapped(MappedEvent),
     Permission(IncomingPermissionRequest),
+    /// A permission request had an id but an invalid payload. It must still
+    /// receive a fail-closed response or the sidecar can wait indefinitely.
+    MalformedPermission {
+        request_id: u64,
+    },
     /// Reader lost the goose process. After this the channel closes.
-    Terminated { code: Option<i32> },
+    Terminated {
+        code: Option<i32>,
+    },
 }
 
 pub struct AcpClient {
@@ -538,7 +708,7 @@ pub struct AcpClient {
     /// reader task and drops when the process exits. `None` means nobody
     /// claimed the stream, so translations are silently discarded (only
     /// the raw `events` vec fills up).
-    stream_rx: Mutex<Option<mpsc::UnboundedReceiver<StreamItem>>>,
+    stream_rx: Mutex<Option<mpsc::Receiver<StreamItem>>>,
     /// stderr is tee'd here for post-mortem logs. Stage 9 will also mirror
     /// to `~/.octopal/logs/goose-*.log`.
     stderr_tail: Arc<Mutex<Vec<String>>>,
@@ -549,10 +719,7 @@ pub struct AcpClient {
 impl AcpClient {
     /// Spawn `goose acp` with the given env. Starts a background reader
     /// task that demultiplexes stdout into responses vs notifications.
-    pub async fn spawn(
-        app: &AppHandle,
-        env: HashMap<String, String>,
-    ) -> Result<Self, String> {
+    pub async fn spawn(app: &AppHandle, env: HashMap<String, String>) -> Result<Self, String> {
         let cmd = app
             .shell()
             .sidecar("goose")
@@ -568,7 +735,7 @@ impl AcpClient {
         let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
         let events: Arc<Mutex<Vec<Value>>> = Arc::new(Mutex::new(Vec::new()));
         let stderr_tail: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let (stream_tx, stream_rx) = mpsc::unbounded_channel::<StreamItem>();
+        let (stream_tx, stream_rx) = mpsc::channel::<StreamItem>(STREAM_BUFFER_CAPACITY);
 
         let pending_r = pending.clone();
         let events_r = events.clone();
@@ -582,7 +749,26 @@ impl AcpClient {
             while let Some(event) = rx.recv().await {
                 match event {
                     CommandEvent::Stdout(bytes) => {
-                        buf.push_str(&String::from_utf8_lossy(&bytes));
+                        let incoming = String::from_utf8_lossy(&bytes);
+                        if buf.len().saturating_add(incoming.len()) > MAX_STDOUT_BUFFER_BYTES {
+                            let dropped_bytes = buf.len().saturating_add(incoming.len());
+                            buf.clear();
+                            if let Some((_, suffix)) = incoming.rsplit_once('\n') {
+                                if suffix.len() <= MAX_STDOUT_BUFFER_BYTES {
+                                    buf.push_str(suffix);
+                                }
+                            }
+                            push_bounded(
+                                &mut *events_r.lock().await,
+                                json!({
+                                    "__error": "oversized ACP stdout line dropped",
+                                    "bytes": dropped_bytes,
+                                }),
+                                RAW_EVENT_TAIL_CAPACITY,
+                            );
+                            continue;
+                        }
+                        buf.push_str(&incoming);
                         while let Some(nl) = buf.find('\n') {
                             let line: String = buf.drain(..=nl).collect();
                             let trimmed = line.trim();
@@ -592,7 +778,16 @@ impl AcpClient {
                             let parsed: Value = match serde_json::from_str(trimmed) {
                                 Ok(v) => v,
                                 Err(_) => {
-                                    events_r.lock().await.push(json!({ "__raw": trimmed }));
+                                    push_bounded(
+                                        &mut *events_r.lock().await,
+                                        json!({
+                                            "__raw": truncate_utf8(
+                                                trimmed.to_string(),
+                                                MAX_RAW_EVENT_BYTES,
+                                            )
+                                        }),
+                                        RAW_EVENT_TAIL_CAPACITY,
+                                    );
                                     continue;
                                 }
                             };
@@ -617,44 +812,73 @@ impl AcpClient {
                             } else if method.as_deref() == Some("session/request_permission") {
                                 // Server request — needs a response. Route
                                 // to the stream so the caller can answer.
-                                if let (Some(id), Some(payload)) = (
-                                    parsed.get("id").and_then(|v| v.as_u64()),
-                                    translate_permission_request(&parsed),
-                                ) {
-                                    let _ = stream_tx.send(StreamItem::Permission(
-                                        IncomingPermissionRequest {
-                                            request_id: id,
-                                            payload,
-                                        },
-                                    ));
+                                if let Some(id) = parsed.get("id").and_then(|v| v.as_u64()) {
+                                    let item = match translate_permission_request(&parsed) {
+                                        Some(payload) => {
+                                            StreamItem::Permission(IncomingPermissionRequest {
+                                                request_id: id,
+                                                payload,
+                                            })
+                                        }
+                                        None => StreamItem::MalformedPermission { request_id: id },
+                                    };
+                                    let _ = stream_tx.send(item).await;
                                 }
                             } else if method.as_deref() == Some("session/update") {
                                 // Stream update. Translate + forward each
                                 // mapped event individually so downstream
                                 // select! loops see fine-grained events.
                                 for ev in translate_notification(&parsed) {
-                                    let _ = stream_tx.send(StreamItem::Mapped(ev));
+                                    // Progress/text notifications are lossy under
+                                    // extreme backpressure; bounding the channel
+                                    // prevents an idle pooled sidecar from growing
+                                    // memory without limit. Permission requests use
+                                    // awaited `send` above and are never dropped.
+                                    let _ = stream_tx
+                                        .try_send(StreamItem::Mapped(bounded_mapped_event(ev)));
                                 }
                             }
 
-                            events_r.lock().await.push(parsed);
+                            let retained = if trimmed.len() > MAX_RAW_EVENT_BYTES {
+                                json!({
+                                    "__truncated": true,
+                                    "method": method,
+                                    "bytes": trimmed.len(),
+                                })
+                            } else {
+                                parsed
+                            };
+                            push_bounded(
+                                &mut *events_r.lock().await,
+                                retained,
+                                RAW_EVENT_TAIL_CAPACITY,
+                            );
                         }
                     }
                     CommandEvent::Stderr(bytes) => {
-                        stderr_r
-                            .lock()
-                            .await
-                            .push(String::from_utf8_lossy(&bytes).into_owned());
+                        push_bounded(
+                            &mut *stderr_r.lock().await,
+                            truncate_utf8(
+                                String::from_utf8_lossy(&bytes).into_owned(),
+                                MAX_STDERR_ITEM_BYTES,
+                            ),
+                            STDERR_TAIL_CAPACITY,
+                        );
                     }
                     CommandEvent::Error(err) => {
-                        stderr_r.lock().await.push(format!("<error> {err}"));
+                        push_bounded(
+                            &mut *stderr_r.lock().await,
+                            truncate_utf8(format!("<error> {err}"), MAX_STDERR_ITEM_BYTES),
+                            STDERR_TAIL_CAPACITY,
+                        );
                     }
                     CommandEvent::Terminated(p) => {
-                        stderr_r
-                            .lock()
-                            .await
-                            .push(format!("<terminated> code={:?}", p.code));
-                        let _ = stream_tx.send(StreamItem::Terminated { code: p.code });
+                        push_bounded(
+                            &mut *stderr_r.lock().await,
+                            format!("<terminated> code={:?}", p.code),
+                            STDERR_TAIL_CAPACITY,
+                        );
+                        let _ = stream_tx.try_send(StreamItem::Terminated { code: p.code });
                         break;
                     }
                     _ => {}
@@ -676,7 +900,7 @@ impl AcpClient {
 
     /// Take the translated-stream receiver. Returns `None` on second call.
     /// Only one consumer is supported per client.
-    pub async fn take_stream(&self) -> Option<mpsc::UnboundedReceiver<StreamItem>> {
+    pub async fn take_stream(&self) -> Option<mpsc::Receiver<StreamItem>> {
         self.stream_rx.lock().await.take()
     }
 
@@ -685,7 +909,7 @@ impl AcpClient {
     /// 6c) when a pooled client crosses turn boundaries. Legacy one-shot
     /// callers (`acp_smoke_test`, `acp_turn_test`, `spawn_agent` consumers
     /// that immediately shutdown) don't need this.
-    pub async fn put_stream(&self, rx: mpsc::UnboundedReceiver<StreamItem>) {
+    pub async fn put_stream(&self, rx: mpsc::Receiver<StreamItem>) {
         *self.stream_rx.lock().await = Some(rx);
     }
 
@@ -760,11 +984,7 @@ impl AcpClient {
     /// `mcp_servers` is a JSON array; pass `json!([])` for none. Per Phase 0
     /// spike, SSE transport is not supported (`mcpCapabilities.sse: false`),
     /// so callers should filter out SSE entries upstream.
-    pub async fn new_session(
-        &self,
-        cwd: &Path,
-        mcp_servers: Value,
-    ) -> Result<String, String> {
+    pub async fn new_session(&self, cwd: &Path, mcp_servers: Value) -> Result<String, String> {
         let resp = self
             .request(
                 "session/new",
@@ -784,7 +1004,7 @@ impl AcpClient {
 
     /// Change the session mode. `mode_id` must be one of
     /// `auto` | `approve` | `smart_approve` | `chat` (ADR §6.2).
-    /// Octopal only uses `auto` and `chat`.
+    /// Octopal only uses `approve` and `chat` so policy checks cannot be bypassed.
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), String> {
         let resp = self
             .request(
@@ -872,9 +1092,8 @@ pub struct TurnResult {
 
 /// Fire `session/prompt` and drain the stream until the prompt resolves.
 ///
-/// The select loop is **biased toward the stream** so callers see UI
-/// updates before the final response — matters for "Writing response…"
-/// label + last char sequencing.
+/// The select loop is fair between the final response/timeout and stream
+/// updates so a sidecar flooding notifications cannot starve completion.
 /// Returning `Some(value)` from the callback for `TurnEvent::Permission`
 /// sends that value back to Goose immediately; deferring that response
 /// deadlocks `session/prompt` because Goose pauses the turn until the
@@ -887,7 +1106,7 @@ pub struct TurnResult {
 /// generating tokens the sidecar will happily try to stream back.
 pub async fn run_turn<F>(
     client: &AcpClient,
-    stream: &mut mpsc::UnboundedReceiver<StreamItem>,
+    stream: &mut mpsc::Receiver<StreamItem>,
     session_id: &str,
     prompt_text: &str,
     timeout: Duration,
@@ -907,28 +1126,6 @@ where
     tokio::pin!(prompt_fut);
     loop {
         tokio::select! {
-            biased;
-            item = stream.recv() => {
-                match item {
-                    Some(StreamItem::Mapped(ev)) => {
-                        let _ = on_event(TurnEvent::Mapped(ev));
-                    }
-                    Some(StreamItem::Permission(req)) => {
-                        if let Some(response) = on_event(TurnEvent::Permission(req.clone())) {
-                            client.respond_raw(req.request_id, response).await?;
-                        }
-                    }
-                    Some(StreamItem::Terminated { code }) => {
-                        return Err(format!(
-                            "sidecar terminated mid-prompt (code={:?})",
-                            code
-                        ));
-                    }
-                    None => {
-                        return Err("stream channel closed unexpectedly".into());
-                    }
-                }
-            }
             resp = &mut prompt_fut => {
                 let resp = resp?;
                 if let Some(err) = resp.get("error") {
@@ -941,6 +1138,33 @@ where
                     .unwrap_or("unknown")
                     .to_string();
                 return Ok(TurnResult { stop_reason });
+            }
+            item = stream.recv() => {
+                match item {
+                    Some(StreamItem::Mapped(ev)) => {
+                        let _ = on_event(TurnEvent::Mapped(ev));
+                    }
+                    Some(StreamItem::Permission(req)) => {
+                        if let Some(response) = on_event(TurnEvent::Permission(req.clone())) {
+                            client.respond_raw(req.request_id, response).await?;
+                        }
+                    }
+                    Some(StreamItem::MalformedPermission { request_id }) => {
+                        client.respond_raw(
+                            request_id,
+                            json!({ "outcome": { "outcome": "cancelled" } }),
+                        ).await?;
+                    }
+                    Some(StreamItem::Terminated { code }) => {
+                        return Err(format!(
+                            "sidecar terminated mid-prompt (code={:?})",
+                            code
+                        ));
+                    }
+                    None => {
+                        return Err("stream channel closed unexpectedly".into());
+                    }
+                }
             }
         }
     }
@@ -1223,7 +1447,7 @@ pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, Stri
         Duration::from_secs(GOOSE_PROMPT_TIMEOUT_SECS),
         |ev| match ev {
             TurnEvent::Mapped(MappedEvent::AssistantTextChunk { text }) => {
-                collected_text.push_str(&text);
+                let _ = append_bounded_text(&mut collected_text, &text, MAX_COLLECTED_TEXT_BYTES);
                 None
             }
             TurnEvent::Mapped(MappedEvent::AssistantThoughtChunk { text }) => {
@@ -1245,7 +1469,7 @@ pub async fn acp_turn_test(app: AppHandle, prompt: String) -> Result<Value, Stri
                     "permission requested: {} (call={})",
                     req.payload.tool_name, req.payload.tool_call_id
                 ));
-                Some(render_permission_response(&req.payload, None))
+                Some(render_permission_response(&req.payload, None, None, None))
             }
         },
     )
@@ -1302,11 +1526,9 @@ pub async fn preflight_cli_subscription(
     let app_data_root = dirs::home_dir()
         .ok_or_else(|| "home_dir not available".to_string())?
         .join(".octopal");
-    std::fs::create_dir_all(&app_data_root)
-        .map_err(|e| format!("mkdir .octopal: {e}"))?;
+    std::fs::create_dir_all(&app_data_root).map_err(|e| format!("mkdir .octopal: {e}"))?;
     let sandbox = app_data_root.join("auth-preflight");
-    std::fs::create_dir_all(&sandbox)
-        .map_err(|e| format!("mkdir auth-preflight: {e}"))?;
+    std::fs::create_dir_all(&sandbox).map_err(|e| format!("mkdir auth-preflight: {e}"))?;
 
     let mut cfg = GooseSpawnConfig {
         provider: goose_provider.clone(),
@@ -1429,7 +1651,7 @@ fn default_model_for_provider(
         // Canonical Anthropic API namespace. Claude subscription mode is
         // translated later by model_alias::resolve_for_goose_provider.
         "anthropic" => Some("claude-sonnet-4-6".to_string()),
-        "openai" => Some("gpt-5".to_string()),
+        "openai" => Some("gpt-5.6-sol".to_string()),
         "google" => Some("gemini-2.5-pro".to_string()),
         _ => manifest
             .get(provider)
@@ -1549,6 +1771,8 @@ fn choose_raw_model(
 fn render_permission_response(
     req: &PermissionRequest,
     perms: Option<&OctoPermissions>,
+    folder: Option<&Path>,
+    wiki_folder: Option<&Path>,
 ) -> Value {
     // Options in ACP look like `[{optionId:"allow-once", kind:"allow_once"}, {optionId:"reject-once", kind:"reject_once"}, ...]`.
     // We pick by `kind`. Order: whether the agent's per-tool toggle allows
@@ -1566,23 +1790,34 @@ fn render_permission_response(
     };
     let allow_id = find_kind("allow_once");
     let reject_id = find_kind("reject_once");
-    let name = req.tool_name.to_lowercase();
     let allow = match perms {
-        None => true, // no explicit config = full trust (matches legacy)
+        None => false,
         Some(p) => {
-            let is_shell = name.contains("shell") || name.contains("bash");
-            let is_write = name.contains("write")
-                || name.contains("edit")
-                || name.contains("text_editor");
-            let is_fetch = name.contains("fetch") || name.contains("http");
-            if is_shell {
-                p.bash.unwrap_or(true)
-            } else if is_write {
-                p.file_write.unwrap_or(true)
-            } else if is_fetch {
-                p.network.unwrap_or(true)
-            } else {
-                true // read-only/unknown: allow (mode=chat locks these anyway)
+            let file_write = p.file_write.unwrap_or(false);
+            let bash = p.bash.unwrap_or(false);
+            let network = p.network.unwrap_or(false);
+            match normalize_tool(&req.tool_name, req.raw_input.as_ref()) {
+                NormalizedTool::Bash => bash,
+                NormalizedTool::Write | NormalizedTool::Edit => {
+                    let wiki_write_is_markdown =
+                        extract_tool_path(req).map(Path::new).is_none_or(|path| {
+                            wiki_folder.is_none_or(|wiki| {
+                                wiki_relative_tool_path(wiki, &path.to_string_lossy()).is_none_or(
+                                    |_| path.extension().and_then(|ext| ext.to_str()) == Some("md"),
+                                )
+                            })
+                        });
+                    file_write
+                        && wiki_write_is_markdown
+                        && tool_path_allowed(req, p, folder, wiki_folder)
+                }
+                NormalizedTool::WebFetch => network,
+                NormalizedTool::Read | NormalizedTool::Grep | NormalizedTool::Glob => {
+                    tool_path_allowed(req, p, folder, wiki_folder)
+                }
+                // Unknown extensions can combine file, shell, and network
+                // effects, so a boolean policy cannot safely classify them.
+                NormalizedTool::Passthrough(_) => false,
             }
         }
     };
@@ -1612,8 +1847,42 @@ fn render_permission_response(
 pub async fn run_agent_turn(
     app: &AppHandle,
     state: &State<'_, ManagedState>,
-    params: RunAgentTurnParams,
+    mut params: RunAgentTurnParams,
 ) -> Result<SendResult, String> {
+    // Defense in depth: this function is currently called from send_message,
+    // but it owns child cwd and persistence and therefore re-establishes the
+    // filesystem boundary itself. Keep only canonical paths after this point.
+    let workspace = crate::commands::path_guard::revalidate_canonical_registered_folder(
+        state,
+        Path::new(&params.folder_path),
+    )?;
+    let octo = crate::commands::octo::validate_agent_config_for_workspace(
+        state,
+        Path::new(&params.octo_path),
+        &workspace,
+    )?;
+    let workspace_id = {
+        let app_state = state.app_state.lock().map_err(|e| e.to_string())?;
+        app_state.workspaces.iter().find_map(|candidate| {
+            candidate
+                .folders
+                .iter()
+                .any(|folder| std::fs::canonicalize(folder).ok().as_ref() == Some(&workspace))
+                .then(|| candidate.id.clone())
+        })
+    };
+    let wiki_folder = if let Some(workspace_id) = workspace_id {
+        crate::commands::path_guard::safe_segment(&workspace_id, "workspace id")?;
+        let relative = format!("wiki/{workspace_id}");
+        let path = crate::commands::path_guard::write_target(&state.state_dir, &relative)?;
+        std::fs::create_dir_all(&path).map_err(|e| format!("create wiki directory: {e}"))?;
+        Some(std::fs::canonicalize(path).map_err(|e| format!("resolve wiki directory: {e}"))?)
+    } else {
+        None
+    };
+    params.folder_path = workspace.to_string_lossy().into_owned();
+    params.octo_path = octo.to_string_lossy().into_owned();
+
     // `provider` is the **UI-facing** provider id (what the user picks in
     // Settings → Providers, what the keyring is keyed on). Distinct from
     // `goose_provider` below, which is the **implementation** we hand to
@@ -1684,9 +1953,9 @@ pub async fn run_agent_turn(
                      \"{provider}\" in this build. Switch to API key mode \
                      in Settings → Providers, or select a supported provider."
                 ),
-                crate::state::AuthMode::ApiKey => format!(
-                    "Provider \"{provider}\" is not supported in this build."
-                ),
+                crate::state::AuthMode::ApiKey => {
+                    format!("Provider \"{provider}\" is not supported in this build.")
+                }
             };
             return Ok(SendResult {
                 ok: false,
@@ -1706,14 +1975,11 @@ pub async fn run_agent_turn(
     let app_data_root = dirs::home_dir()
         .ok_or_else(|| "home_dir not available".to_string())?
         .join(".octopal");
-    std::fs::create_dir_all(&app_data_root)
-        .map_err(|e| format!("mkdir .octopal: {e}"))?;
+    std::fs::create_dir_all(&app_data_root).map_err(|e| format!("mkdir .octopal: {e}"))?;
     let xdg = GooseXdgRoots::under(&app_data_root);
 
-    let model = crate::commands::model_alias::resolve_for_goose_provider(
-        &raw_model,
-        &goose_provider,
-    );
+    let model =
+        crate::commands::model_alias::resolve_for_goose_provider(&raw_model, &goose_provider);
 
     // Phase 4 invariant (scope §4.1): keyring is read **only on MISS
     // path**. HIT path reuses a pooled sidecar that already has the key
@@ -1753,7 +2019,6 @@ pub async fn run_agent_turn(
         &provider,
         auth_mode_segment,
         &model,
-        expected_hash,
     );
 
     // Emit the "Thinking…" breadcrumb up front — matches legacy's line 655.
@@ -1786,14 +2051,14 @@ pub async fn run_agent_turn(
     // below — `CliSubscription` skips it and spawns with `api_key=None`,
     // which `build_goose_env` correctly omits from env.
     let pool = state.goose_acp_pool.clone();
+    let provider_epoch = pool.provider_epoch(&provider);
     let fill_api_key = |cfg: &mut GooseSpawnConfig, ui_provider: &str| -> Result<(), String> {
-        let key = crate::commands::api_keys::load_api_key(ui_provider)?
-            .ok_or_else(|| {
-                format!(
-                    "No API key configured for provider \"{ui_provider}\". \
+        let key = crate::commands::api_keys::load_api_key(ui_provider)?.ok_or_else(|| {
+            format!(
+                "No API key configured for provider \"{ui_provider}\". \
                      Add one in Settings → Providers."
-                )
-            })?;
+            )
+        })?;
         if cfg.provider == "ollama" {
             cfg.ollama_host = Some(key.trim_end_matches('/').to_string());
         } else {
@@ -1809,15 +2074,13 @@ pub async fn run_agent_turn(
     // env as CLAUDE_CODE_COMMAND / CODEX_COMMAND / GEMINI_CLI_COMMAND
     // via build_goose_env.
     let fill_cli_command = |cfg: &mut GooseSpawnConfig, binary: &str| -> Result<(), String> {
-        let abs = crate::commands::binary_discovery::discover_binary(binary).ok_or_else(
-            || {
-                format!(
-                    "Could not find `{binary}` on PATH or known install dirs \
+        let abs = crate::commands::binary_discovery::discover_binary(binary).ok_or_else(|| {
+            format!(
+                "Could not find `{binary}` on PATH or known install dirs \
                      (nvm, asdf, homebrew, ~/.local/bin, ~/.cargo/bin). \
                      Install it (or use API key mode in Settings → Providers)."
-                )
-            },
-        )?;
+            )
+        })?;
         eprintln!(
             "[binary_discovery] discovered {binary} at {}",
             abs.display()
@@ -1949,10 +2212,12 @@ pub async fn run_agent_turn(
     let folder_cb = params.folder_path.clone();
     let agent_cb = params.agent_name.clone();
     let run_id_cb = params.run_id.clone();
+    let wiki_cb = wiki_folder.clone();
     let backup_tracker = state.backup_tracker.clone();
     let file_lock_manager = state.file_lock_manager.clone();
 
     let mut collected_text = String::new();
+    let mut response_truncated = false;
     let perms_for_cb = params.permissions.clone();
 
     let turn_outcome = run_turn(
@@ -1968,16 +2233,31 @@ pub async fn run_agent_turn(
                 // the UI so the bubble grows in real time instead of snapping
                 // to the final value only on turn end. Legacy's UI had no
                 // per-chunk event, so this is a strict UX upgrade.
-                let _ = app_for_cb.emit(
-                    "octo:textChunk",
-                    json!({
-                        "runId": run_id_cb,
-                        "delta": text,
-                        "folderPath": folder_cb,
-                        "agentName": agent_cb,
-                    }),
-                );
-                collected_text.push_str(&text);
+                let (delta, truncated) =
+                    append_bounded_text(&mut collected_text, &text, MAX_COLLECTED_TEXT_BYTES);
+                if !delta.is_empty() {
+                    let _ = app_for_cb.emit(
+                        "octo:textChunk",
+                        json!({
+                            "runId": run_id_cb,
+                            "delta": delta,
+                            "folderPath": folder_cb,
+                            "agentName": agent_cb,
+                        }),
+                    );
+                }
+                if truncated && !response_truncated {
+                    response_truncated = true;
+                    let _ = app_for_cb.emit(
+                        "octo:activity",
+                        json!({
+                            "runId": run_id_cb,
+                            "text": "Response reached the 8 MiB safety limit and was truncated.",
+                            "folderPath": folder_cb,
+                            "agentName": agent_cb,
+                        }),
+                    );
+                }
                 None
             }
             TurnEvent::Mapped(MappedEvent::AssistantThoughtChunk { .. }) => {
@@ -2002,17 +2282,15 @@ pub async fn run_agent_turn(
                 let mut backup_id = None;
                 let mut conflict_with = None;
                 if matches!(tool.as_str(), "Write" | "Edit") && !target.is_empty() {
-                    let abs_path = if Path::new(&target).is_absolute() {
-                        std::path::PathBuf::from(&target)
-                    } else {
-                        Path::new(&folder_cb).join(&target)
-                    };
-                    if let Err(existing) = file_lock_manager.try_acquire(
-                        abs_path.clone(),
-                        &run_id_cb,
-                        &agent_cb,
+                    if let Ok(lock_path) = crate::commands::path_guard::normalized_contained_target(
+                        Path::new(&folder_cb),
+                        Path::new(&target),
                     ) {
-                        conflict_with = Some(existing);
+                        if let Err(existing) =
+                            file_lock_manager.try_acquire(lock_path, &run_id_cb, &agent_cb)
+                        {
+                            conflict_with = Some(existing);
+                        }
                     }
                     backup_id = backup_tracker.snapshot(
                         Path::new(&folder_cb),
@@ -2043,9 +2321,12 @@ pub async fn run_agent_turn(
                 let _ = app_for_cb.emit("activity:log", Value::Object(payload));
                 None
             }
-            TurnEvent::Permission(req) => {
-                Some(render_permission_response(&req.payload, perms_for_cb.as_ref()))
-            }
+            TurnEvent::Permission(req) => Some(render_permission_response(
+                &req.payload,
+                perms_for_cb.as_ref(),
+                Some(Path::new(&folder_cb)),
+                wiki_cb.as_deref(),
+            )),
         },
     )
     .await;
@@ -2069,7 +2350,10 @@ pub async fn run_agent_turn(
     // (catastrophic = full Stage 6a cold-spawn regression). On shutdown
     // the whole sqlite file tears down with the XDG sandbox.
     if let Err(e) = client.close_session(&session_id).await {
-        eprintln!("[goose_acp_pool] close_session soft-fail sid={} err={}", session_id, e);
+        eprintln!(
+            "[goose_acp_pool] close_session soft-fail sid={} err={}",
+            session_id, e
+        );
     }
 
     // Decide: return to pool (reuse next turn) vs shutdown (kill now).
@@ -2098,18 +2382,26 @@ pub async fn run_agent_turn(
             provider: provider.clone(),
             key: pool_key.clone(),
         };
-        // put() returns collision leftover — shouldn't happen in the
-        // single-take-per-turn path, but the #[must_use] forces us to
-        // handle it. If it ever fires, shutdown the old one so the newer
-        // client wins.
-        if let Some(leftover) = pool.put(pool_key.clone(), entry) {
-            eprintln!(
-                "[goose_acp_pool] put collision key={} evicting older pid={}",
-                pool_key, leftover.pid
-            );
-            leftover.client.shutdown().await;
+        match pool.put_if_provider_epoch(&provider, provider_epoch, pool_key.clone(), entry) {
+            Ok(evicted) => {
+                for leftover in evicted {
+                    eprintln!(
+                        "[goose_acp_pool] put eviction key={} pid={}",
+                        leftover.key, leftover.pid
+                    );
+                    leftover.client.shutdown().await;
+                }
+                eprintln!("[goose_acp_pool] put key={} pid={}", pool_key, pid);
+            }
+            Err(stale) => {
+                let stale = *stale;
+                eprintln!(
+                    "[goose_acp_pool] kill stale-credentials key={} pid={}",
+                    pool_key, stale.pid
+                );
+                stale.client.shutdown().await;
+            }
         }
-        eprintln!("[goose_acp_pool] put key={} pid={}", pool_key, pid);
     } else {
         eprintln!(
             "[goose_acp_pool] kill key={} pid={} interrupted={} turn_ok={}",
@@ -2147,61 +2439,64 @@ pub async fn run_agent_turn(
 
     // ── Persist: .octo history[] + room-history.json ────────────────
     // Byte-identical to legacy's write path (agent.rs:1078-1146).
-    let mut octo: Value = {
-        let content = std::fs::read_to_string(&params.octo_path)
-            .map_err(|e| format!("read octo: {e}"))?;
-        serde_json::from_str(&content).map_err(|e| format!("parse octo: {e}"))?
-    };
-    if let Some(hist) = octo.get_mut("history").and_then(|h| h.as_array_mut()) {
-        let now_ms = chrono::Utc::now().timestamp_millis() as f64;
-        hist.push(json!({
-            "role": "user",
-            "text": params.user_prompt,
-            "ts": params.user_ts,
-            "roomTs": params.user_ts,
-        }));
-        hist.push(json!({
-            "role": "assistant",
-            "text": output,
-            "ts": now_ms,
-            "roomTs": now_ms,
-        }));
-    }
-    std::fs::write(
-        &params.octo_path,
-        serde_json::to_string_pretty(&octo).unwrap(),
-    )
-    .map_err(|e| format!("write octo: {e}"))?;
+    let octo_path = crate::commands::octo::validate_agent_config_for_workspace(
+        state,
+        Path::new(&params.octo_path),
+        &workspace,
+    )?;
+    crate::commands::atomic_file::with_path_lock(&octo_path, || {
+        let content = std::fs::read_to_string(&octo_path).map_err(|e| format!("read octo: {e}"))?;
+        let mut octo: Value =
+            serde_json::from_str(&content).map_err(|e| format!("parse octo: {e}"))?;
+        if let Some(hist) = octo.get_mut("history").and_then(|h| h.as_array_mut()) {
+            let now_ms = chrono::Utc::now().timestamp_millis() as f64;
+            hist.push(json!({
+                "role": "user",
+                "text": params.user_prompt,
+                "ts": params.user_ts,
+                "roomTs": params.user_ts,
+            }));
+            hist.push(json!({
+                "role": "assistant",
+                "text": output,
+                "ts": now_ms,
+                "roomTs": now_ms,
+            }));
+        }
+        crate::commands::atomic_file::atomic_write_json(&octo_path, &octo)
+            .map_err(|e| format!("write octo: {e}"))
+    })?;
 
-    let room_history_path = Path::new(&params.folder_path)
-        .join(".octopal")
-        .join("room-history.json");
-    std::fs::create_dir_all(room_history_path.parent().unwrap()).ok();
-    crate::commands::folder::maybe_rotate_room_history(&room_history_path);
-    let mut room_history: Vec<Value> = if room_history_path.exists() {
-        std::fs::read_to_string(&room_history_path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_default()
-    } else {
-        vec![]
-    };
-    let entry_id = params
-        .pending_id
-        .clone()
-        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-    room_history.push(json!({
-        "id": entry_id,
-        "agentName": params.agent_name,
-        "text": output,
-        "ts": chrono::Utc::now().timestamp_millis() as f64,
-        "usage": serde_json::to_value(&usage).unwrap_or_default(),
-    }));
-    std::fs::write(
-        &room_history_path,
-        serde_json::to_string_pretty(&room_history).unwrap(),
-    )
-    .ok();
+    let room_history_path =
+        crate::commands::path_guard::write_target(&workspace, ".octopal/room-history.json")?;
+    let room_history_parent = room_history_path
+        .parent()
+        .ok_or_else(|| "room history has no parent".to_string())?;
+    std::fs::create_dir_all(room_history_parent)
+        .map_err(|e| format!("create room history directory: {e}"))?;
+    crate::commands::atomic_file::with_path_lock(&room_history_path, || {
+        crate::commands::folder::maybe_rotate_room_history(&room_history_path);
+        let mut room_history: Vec<Value> = if room_history_path.exists() {
+            let content = std::fs::read_to_string(&room_history_path)
+                .map_err(|e| format!("read room history: {e}"))?;
+            serde_json::from_str(&content).unwrap_or_default()
+        } else {
+            vec![]
+        };
+        let entry_id = params
+            .pending_id
+            .clone()
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        room_history.push(json!({
+            "id": entry_id,
+            "agentName": params.agent_name,
+            "text": output,
+            "ts": chrono::Utc::now().timestamp_millis() as f64,
+            "usage": serde_json::to_value(&usage).unwrap_or_default(),
+        }));
+        crate::commands::atomic_file::atomic_write_json(&room_history_path, &room_history)
+            .map_err(|e| format!("write room history: {e}"))
+    })?;
 
     Ok(SendResult {
         ok: true,
@@ -2230,7 +2525,7 @@ mod tests {
             },
             "openai": {
                 "displayName": "OpenAI",
-                "models": ["gpt-5.4", "gpt-5"],
+                "models": ["gpt-5.6-sol", "gpt-5.4", "gpt-5"],
                 "authMethods": []
             },
             "google": {
@@ -2253,15 +2548,10 @@ mod tests {
             provider: Some("openai".to_string()),
             model: None,
         };
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "anthropic",
-            "claude-sonnet-4-6",
-            "",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "anthropic", "claude-sonnet-4-6", "", &manifest());
         assert_eq!(provider, "openai");
-        assert_eq!(model, "gpt-5");
+        assert_eq!(model, "gpt-5.6-sol");
     }
 
     #[test]
@@ -2284,13 +2574,8 @@ mod tests {
     #[test]
     fn choose_raw_model_rejects_caller_claude_alias_for_openai_default() {
         let binding = crate::commands::agent_config::AgentBinding::default();
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "openai",
-            "gpt-5.4",
-            "opus",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "openai", "gpt-5.4", "opus", &manifest());
         assert_eq!(provider, "openai");
         assert_eq!(model, "gpt-5.4");
     }
@@ -2298,15 +2583,10 @@ mod tests {
     #[test]
     fn choose_raw_model_repairs_stale_openai_workspace_model() {
         let binding = crate::commands::agent_config::AgentBinding::default();
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "openai",
-            "claude-sonnet-4-6",
-            "",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "openai", "claude-sonnet-4-6", "", &manifest());
         assert_eq!(provider, "openai");
-        assert_eq!(model, "gpt-5");
+        assert_eq!(model, "gpt-5.6-sol");
     }
 
     #[test]
@@ -2315,27 +2595,16 @@ mod tests {
             provider: Some("openai".to_string()),
             model: Some("opus".to_string()),
         };
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "openai",
-            "gpt-5.4",
-            "",
-            &manifest(),
-        );
+        let (provider, model) = choose_raw_model(&binding, "openai", "gpt-5.4", "", &manifest());
         assert_eq!(provider, "openai");
-        assert_eq!(model, "gpt-5");
+        assert_eq!(model, "gpt-5.6-sol");
     }
 
     #[test]
     fn choose_raw_model_ollama_keeps_workspace_model_and_ignores_caller_alias() {
         let binding = crate::commands::agent_config::AgentBinding::default();
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "ollama",
-            "qwen3.5:27b",
-            "opus",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "ollama", "qwen3.5:27b", "opus", &manifest());
         assert_eq!(provider, "ollama");
         assert_eq!(model, "qwen3.5:27b");
     }
@@ -2363,13 +2632,8 @@ mod tests {
             provider: Some("ollama".to_string()),
             model: None,
         };
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "anthropic",
-            "claude-sonnet-4-6",
-            "",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "anthropic", "claude-sonnet-4-6", "", &manifest());
         assert_eq!(provider, "ollama");
         assert_eq!(model, "");
     }
@@ -2382,8 +2646,8 @@ mod tests {
         )
         .unwrap();
         assert!(message.contains("Finish that sign-in"));
-        let timeout = friendly_cli_auth_error("openai", "session/prompt: timeout after 120s")
-            .unwrap();
+        let timeout =
+            friendly_cli_auth_error("openai", "session/prompt: timeout after 120s").unwrap();
         assert!(timeout.contains("Finish that sign-in"));
         assert!(friendly_cli_auth_error("anthropic", "oauth").is_none());
     }
@@ -2394,13 +2658,8 @@ mod tests {
             provider: None,
             model: Some("claude-haiku-4-5-20251001".to_string()),
         };
-        let (provider, model) = choose_raw_model(
-            &binding,
-            "anthropic",
-            "claude-sonnet-4-6",
-            "",
-            &manifest(),
-        );
+        let (provider, model) =
+            choose_raw_model(&binding, "anthropic", "claude-sonnet-4-6", "", &manifest());
         assert_eq!(provider, "anthropic");
         assert_eq!(model, "claude-haiku-4-5-20251001");
     }
@@ -2419,9 +2678,18 @@ mod tests {
             cli_command: None,
         };
         let env = build_goose_env(&cfg);
-        assert_eq!(env.get("GOOSE_PROVIDER").map(|s| s.as_str()), Some("anthropic"));
-        assert_eq!(env.get("GOOSE_MODEL").map(|s| s.as_str()), Some("claude-sonnet-4-6"));
-        assert_eq!(env.get("ANTHROPIC_API_KEY").map(|s| s.as_str()), Some("sk-ant-test"));
+        assert_eq!(
+            env.get("GOOSE_PROVIDER").map(|s| s.as_str()),
+            Some("anthropic")
+        );
+        assert_eq!(
+            env.get("GOOSE_MODEL").map(|s| s.as_str()),
+            Some("claude-sonnet-4-6")
+        );
+        assert_eq!(
+            env.get("ANTHROPIC_API_KEY").map(|s| s.as_str()),
+            Some("sk-ant-test")
+        );
         assert!(env.get("XDG_CONFIG_HOME").is_some());
         assert!(env.get("XDG_DATA_HOME").is_some());
         assert!(env.get("XDG_STATE_HOME").is_some());
@@ -2484,14 +2752,11 @@ mod tests {
     }
 
     #[test]
-    fn mode_mapping_any_permission_on_stays_auto() {
-        // Even a single enabled toggle keeps the agent in "auto" — the
-        // fine-grained resolver (stage 7) handles the rest.
+    fn mode_mapping_partial_permissions_require_approval_events() {
         for (fw, bash, net) in [
             (true, false, false),
             (false, true, false),
             (false, false, true),
-            (true, true, true),
         ] {
             let perms = OctoPermissions {
                 file_write: Some(fw),
@@ -2502,24 +2767,43 @@ mod tests {
             };
             assert_eq!(
                 permissions_to_mode_id(Some(&perms)),
-                "auto",
+                "approve",
                 "fw={fw} bash={bash} net={net}"
             );
         }
     }
 
     #[test]
-    fn mode_mapping_none_defaults_to_auto() {
-        // Missing OctoPermissions = "no explicit config" = full trust,
-        // mirroring v0.1.42 behavior.
-        assert_eq!(permissions_to_mode_id(None), "auto");
+    fn mode_mapping_full_trust_still_requires_policy_checks() {
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(true),
+            network: Some(true),
+            allow_paths: None,
+            deny_paths: None,
+        };
+        assert_eq!(permissions_to_mode_id(Some(&perms)), "approve");
     }
 
     #[test]
-    fn mode_mapping_partial_defaults_each_field_to_true() {
-        // `file_write: None` means "not set" → default true. So `bash=false,
-        // network=false, file_write=None` → file_write=true effectively →
-        // "auto", NOT "chat".
+    fn mode_mapping_path_filters_require_approval_events() {
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(true),
+            network: Some(true),
+            allow_paths: Some(vec!["src/**".into()]),
+            deny_paths: None,
+        };
+        assert_eq!(permissions_to_mode_id(Some(&perms)), "approve");
+    }
+
+    #[test]
+    fn mode_mapping_none_is_fail_closed() {
+        assert_eq!(permissions_to_mode_id(None), "chat");
+    }
+
+    #[test]
+    fn mode_mapping_missing_fields_default_to_false() {
         let perms = OctoPermissions {
             file_write: None,
             bash: Some(false),
@@ -2527,7 +2811,214 @@ mod tests {
             allow_paths: None,
             deny_paths: None,
         };
-        assert_eq!(permissions_to_mode_id(Some(&perms)), "auto");
+        assert_eq!(permissions_to_mode_id(Some(&perms)), "chat");
+    }
+
+    fn permission_request(tool_name: &str, raw_input: Value) -> PermissionRequest {
+        PermissionRequest {
+            tool_call_id: "call-1".into(),
+            tool_name: tool_name.into(),
+            options: json!([
+                { "optionId": "allow", "kind": "allow_once" },
+                { "optionId": "reject", "kind": "reject_once" }
+            ]),
+            raw_input: Some(raw_input),
+        }
+    }
+
+    fn selected_permission(response: &Value) -> Option<&str> {
+        response
+            .get("outcome")
+            .and_then(|outcome| outcome.get("optionId"))
+            .and_then(Value::as_str)
+    }
+
+    #[test]
+    fn permission_resolver_rejects_ungranted_shell() {
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(false),
+            network: Some(false),
+            allow_paths: None,
+            deny_paths: None,
+        };
+        let req = permission_request("developer__shell", json!({ "command": "pwd" }));
+        let response = render_permission_response(&req, Some(&perms), None, None);
+        assert_eq!(selected_permission(&response), Some("reject"));
+    }
+
+    #[test]
+    fn permission_resolver_enforces_workspace_path_globs_and_traversal() {
+        let root =
+            std::env::temp_dir().join(format!("octopal-permission-paths-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(root.join("src/secrets")).unwrap();
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(false),
+            network: Some(false),
+            allow_paths: Some(vec!["src/**".into()]),
+            deny_paths: Some(vec!["src/secrets/**".into()]),
+        };
+
+        let allowed = permission_request(
+            "developer__text_editor",
+            json!({ "command": "create", "path": "src/new.rs" }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &allowed,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("allow")
+        );
+
+        let denied = permission_request(
+            "developer__text_editor",
+            json!({ "command": "create", "path": "src/secrets/key.txt" }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &denied,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("reject")
+        );
+
+        let escaped = permission_request(
+            "developer__text_editor",
+            json!({ "command": "create", "path": "../outside.txt" }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &escaped,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("reject")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn permission_resolver_rejects_invalid_deny_globs() {
+        let root =
+            std::env::temp_dir().join(format!("octopal-invalid-deny-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(false),
+            network: Some(false),
+            allow_paths: None,
+            deny_paths: Some(vec!["[unterminated".into()]),
+        };
+        let request = permission_request(
+            "developer__text_editor",
+            json!({ "command": "create", "path": "safe.txt" }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &request,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("reject")
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn path_glob_case_sensitivity_matches_platform_filesystem_defaults() {
+        let matched = matches_path_pattern(".env", ".ENV");
+        if cfg!(windows) || cfg!(target_os = "macos") {
+            assert!(matched);
+        } else {
+            assert!(!matched);
+        }
+    }
+
+    #[test]
+    fn collected_text_limit_preserves_utf8_boundaries() {
+        let mut output = "abc".to_string();
+        let (accepted, truncated) = append_bounded_text(&mut output, "🐙tail", 7);
+        assert_eq!(accepted, "🐙");
+        assert!(truncated);
+        assert_eq!(output, "abc🐙");
+    }
+
+    #[test]
+    fn permission_resolver_rejects_unknown_tools_for_partial_grants() {
+        let perms = OctoPermissions {
+            file_write: Some(true),
+            bash: Some(false),
+            network: Some(true),
+            allow_paths: None,
+            deny_paths: None,
+        };
+        let req = permission_request("unreviewed__extension", json!({}));
+        let response = render_permission_response(&req, Some(&perms), None, None);
+        assert_eq!(selected_permission(&response), Some("reject"));
+    }
+
+    #[test]
+    fn permission_resolver_always_contains_file_reads_to_workspace() {
+        let root =
+            std::env::temp_dir().join(format!("octopal-permission-root-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("inside.txt"), "ok").unwrap();
+        let outside = root.parent().unwrap().join(format!(
+            "octopal-permission-outside-{}",
+            uuid::Uuid::new_v4()
+        ));
+        std::fs::write(&outside, "secret").unwrap();
+        let perms = OctoPermissions {
+            file_write: Some(false),
+            bash: Some(false),
+            network: Some(true),
+            allow_paths: None,
+            deny_paths: None,
+        };
+
+        let inside = permission_request(
+            "developer__read_file",
+            json!({
+                "path": "inside.txt"
+            }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &inside,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("allow")
+        );
+
+        let escaped = permission_request(
+            "developer__read_file",
+            json!({
+                "path": outside.to_string_lossy()
+            }),
+        );
+        assert_eq!(
+            selected_permission(&render_permission_response(
+                &escaped,
+                Some(&perms),
+                Some(&root),
+                None,
+            )),
+            Some("reject")
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+        let _ = std::fs::remove_file(outside);
     }
 
     // ── Phase 5a Commit C-1: provider_api_key_env arm table ───────────
@@ -2545,16 +3036,10 @@ mod tests {
 
     #[test]
     fn provider_api_key_env_api_key_providers_return_env_name() {
-        assert_eq!(
-            provider_api_key_env("anthropic"),
-            Some("ANTHROPIC_API_KEY")
-        );
+        assert_eq!(provider_api_key_env("anthropic"), Some("ANTHROPIC_API_KEY"));
         assert_eq!(provider_api_key_env("openai"), Some("OPENAI_API_KEY"));
         assert_eq!(provider_api_key_env("google"), Some("GOOGLE_API_KEY"));
-        assert_eq!(
-            provider_api_key_env("databricks"),
-            Some("DATABRICKS_TOKEN")
-        );
+        assert_eq!(provider_api_key_env("databricks"), Some("DATABRICKS_TOKEN"));
     }
 
     #[test]
@@ -2699,8 +3184,7 @@ mod tests {
             .get("PATH")
             .expect("PATH must be set on child env")
             .as_str();
-        let parent_path =
-            std::env::var("PATH").expect("test harness must have PATH set");
+        let parent_path = std::env::var("PATH").expect("test harness must have PATH set");
         for dir in parent_path.split(':').filter(|s| !s.is_empty()) {
             assert!(
                 aug_path.contains(dir),
@@ -2719,8 +3203,7 @@ mod tests {
         // skips PATH lookup. This is the workaround for macOS
         // LaunchServices PATH stripping (§1.1).
         let tmp = std::env::temp_dir().join("octopal-env-claude-cmd-test");
-        let claude_path =
-            std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/claude");
+        let claude_path = std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/claude");
         let cfg = GooseSpawnConfig {
             provider: "claude-code".into(),
             model: "claude-sonnet-4-6".into(),
@@ -2750,8 +3233,7 @@ mod tests {
         // (which doesn't exist) or `chatgpt_codex` (current OAuth-only
         // provider). build_goose_env routes `codex` → CODEX_COMMAND.
         let tmp = std::env::temp_dir().join("octopal-env-codex-cmd-test");
-        let codex_path =
-            std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/codex");
+        let codex_path = std::path::PathBuf::from("/Users/test/.nvm/versions/node/v22/bin/codex");
         let cfg = GooseSpawnConfig {
             provider: "codex".into(),
             model: "gpt-5".into(),
@@ -2889,7 +3371,10 @@ mod tests {
                 ("ANTHROPIC_API_KEY".to_string(), "bad-key".to_string()),
                 ("OpenAI_Api_Key".to_string(), "also-bad".to_string()),
                 ("GOOSE_PROVIDER".to_string(), "anthropic".to_string()),
-                ("CLAUDE_AGENT_ACP_COMMAND".to_string(), "/tmp/nope".to_string()),
+                (
+                    "CLAUDE_AGENT_ACP_COMMAND".to_string(),
+                    "/tmp/nope".to_string(),
+                ),
                 ("HOME".to_string(), "/Users/example".to_string()),
                 ("PATH".to_string(), "/usr/bin".to_string()),
             ],

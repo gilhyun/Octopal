@@ -14,6 +14,23 @@ interface EditAgentModalProps {
   onDeleted: () => void
 }
 
+const MAX_AGENT_NAME_LENGTH = 80
+
+export type AgentNameValidationError = 'required' | 'invalid' | 'tooLong' | null
+
+/**
+ * Mirror the safe, single-path-component character set used when creating an
+ * agent. This is UX validation only; the IPC command remains the security
+ * boundary and must perform the same validation independently.
+ */
+export function validateAgentName(name: string): AgentNameValidationError {
+  const trimmed = name.trim()
+  if (!trimmed) return 'required'
+  if (!/^[\p{L}\p{N}_ -]+$/u.test(trimmed)) return 'invalid'
+  if (Array.from(trimmed).length > MAX_AGENT_NAME_LENGTH) return 'tooLong'
+  return null
+}
+
 function formatMcpJson(mcpServers: McpServersConfig | null | undefined): string {
   if (!mcpServers || Object.keys(mcpServers).length === 0) return ''
   return JSON.stringify(mcpServers, null, 2)
@@ -26,6 +43,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [role, setRole] = useState(agent.role)
   const [prompt, setPrompt] = useState('')
   const [promptLoading, setPromptLoading] = useState(true)
+  const [promptLoadError, setPromptLoadError] = useState<string | null>(null)
   const [icon, setIcon] = useState(agent.icon || '')
   const [color, setColor] = useState(agent.color || '')
   const [fileWrite, setFileWrite] = useState(agent.permissions?.fileWrite === true)
@@ -36,6 +54,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
   const [mcpJson, setMcpJson] = useState(formatMcpJson(agent.mcpServers))
   const [mcpError, setMcpError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [saving, setSaving] = useState(false)
   const [showMcpValidation, setShowMcpValidation] = useState(false)
   const [pendingMcpServers, setPendingMcpServers] = useState<McpServersConfig | null>(null)
   // Phase 6 §5.1 — per-agent provider/model. `undefined` ⇒ inherit
@@ -46,15 +65,37 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
 
   // Load prompt.md content on mount
   useEffect(() => {
+    let cancelled = false
+    setPrompt('')
+    setPromptLoading(true)
+    setPromptLoadError(null)
     window.api.readAgentPrompt(agent.path).then((res) => {
-      if (res.ok) setPrompt(res.path)
+      if (cancelled) return
+      if (res.ok) {
+        setPrompt(res.path)
+      } else {
+        setPromptLoadError(res.error)
+      }
       setPromptLoading(false)
-    }).catch(() => setPromptLoading(false))
+    }).catch((e: unknown) => {
+      if (cancelled) return
+      setPromptLoadError(e instanceof Error ? e.message : String(e))
+      setPromptLoading(false)
+    })
+    return () => {
+      cancelled = true
+    }
   }, [agent.path])
 
   const save = async () => {
     setError(null)
     setMcpError(null)
+
+    const nameValidationError = validateAgentName(name)
+    if (nameValidationError) {
+      setTab('basic')
+      return
+    }
 
     // Parse & validate MCP config
     let mcpServers: McpServersConfig | null = null
@@ -81,36 +122,46 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
         .map((s) => s.trim())
         .filter(Boolean),
     }
-    const res = await window.api.updateOcto({
-      octoPath: agent.path,
-      name,
-      role,
-      prompt,
-      icon,
-      color,
-      permissions,
-      mcpServers,
-      // Phase 6 — 3-state forwarding:
-      //   undefined → don't touch (inherits previous value if any)
-      //   ""        → REMOVE the field (user clicked "Use workspace default")
-      //   "<value>" → set
-      // Local state uses `undefined` for inherit, so we map to "" on
-      // the wire when the user previously had a value but cleared it.
-      // For agents that never had the field, `agent.provider` is
-      // already undefined and we keep it that way (no wire write).
-      provider: provider === undefined && agent.provider !== undefined ? '' : provider,
-      model: model === undefined && agent.model !== undefined ? '' : model,
-    })
-    if (res.ok) {
-      // If MCP servers were configured, run validation
-      if (mcpServers && Object.keys(mcpServers).length > 0) {
-        setPendingMcpServers(mcpServers)
-        setShowMcpValidation(true)
+    setSaving(true)
+    try {
+      const res = await window.api.updateOcto({
+        octoPath: agent.path,
+        name: name.trim(),
+        role,
+        // Never turn a not-yet-loaded (or failed-to-load) prompt into an
+        // explicit empty write. `undefined` crosses the adapter as null and
+        // Rust treats it as "do not touch prompt.md".
+        prompt: !promptLoading && !promptLoadError ? prompt : undefined,
+        icon,
+        color,
+        permissions,
+        mcpServers,
+        // Phase 6 — 3-state forwarding:
+        //   undefined → don't touch (inherits previous value if any)
+        //   ""        → REMOVE the field (user clicked "Use workspace default")
+        //   "<value>" → set
+        // Local state uses `undefined` for inherit, so we map to "" on
+        // the wire when the user previously had a value but cleared it.
+        // For agents that never had the field, `agent.provider` is
+        // already undefined and we keep it that way (no wire write).
+        provider: provider === undefined && agent.provider !== undefined ? '' : provider,
+        model: model === undefined && agent.model !== undefined ? '' : model,
+      })
+      if (res.ok) {
+        // If MCP servers were configured, run validation
+        if (mcpServers && Object.keys(mcpServers).length > 0) {
+          setPendingMcpServers(mcpServers)
+          setShowMcpValidation(true)
+        } else {
+          onSaved()
+        }
       } else {
-        onSaved()
+        setError(res.error)
       }
-    } else {
-      setError(res.error)
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -138,6 +189,7 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
     { id: 'model', label: t('modals.editAgent.tabModel') },
     { id: 'mcp', label: t('modals.editAgent.tabMcp') },
   ]
+  const nameValidationError = validateAgentName(name)
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -172,7 +224,18 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
                 className="modal-input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
+                aria-invalid={nameValidationError !== null}
+                aria-describedby={nameValidationError ? 'edit-agent-name-error' : undefined}
               />
+              {nameValidationError && (
+                <div id="edit-agent-name-error" className="modal-error" role="alert">
+                  {nameValidationError === 'required'
+                    ? t('modals.editAgent.nameRequired')
+                    : nameValidationError === 'tooLong'
+                      ? t('modals.editAgent.nameTooLong', { max: MAX_AGENT_NAME_LENGTH })
+                      : t('modals.editAgent.nameInvalid')}
+                </div>
+              )}
 
               <label className="modal-label">{t('label.role')}</label>
               <input
@@ -194,6 +257,10 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
               {promptLoading ? (
                 <div style={{ color: 'var(--text-secondary)', fontSize: 13, padding: '12px 0' }}>
                   {t('common.loading')}
+                </div>
+              ) : promptLoadError ? (
+                <div className="modal-error" role="alert">
+                  {t('modals.editAgent.promptLoadError', { error: promptLoadError })}
                 </div>
               ) : (
                 <textarea
@@ -295,8 +362,12 @@ export function EditAgentModal({ agent, folderPath, onClose, onSaved, onDeleted 
           <button className="btn-secondary" onClick={onClose}>
             {t('common.cancel')}
           </button>
-          <button className="btn-primary" onClick={save}>
-            {t('common.save')}
+          <button
+            className="btn-primary"
+            onClick={save}
+            disabled={saving || nameValidationError !== null}
+          >
+            {saving ? t('common.saving') : t('common.save')}
           </button>
         </div>
       </div>

@@ -1,6 +1,6 @@
-# ADR: Goose 2.0 Integration for Octopal v0.2.0
+# ADR: Goose ACP Integration for Octopal
 
-**Status:** Adopted with Goose v2.0.0 release-candidate sidecar.
+**Status:** Adopted; runtime updated to stable Goose v1.41.0.
 **Date:** 2026-05-05
 **Supersedes:** Claude CLI as the sole AI engine (v0.1.42)
 **Scope:** Single source of truth for Phase 1~10 implementation. See `reactive-floating-feather.md` for the executable plan.
@@ -11,7 +11,7 @@
 
 | # | Decision | Rationale |
 |---|----------|-----------|
-| D1 | **Goose v2.0.0-rc-04-27-0** pinned as bundled sidecar | Aligns Octopal with Goose's ACP-centered 2.0 direction. Treat as release-candidate runtime and smoke-test before each app release |
+| D1 | **Goose v1.41.0** pinned as bundled sidecar with release-asset SHA-256 verification | Uses the latest tested stable ACP runtime; smoke-test before each app release and reject altered or partial downloads |
 | D2 | **Interface: ACP** (`goose acp` JSON-RPC 2.0 stdio) | `session/request_permission` official method → Permission D실현. protocolVersion + capability negotiation → drift-resilient |
 | D3 | **Extension control via CLI flags/ACP params** (`--with-builtin`, `--with-extension`) | Recipe YAML file generation unnecessary. No disk I/O, no GC complexity |
 | D4 | **Isolation via XDG 3-tuple** (CONFIG/DATA/STATE_HOME) | `GOOSE_CONFIG_DIR` does NOT exist in v1.31.0 (`goose info` confirmed). XDG is the only reliable path |
@@ -325,11 +325,12 @@ This was NOT in the earlier spike capture. The `session/new` response now reveal
 
 ```
 if  !file_write && !bash && !network            → "chat"         (hard lock, L1 only)
-elif file_write && bash && network              → "auto"         (L1 trust, L2 path filter only)
-else                                             → "auto"         (L1 trust, L2 fine-grained filter)
+elif file_write && bash && network
+     && no allowPaths/denyPaths                  → "auto"         (fully trusted)
+else                                             → "approve"      (Octopal auto-resolves every request)
 ```
 
-`approve`/`smart_approve` modes are not used — they prompt the human, but in Octopal the agent IS the human's delegate, so we must auto-decide. The decision engine is our resolver; the session mode is just the blast-radius cap.
+`approve` is used as the protocol hook for partial grants. Goose emits every tool request and Octopal answers it immediately from the agent's toggles and path rules, so no extra human prompt is introduced. `auto` cannot be used here because Goose interprets it as unconditional approval and bypasses the fine-grained resolver.
 
 Why `chat` matters: if the resolver has a bug and wrongly allow-lists a tool, a fully-locked agent still cannot invoke it because Goose never emits the tool call in the first place. Belt and braces.
 

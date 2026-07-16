@@ -86,9 +86,7 @@ pub async fn save_settings(
             entry.client.shutdown().await;
         }
         if n > 0 {
-            eprintln!(
-                "[settings] configured_providers[{provider}] changed → {n} sidecars evicted"
-            );
+            eprintln!("[settings] configured_providers[{provider}] changed → {n} sidecars evicted");
         }
     }
 

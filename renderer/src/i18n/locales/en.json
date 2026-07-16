@@ -186,6 +186,8 @@
     "scrollToBottom": "Scroll to bottom",
     "attachFile": "Attach file",
     "removeAttachment": "Remove attachment",
+    "attachmentSaveFailed": "{{count}} attachment could not be saved and remains selected. Try again or remove it.",
+    "attachmentSaveFailed_other": "{{count}} attachments could not be saved and remain selected. Try again or remove them.",
     "stopAllAgents": "Stop all agents",
     "callTargets": "Call {{targets}}?",
     "handoffDismissed": "Handoff dismissed",
@@ -287,10 +289,14 @@
       "tabPermissions": "Permissions",
       "tabModel": "Model",
       "tabMcp": "MCP",
+      "nameRequired": "Agent name is required.",
+      "nameInvalid": "Use only letters, numbers, spaces, hyphens, and underscores.",
+      "nameTooLong": "Agent name must be {{max}} characters or fewer.",
       "rolePlaceholder": "Full-stack developer specializing in React and TypeScript",
       "roleHint": "Short description shown to other agents (1-2 sentences).",
       "promptLabel": "System Prompt",
       "promptHint": "Full instructions for this agent. Saved as prompt.md — also editable in VS Code or any text editor.",
+      "promptLoadError": "The existing prompt could not be loaded, so Octopal will leave prompt.md unchanged. {{error}}",
       "promptPlaceholder": "You are a developer agent. You write clean code, implement features, fix bugs..."
     },
     "agentModel": {
@@ -329,6 +335,7 @@
   "activity": {
     "title": "Recent Activity",
     "empty": "No activity yet",
+    "diffTooLarge": "This diff is too large to render safely (limit: {{mb}} MB per version and {{lines}} total lines).",
     "toolCreated": "Created",
     "toolEdited": "Edited",
     "toolRan": "Ran",

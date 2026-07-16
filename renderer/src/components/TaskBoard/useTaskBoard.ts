@@ -5,6 +5,8 @@ import { ALL_STATUSES } from './types'
 const STORAGE_KEY = 'octopal-tasks'
 
 const VALID_PRIORITIES: readonly string[] = ['high', 'medium', 'low']
+const VALID_AGENTS: readonly string[] = ['developer', 'designer', 'reviewer', 'tester', 'security', 'assistant', 'planner']
+const VALID_EVENT_TYPES: readonly string[] = ['created', 'status_changed', 'assigned', 'comment']
 
 /** Allowed status transitions — keys are current status, values are reachable statuses */
 export const VALID_TRANSITIONS: Record<TaskStatus, readonly TaskStatus[]> = {
@@ -20,22 +22,54 @@ function generateId(): string {
   return `task-${crypto.randomUUID()}`
 }
 
-/** Minimal runtime type guard — rejects poisoned / malformed task objects */
-function isValidTask(t: unknown): t is Task {
-  if (typeof t !== 'object' || t === null || Array.isArray(t)) return false
-  const obj = t as Record<string, unknown>
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isOptionalString(value: unknown): boolean {
+  return value === undefined || typeof value === 'string'
+}
+
+function isValidSubtask(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return typeof value.id === 'string'
+    && typeof value.title === 'string'
+    && typeof value.done === 'boolean'
+}
+
+function isValidTaskEvent(value: unknown): boolean {
+  if (!isRecord(value)) return false
+  return typeof value.timestamp === 'number'
+    && Number.isFinite(value.timestamp)
+    && typeof value.type === 'string'
+    && VALID_EVENT_TYPES.includes(value.type)
+    && (value.agent === undefined || (typeof value.agent === 'string' && VALID_AGENTS.includes(value.agent)))
+    && isOptionalString(value.from)
+    && isOptionalString(value.to)
+    && isOptionalString(value.message)
+}
+
+/** Full runtime guard for the untrusted localStorage boundary. */
+export function isValidTask(t: unknown): t is Task {
+  if (!isRecord(t)) return false
+  const obj = t
   return (
     typeof obj.id === 'string' &&
     typeof obj.title === 'string' &&
     typeof obj.status === 'string' && (ALL_STATUSES as readonly string[]).includes(obj.status) &&
     typeof obj.priority === 'string' && VALID_PRIORITIES.includes(obj.priority) &&
-    typeof obj.createdAt === 'number' &&
-    typeof obj.updatedAt === 'number' &&
-    Array.isArray(obj.history)
+    typeof obj.autoAssigned === 'boolean' &&
+    typeof obj.createdAt === 'number' && Number.isFinite(obj.createdAt) &&
+    typeof obj.updatedAt === 'number' && Number.isFinite(obj.updatedAt) &&
+    (obj.completedAt === undefined || (typeof obj.completedAt === 'number' && Number.isFinite(obj.completedAt))) &&
+    isOptionalString(obj.description) &&
+    (obj.assignee === undefined || (typeof obj.assignee === 'string' && VALID_AGENTS.includes(obj.assignee))) &&
+    (obj.subtasks === undefined || (Array.isArray(obj.subtasks) && obj.subtasks.every(isValidSubtask))) &&
+    Array.isArray(obj.history) && obj.history.every(isValidTaskEvent)
   )
 }
 
-function loadTasks(): Task[] {
+export function loadTasks(): Task[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     if (!raw) return []

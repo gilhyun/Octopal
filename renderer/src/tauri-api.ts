@@ -14,6 +14,46 @@ const tauriEvent = () => import('@tauri-apps/api/event')
 
 type UnlistenFn = () => void
 
+/**
+ * Bridge Tauri's asynchronous `listen()` registration to React's synchronous
+ * effect-cleanup contract.
+ *
+ * A component can unmount (or an effect can re-run) before Tauri resolves the
+ * registration promise. In that case the eventual listener must be removed as
+ * soon as it is registered; otherwise the stale callback lives for the rest of
+ * the window lifetime.
+ */
+export function subscribeAsync(
+  register: () => Promise<UnlistenFn>,
+  label = 'Tauri event',
+): UnlistenFn {
+  let disposed = false
+  let unlisten: UnlistenFn | null = null
+
+  void register()
+    .then((registeredUnlisten) => {
+      if (disposed) {
+        registeredUnlisten()
+        return
+      }
+      unlisten = registeredUnlisten
+    })
+    .catch((error) => {
+      // Event setup failure should not become an unhandled rejection. There is
+      // no caller promise to reject because window.api.onX must synchronously
+      // return its cleanup function.
+      if (!disposed) console.error(`[Octopal] Failed to subscribe to ${label}:`, error)
+    })
+
+  return () => {
+    if (disposed) return
+    disposed = true
+    const registeredUnlisten = unlisten
+    unlisten = null
+    registeredUnlisten?.()
+  }
+}
+
 async function invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   const { invoke: tauriInvoke } = await tauriCore()
   return tauriInvoke<T>(cmd, args)
@@ -23,6 +63,20 @@ async function listen<T>(event: string, handler: (payload: T) => void): Promise<
   const { listen: tauriListen } = await tauriEvent()
   const unlisten = await tauriListen<T>(event, (ev) => handler(ev.payload))
   return unlisten
+}
+
+function subscribe<T>(event: string, handler: (payload: T) => void): UnlistenFn {
+  let active = true
+  const cleanup = subscribeAsync(
+    () => listen<T>(event, (payload) => {
+      if (active) handler(payload)
+    }),
+    event,
+  )
+  return () => {
+    active = false
+    cleanup()
+  }
 }
 
 export function createTauriApi(): typeof window.api {
@@ -124,50 +178,16 @@ export function createTauriApi(): typeof window.api {
       }),
 
     // ── Events (push from backend) ──
-    onActivity: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen<{ runId: string; text: string; folderPath?: string; agentName?: string }>('octo:activity', cb).then(
-        (u) => (unlisten = u),
-      )
-      return () => unlisten?.()
-    },
-    onTextChunk: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen<{ runId: string; delta: string; folderPath?: string; agentName?: string }>('octo:textChunk', cb).then(
-        (u) => (unlisten = u),
-      )
-      return () => unlisten?.()
-    },
-    onActivityLog: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('activity:log', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onUsageReport: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('octo:usage', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onOctosChanged: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen<string>('folder:octosChanged', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onMcpTokenExpiry: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('mcp:tokenExpiry', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onFileAccessRequest: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen('fileAccess:request', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
-    onWindowLimitReached: (cb) => {
-      let unlisten: UnlistenFn | null = null
-      listen<number>('window:limitReached', cb).then((u) => (unlisten = u))
-      return () => unlisten?.()
-    },
+    onActivity: (cb) =>
+      subscribe<{ runId: string; text: string; folderPath?: string; agentName?: string }>('octo:activity', cb),
+    onTextChunk: (cb) =>
+      subscribe<{ runId: string; delta: string; folderPath?: string; agentName?: string }>('octo:textChunk', cb),
+    onActivityLog: (cb) => subscribe('activity:log', cb),
+    onUsageReport: (cb) => subscribe('octo:usage', cb),
+    onOctosChanged: (cb) => subscribe<string>('folder:octosChanged', cb),
+    onMcpTokenExpiry: (cb) => subscribe('mcp:tokenExpiry', cb),
+    onFileAccessRequest: (cb) => subscribe('fileAccess:request', cb),
+    onWindowLimitReached: (cb) => subscribe<number>('window:limitReached', cb),
 
     // ── Dispatch ──
     dispatch: (params) =>
@@ -290,6 +310,7 @@ export function createTauriApi(): typeof window.api {
     readCurrentFile: (params) =>
       invoke('read_current_file', {
         folderPath: params.folderPath,
+        backupId: params.backupId,
         filePath: params.filePath,
       }),
     revertBackup: (params) =>

@@ -283,6 +283,7 @@ interface Window {
     }) => Promise<string>
     readCurrentFile: (params: {
       folderPath: string
+      backupId: string
       filePath: string
     }) => Promise<string>
     revertBackup: (params: {

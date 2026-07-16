@@ -2,6 +2,27 @@
 
 All notable changes to Octopal will be documented in this file.
 
+## [0.1.56] - 2026-07-16
+
+### Security
+
+- Restricted renderer file access to registered workspaces, validated uploads, and one-shot native drag-and-drop grants; removed broad home and temporary-directory asset scopes.
+- Added portable path validation, canonical containment, symlink defenses, atomic file replacement, and serialized read-modify-write updates across agents, history, wiki, backups, and settings.
+- Made Goose tool permissions fail closed, constrained file tools to workspace/wiki roots, rejected unknown tools and invalid deny globs, and added bounded process/event/response buffers.
+- Added native confirmation for MCP package installation and workspace-defined MCP commands, removed secret-bearing command logs and URLs, and cleaned up all child processes on errors and app exit.
+
+### Improvements
+
+- Updated the OpenAI API catalog with GPT-5.6 Sol, Terra, and Luna, preferring Sol for new OpenAI API agents.
+- Updated the bundled Goose ACP sidecar to verified stable v1.41.0 and upgraded Tauri, Vite, Vitest, i18next, and related dependencies.
+- Hardened the release workflow with dependency audits, full Rust/frontend tests, pinned actions and verifier downloads, release-secret checks, artifact/signature validation, and a corrected Windows updater manifest.
+- Added regression coverage for chat submission, attachments, Markdown sanitization, settings/wiki freshness, task-board validation, MCP validation, permissions, filesystem boundaries, process pools, and concurrent persistence.
+
+### Fixes
+
+- Fixed stale async UI results, listener cleanup races, double chat submission, partial attachment failures, agent edit races, permission merging, activity rendering limits, and false-positive MCP validation.
+- Fixed process-pool reuse after agent context changes, stale credential reinsertion, duplicate run IDs, unbounded idle sidecars, orphaned children, and file-conflict aliases.
+
 ## [0.1.55] - 2026-07-11
 
 ### Fixes

@@ -1,7 +1,7 @@
 {
   "$schema": "https://raw.githubusercontent.com/nicegram/nicegram-tauri/main/tooling/cli/schema.json",
   "productName": "Octopal",
-  "version": "0.1.55",
+  "version": "0.1.56",
   "identifier": "com.studioh.octopal",
   "build": {
     "beforeDevCommand": "npm run dev:renderer",
@@ -29,10 +29,7 @@
       "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' asset: https://asset.localhost https: data: blob:; connect-src 'self' https://api.anthropic.com https://asset.localhost https://github.com https://objects.githubusercontent.com",
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$HOME/.octopal/**",
-          "/tmp/**"
-        ]
+        "scope": []
       }
     },
     "macOSPrivateApi": true

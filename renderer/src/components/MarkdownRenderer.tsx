@@ -4,9 +4,17 @@ import rehypeRaw from 'rehype-raw'
 import rehypeSanitize, { defaultSchema } from 'rehype-sanitize'
 import type { Components } from 'react-markdown'
 
+const safeGlobalAttributes = (defaultSchema.attributes?.['*'] || []).filter((attribute) => {
+  const name = Array.isArray(attribute) ? attribute[0] : attribute
+  return name !== 'className' && name !== 'id' && name !== 'style'
+})
+
 // Extended sanitize schema — permits raw HTML blocks wiki pages commonly use
 // (tables with alignment, centered <p>, <img>, <br>, <sub>/<sup>) while still
-// stripping dangerous tags (<script>, <iframe>, event handlers, etc.).
+// stripping dangerous tags (<script>, <iframe>, event handlers, etc.). Global
+// class/id/style attributes are deliberately removed: otherwise untrusted chat
+// or wiki HTML can reuse app classes such as `modal-backdrop`, or inject fixed
+// positioning, to cover and impersonate the application UI.
 const schema = {
   ...defaultSchema,
   tagNames: [
@@ -39,12 +47,12 @@ const schema = {
     th: [...(((defaultSchema.attributes as any).th) || []), 'align', 'valign', 'width'],
     table: [...(((defaultSchema.attributes as any).table) || []), 'align', 'width'],
     tr: [...(((defaultSchema.attributes as any).tr) || []), 'align'],
-    '*': [...(((defaultSchema.attributes as any)['*']) || []), 'className', 'id', 'style'],
+    '*': safeGlobalAttributes,
   },
   protocols: {
     ...(defaultSchema.protocols || {}),
-    src: ['http', 'https', 'data', 'file'],
-    href: ['http', 'https', 'mailto', 'tel', 'file'],
+    src: ['http', 'https', 'data'],
+    href: ['http', 'https', 'mailto', 'tel'],
   },
 }
 
@@ -52,19 +60,19 @@ const schema = {
 function safeImgSrc(src?: string): string | undefined {
   if (!src) return undefined
   const trimmed = src.trim()
-  if (/^(https?:|data:image\/|file:|\.{0,2}\/)/i.test(trimmed)) return trimmed
+  if (/^(https?:|data:image\/|\.{0,2}\/)/i.test(trimmed)) return trimmed
   return undefined
 }
 
 const components: Components = {
   // 링크를 새 탭에서 열기
-  a: ({ href, children, ...props }) => (
-    <a href={href} target="_blank" rel="noopener noreferrer" {...props}>
+  a: ({ href, children, node: _node, ...props }) => (
+    <a {...props} href={href} target="_blank" rel="noopener noreferrer">
       {children}
     </a>
   ),
   // 코드 블록 vs 인라인 코드 구분
-  code: ({ className, children, ...props }) => {
+  code: ({ className, children, node: _node, ...props }) => {
     const isBlock = className?.startsWith('language-')
     if (isBlock) {
       return (

@@ -14,11 +14,12 @@ use chrono::{TimeZone, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::State;
 
+use super::path_guard;
 use crate::state::ManagedState;
 
 /// Fallback cap on backup directories kept per workspace, used when no
@@ -103,7 +104,7 @@ impl BackupTracker {
                 "{}-{}-{}",
                 format_ts_compact(ts),
                 sanitize_segment(agent_name),
-                run_id.chars().take(8).collect::<String>(),
+                sanitize_segment(&run_id.chars().take(8).collect::<String>()),
             );
             RunBackupState {
                 backup_id,
@@ -120,8 +121,12 @@ impl BackupTracker {
             return Some(state.backup_id.clone());
         }
 
-        let backup_root = backups_root(&state.folder_path).join(&state.backup_id);
-        if fs::create_dir_all(&backup_root).is_err() {
+        let backups = secure_backups_root(&state.folder_path, true).ok()?;
+        validate_backup_id(&state.backup_id).ok()?;
+        let backup_root = path_guard::write_target(&backups, &state.backup_id).ok()?;
+        fs::create_dir_all(&backup_root).ok()?;
+        let backup_root = fs::canonicalize(&backup_root).ok()?;
+        if !backup_root.starts_with(&backups) {
             return None;
         }
         // Best-effort: keep `.octopal/backups/` out of git so users on a git
@@ -130,13 +135,19 @@ impl BackupTracker {
 
         let existed = abs.exists() && abs.is_file();
         if existed {
-            let dest = backup_root.join(&rel);
+            // Revalidate both source and destination at the point of use so a
+            // workspace symlink cannot turn snapshotting into an arbitrary
+            // read or write after the initial tool event was parsed.
+            let source = path_guard::existing_regular_file_path(&folder_canonical, &rel).ok()?;
+            let dest = path_guard::write_target_path(&backup_root, &rel).ok()?;
             if let Some(parent) = dest.parent() {
                 if fs::create_dir_all(parent).is_err() {
                     return None;
                 }
             }
-            if fs::copy(&abs, &dest).is_err() {
+            if path_guard::write_target_path(&backup_root, &rel).is_err()
+                || crate::commands::atomic_file::atomic_copy(&source, &dest).is_err()
+            {
                 return None;
             }
         }
@@ -144,7 +155,7 @@ impl BackupTracker {
         state.files.insert(
             abs,
             BackupFileEntry {
-                path: rel.to_string_lossy().to_string(),
+                path: portable_relative(&rel),
                 existed,
             },
         );
@@ -165,9 +176,12 @@ impl BackupTracker {
 // ── Tauri commands ─────────────────────────────────────────────────────────
 
 #[tauri::command]
-pub fn list_backups(folder_path: String) -> Result<Vec<BackupMeta>, String> {
-    let folder = Path::new(&folder_path);
-    let root = backups_root(folder);
+pub fn list_backups(
+    folder_path: String,
+    state: State<'_, ManagedState>,
+) -> Result<Vec<BackupMeta>, String> {
+    let folder = path_guard::registered_folder(&state, Path::new(&folder_path))?;
+    let root = secure_backups_root(&folder, false)?;
     if !root.is_dir() {
         return Ok(vec![]);
     }
@@ -175,14 +189,26 @@ pub fn list_backups(folder_path: String) -> Result<Vec<BackupMeta>, String> {
     let mut metas: Vec<BackupMeta> = vec![];
     let entries = fs::read_dir(&root).map_err(|e| e.to_string())?;
     for entry in entries.flatten() {
-        let path = entry.path();
-        if !path.is_dir() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        if !file_type.is_dir() {
             continue;
         }
-        let meta_path = path.join("meta.json");
+        let id = entry.file_name().to_string_lossy().into_owned();
+        let Ok(path) = secure_backup_dir(&folder, &id) else {
+            continue;
+        };
+        let Ok(meta_path) = path_guard::existing_regular_file(&path, "meta.json") else {
+            continue;
+        };
         if let Ok(content) = fs::read_to_string(&meta_path) {
             if let Ok(meta) = serde_json::from_str::<BackupMeta>(&content) {
-                metas.push(meta);
+                if meta.id == id
+                    && fs::canonicalize(&meta.folder_path).is_ok_and(|path| path == folder)
+                {
+                    metas.push(meta);
+                }
             }
         }
     }
@@ -196,51 +222,35 @@ pub fn read_backup_file(
     folder_path: String,
     backup_id: String,
     file_path: String,
+    state: State<'_, ManagedState>,
 ) -> Result<String, String> {
-    let folder = Path::new(&folder_path);
-    let backup = backups_root(folder).join(&backup_id);
-    if !backup.is_dir() {
-        return Err("Backup not found".to_string());
-    }
-    let safe_rel = sanitize_relative(&file_path)?;
-    let target = backup.join(&safe_rel);
-    if !target.starts_with(&backup) {
-        return Err("Path traversal denied".to_string());
-    }
-    if !target.exists() {
-        // The file may have been newly created by the agent — there's nothing
-        // to read from the backup; the original "previous content" is empty.
+    let folder = path_guard::registered_folder(&state, Path::new(&folder_path))?;
+    let (backup, meta) = load_backup_meta(&folder, &backup_id)?;
+    let (safe_rel, entry) = listed_backup_file(&meta, &file_path)?;
+    if !entry.existed {
+        // The agent created this file, so its prior content is intentionally empty.
         return Ok(String::new());
     }
-    fs::read_to_string(&target).map_err(|e| e.to_string())
+    let target = path_guard::existing_regular_file_path(&backup, &safe_rel)?;
+    fs::read_to_string(target).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
-pub fn read_current_file(folder_path: String, file_path: String) -> Result<String, String> {
-    let folder = Path::new(&folder_path);
-    let safe_rel = sanitize_relative(&file_path)?;
-    let target = folder.join(&safe_rel);
-    let folder_canonical = canonicalize_or_self(folder);
-    // Use canonicalized parent for the containment check so that newly-created
-    // files (which can't be canonicalized themselves) still pass.
-    let candidate_canonical = if target.exists() {
-        canonicalize_or_self(&target)
-    } else if let Some(parent) = target.parent() {
-        let cp = canonicalize_or_self(parent);
-        match target.file_name() {
-            Some(name) => cp.join(name),
-            None => return Err("Invalid path".to_string()),
-        }
-    } else {
-        return Err("Invalid path".to_string());
-    };
-    if !candidate_canonical.starts_with(&folder_canonical) {
-        return Err("Path traversal denied".to_string());
-    }
+pub fn read_current_file(
+    folder_path: String,
+    backup_id: String,
+    file_path: String,
+    state: State<'_, ManagedState>,
+) -> Result<String, String> {
+    let folder = path_guard::registered_folder(&state, Path::new(&folder_path))?;
+    let (_, meta) = load_backup_meta(&folder, &backup_id)?;
+    let (safe_rel, _) = listed_backup_file(&meta, &file_path)?;
+    let target = path_guard::write_target_path(&folder, &safe_rel)?;
     if !target.exists() {
         return Ok(String::new());
     }
-    fs::read_to_string(&target).map_err(|e| e.to_string())
+    let target = path_guard::existing_regular_file_path(&folder, &safe_rel)?;
+    fs::read_to_string(target).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -259,15 +269,21 @@ pub fn revert_backup(
     folder_path: String,
     backup_id: String,
     file_path: Option<String>,
+    state: State<'_, ManagedState>,
 ) -> Result<RevertResult, String> {
-    let folder = Path::new(&folder_path);
-    let backup_dir = backups_root(folder).join(&backup_id);
-    let meta_path = backup_dir.join("meta.json");
-    let meta_content = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
-    let meta: BackupMeta = serde_json::from_str(&meta_content).map_err(|e| e.to_string())?;
+    let folder = path_guard::registered_folder(&state, Path::new(&folder_path))?;
+    let (backup_dir, meta) = load_backup_meta(&folder, &backup_id)?;
 
-    let target_files: Vec<&BackupFileEntry> = match &file_path {
-        Some(p) => meta.files.iter().filter(|f| &f.path == p).collect(),
+    let selected = file_path
+        .as_deref()
+        .map(sanitize_backup_relative)
+        .transpose()?;
+    let target_files: Vec<&BackupFileEntry> = match &selected {
+        Some(selected) => meta
+            .files
+            .iter()
+            .filter(|entry| sanitize_backup_relative(&entry.path).as_ref() == Ok(selected))
+            .collect(),
         None => meta.files.iter().collect(),
     };
 
@@ -275,24 +291,52 @@ pub fn revert_backup(
     let mut failed: Vec<String> = vec![];
 
     for entry in target_files {
-        let current_abs = folder.join(&entry.path);
-        if entry.existed {
-            // Restore from snapshot
-            let snapshot_abs = backup_dir.join(&entry.path);
-            if !snapshot_abs.exists() {
+        let safe_rel = match sanitize_backup_relative(&entry.path) {
+            Ok(path) => path,
+            Err(_) => {
                 failed.push(entry.path.clone());
                 continue;
             }
-            if let Some(parent) = current_abs.parent() {
-                let _ = fs::create_dir_all(parent);
+        };
+        let current_abs = match path_guard::write_target_path(&folder, &safe_rel) {
+            Ok(path) => path,
+            Err(_) => {
+                failed.push(entry.path.clone());
+                continue;
             }
-            match fs::copy(&snapshot_abs, &current_abs) {
+        };
+        if entry.existed {
+            // Restore from snapshot
+            let snapshot_abs = match path_guard::existing_regular_file_path(&backup_dir, &safe_rel)
+            {
+                Ok(path) => path,
+                Err(_) => {
+                    failed.push(entry.path.clone());
+                    continue;
+                }
+            };
+            if let Some(parent) = current_abs.parent() {
+                if fs::create_dir_all(parent).is_err()
+                    || path_guard::write_target_path(&folder, &safe_rel).is_err()
+                {
+                    failed.push(entry.path.clone());
+                    continue;
+                }
+            }
+            match crate::commands::atomic_file::atomic_copy(&snapshot_abs, &current_abs) {
                 Ok(_) => reverted.push(entry.path.clone()),
                 Err(_) => failed.push(entry.path.clone()),
             }
         } else {
             // File was created by the agent — trash it (best-effort).
             if current_abs.exists() {
+                let current_abs = match path_guard::existing_regular_file_path(&folder, &safe_rel) {
+                    Ok(path) => path,
+                    Err(_) => {
+                        failed.push(entry.path.clone());
+                        continue;
+                    }
+                };
                 match trash::delete(&current_abs) {
                     Ok(_) => reverted.push(entry.path.clone()),
                     Err(_) => {
@@ -327,7 +371,10 @@ pub fn prune_with_limits(
     max_age_days: u64,
 ) -> Result<usize, String> {
     let folder = Path::new(folder_path);
-    let root = backups_root(folder);
+    if !folder.is_dir() {
+        return Ok(0);
+    }
+    let root = secure_backups_root(folder, false)?;
     if !root.is_dir() {
         return Ok(0);
     }
@@ -354,10 +401,10 @@ pub fn prune_with_limits(
     for (i, (path, ts)) in entries.iter().enumerate() {
         let too_old = *ts > 0 && *ts < cutoff_ms;
         let over_count = i >= max_count;
-        if too_old || over_count {
-            if trash::delete(path).is_ok() || fs::remove_dir_all(path).is_ok() {
-                pruned += 1;
-            }
+        if (too_old || over_count)
+            && (trash::delete(path).is_ok() || fs::remove_dir_all(path).is_ok())
+        {
+            pruned += 1;
         }
     }
     Ok(pruned)
@@ -365,36 +412,124 @@ pub fn prune_with_limits(
 
 /// Tauri command — reads retention limits from app settings, then prunes.
 #[tauri::command]
-pub fn prune_backups(
-    folder_path: String,
-    state: State<'_, ManagedState>,
-) -> Result<usize, String> {
+pub fn prune_backups(folder_path: String, state: State<'_, ManagedState>) -> Result<usize, String> {
+    path_guard::registered_folder(&state, Path::new(&folder_path))?;
     let (max_count, max_age) = match state.settings.lock() {
         Ok(s) => (
             s.backup.max_backups_per_workspace as usize,
             s.backup.max_age_days as u64,
         ),
-        Err(_) => (DEFAULT_MAX_BACKUPS_PER_WORKSPACE, DEFAULT_MAX_BACKUP_AGE_DAYS),
+        Err(_) => (
+            DEFAULT_MAX_BACKUPS_PER_WORKSPACE,
+            DEFAULT_MAX_BACKUP_AGE_DAYS,
+        ),
     };
     prune_with_limits(&folder_path, max_count, max_age)
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-fn backups_root(folder: &Path) -> PathBuf {
-    folder.join(".octopal").join("backups")
+fn validate_backup_id(backup_id: &str) -> Result<(), String> {
+    path_guard::safe_segment(backup_id, "backup id")?;
+    if !backup_id
+        .bytes()
+        .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err("invalid backup id".to_string());
+    }
+    Ok(())
+}
+
+fn secure_backups_root(folder: &Path, create: bool) -> Result<PathBuf, String> {
+    let folder = fs::canonicalize(folder).map_err(|e| e.to_string())?;
+    let relative = Path::new(".octopal").join("backups");
+    let target = path_guard::write_target_path(&folder, &relative)?;
+    if create {
+        fs::create_dir_all(&target).map_err(|e| e.to_string())?;
+    } else if !target.exists() {
+        return Ok(target);
+    }
+    let target = fs::canonicalize(&target).map_err(|e| e.to_string())?;
+    if !target.starts_with(&folder) {
+        return Err("backup root escapes its workspace".to_string());
+    }
+    Ok(target)
+}
+
+fn secure_backup_dir(folder: &Path, backup_id: &str) -> Result<PathBuf, String> {
+    validate_backup_id(backup_id)?;
+    let root = secure_backups_root(folder, false)?;
+    if !root.is_dir() {
+        return Err("Backup not found".to_string());
+    }
+    let relative = PathBuf::from(backup_id);
+    let backup = path_guard::write_target_path(&root, &relative)?;
+    if !backup.exists() {
+        return Err("Backup not found".to_string());
+    }
+    let backup = fs::canonicalize(&backup).map_err(|e| e.to_string())?;
+    if !backup.starts_with(&root) || !backup.is_dir() {
+        return Err("Backup not found".to_string());
+    }
+    Ok(backup)
+}
+
+fn load_backup_meta(folder: &Path, backup_id: &str) -> Result<(PathBuf, BackupMeta), String> {
+    let backup_dir = secure_backup_dir(folder, backup_id)?;
+    let meta_path = path_guard::existing_regular_file(&backup_dir, "meta.json")?;
+    let meta_content = fs::read_to_string(&meta_path).map_err(|e| e.to_string())?;
+    let meta: BackupMeta = serde_json::from_str(&meta_content).map_err(|e| e.to_string())?;
+    if meta.id != backup_id {
+        return Err("backup metadata id does not match its directory".to_string());
+    }
+    let meta_folder = fs::canonicalize(&meta.folder_path)
+        .map_err(|_| "backup metadata references an unavailable workspace".to_string())?;
+    if meta_folder != folder {
+        return Err("backup metadata belongs to a different workspace".to_string());
+    }
+    Ok((backup_dir, meta))
+}
+
+fn listed_backup_file<'a>(
+    meta: &'a BackupMeta,
+    requested: &str,
+) -> Result<(PathBuf, &'a BackupFileEntry), String> {
+    let safe_rel = sanitize_backup_relative(requested)?;
+    let entry = meta
+        .files
+        .iter()
+        .find(|entry| sanitize_backup_relative(&entry.path).is_ok_and(|listed| listed == safe_rel))
+        .ok_or_else(|| "file is not listed in this backup".to_string())?;
+    Ok((safe_rel, entry))
+}
+
+fn portable_relative(path: &Path) -> String {
+    path.components()
+        .filter_map(|component| match component {
+            Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("/")
 }
 
 /// Drop a `.gitignore` inside `.octopal/` that excludes runtime artifacts
 /// (backups, room history, uploads). Idempotent: only writes when missing,
 /// never overwrites a user-customized file.
 fn ensure_octopal_gitignore(folder: &Path) {
-    let gitignore = folder.join(".octopal").join(".gitignore");
-    if gitignore.exists() {
+    let Ok(gitignore) = path_guard::write_target(folder, ".octopal/.gitignore") else {
         return;
-    }
+    };
     let body = "# Auto-generated by Octopal — runtime artifacts, safe to ignore.\nbackups/\nuploads/\nroom-history.json\nroom-log.json\n";
-    let _ = fs::write(&gitignore, body);
+    let _ = crate::commands::atomic_file::with_path_lock(&gitignore, || {
+        if gitignore.exists() {
+            // Existing user-owned files (including non-regular targets) are
+            // never replaced by this best-effort helper.
+            path_guard::existing_regular_file(folder, ".octopal/.gitignore")?;
+            return Ok(());
+        }
+        crate::commands::atomic_file::atomic_write(&gitignore, body.as_bytes())
+    });
 }
 
 fn now_ms() -> u64 {
@@ -441,21 +576,19 @@ fn canonicalize_or_self(p: &Path) -> PathBuf {
 /// still strip cleanly.
 fn resolve_target_path(folder_canonical: &Path, file_path: &str) -> Option<PathBuf> {
     let p = Path::new(file_path);
-    let abs = if p.is_absolute() {
-        p.to_path_buf()
+    let relative = if p.is_absolute() {
+        if p.exists() {
+            let resolved = fs::canonicalize(p).ok()?;
+            return resolved.starts_with(folder_canonical).then_some(resolved);
+        }
+        p.strip_prefix(folder_canonical).ok()?.to_path_buf()
     } else {
-        folder_canonical.join(p)
+        sanitize_backup_relative(file_path).ok()?
     };
-    if abs.exists() {
-        Some(canonicalize_or_self(&abs))
-    } else {
-        let parent = abs.parent()?;
-        let cp = canonicalize_or_self(parent);
-        Some(cp.join(abs.file_name()?))
-    }
+    path_guard::write_target_path(folder_canonical, &relative).ok()
 }
 
-fn write_meta(backup_root: &Path, state: &RunBackupState) -> std::io::Result<()> {
+fn write_meta(backup_root: &Path, state: &RunBackupState) -> Result<(), String> {
     let meta = BackupMeta {
         id: state.backup_id.clone(),
         run_id: state.run_id.clone(),
@@ -464,25 +597,107 @@ fn write_meta(backup_root: &Path, state: &RunBackupState) -> std::io::Result<()>
         folder_path: state.folder_path.to_string_lossy().to_string(),
         files: state.files.values().cloned().collect(),
     };
-    let json = serde_json::to_string_pretty(&meta).unwrap_or_default();
-    fs::write(backup_root.join("meta.json"), json)
+    let path = path_guard::write_target(backup_root, "meta.json")?;
+    crate::commands::atomic_file::with_path_lock(&path, || {
+        crate::commands::atomic_file::atomic_write_json(&path, &meta)
+    })
 }
 
 /// Reject absolute paths and `..` segments. Returns a normalized relative
 /// PathBuf safe to join under a backup or workspace root.
-fn sanitize_relative(input: &str) -> Result<PathBuf, String> {
-    let p = Path::new(input);
-    if p.is_absolute() {
-        return Err("Absolute path not allowed".to_string());
+fn sanitize_backup_relative(input: &str) -> Result<PathBuf, String> {
+    // Older Windows builds persisted backslashes in meta.json. Normalize them
+    // before component validation so legacy backups remain usable while
+    // `..\\outside` is still rejected as traversal.
+    path_guard::safe_relative(&input.replace('\\', "/"))
+}
+
+#[cfg(test)]
+mod security_tests {
+    use super::*;
+
+    fn temp_dir(label: &str) -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "octopal-backup-security-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
     }
-    for component in p.components() {
-        match component {
-            std::path::Component::ParentDir => return Err("Parent traversal not allowed".to_string()),
-            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
-                return Err("Absolute path not allowed".to_string())
-            }
-            _ => {}
+
+    #[test]
+    fn backup_id_is_one_ascii_segment() {
+        for bad in ["../etc", "/etc", "..\\etc", "a/b", ".", "id.json"] {
+            assert!(validate_backup_id(bad).is_err(), "accepted {bad:?}");
+        }
+        assert!(validate_backup_id("20260711-agent-deadbeef").is_ok());
+    }
+
+    #[test]
+    fn tampered_metadata_paths_cannot_leave_workspace() {
+        for bad in ["../../.ssh/config", "..\\..\\.ssh\\config", "/etc/passwd"] {
+            assert!(sanitize_backup_relative(bad).is_err(), "accepted {bad:?}");
         }
     }
-    Ok(p.to_path_buf())
+
+    #[test]
+    fn backup_reads_require_a_metadata_listed_path() {
+        let meta = BackupMeta {
+            id: "good-id".into(),
+            run_id: "run".into(),
+            agent_name: "agent".into(),
+            ts: 1,
+            folder_path: "/workspace".into(),
+            files: vec![BackupFileEntry {
+                path: "src/main.rs".into(),
+                existed: true,
+            }],
+        };
+        assert_eq!(
+            listed_backup_file(&meta, "src/main.rs").unwrap().0,
+            Path::new("src/main.rs")
+        );
+        assert!(listed_backup_file(&meta, "Cargo.toml").is_err());
+        assert!(listed_backup_file(&meta, "../secret").is_err());
+    }
+
+    #[test]
+    fn renderer_run_id_cannot_inject_backup_path_segments() {
+        let segment = sanitize_segment("../../x");
+        let id = format!("20260711-010101-agent-{segment}");
+        assert!(validate_backup_id(&id).is_ok());
+        assert!(!id.contains('/'));
+        assert!(!id.contains('\\'));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_file_symlink_cannot_escape_backup_root() {
+        use std::os::unix::fs::symlink;
+
+        let folder = temp_dir("folder");
+        let outside = temp_dir("outside");
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        let backup_root = folder.join(".octopal/backups/good-id");
+        fs::create_dir_all(&backup_root).unwrap();
+        symlink(&outside, backup_root.join("escape")).unwrap();
+
+        assert!(path_guard::existing_regular_file(&backup_root, "escape/secret.txt").is_err());
+        let _ = fs::remove_dir_all(folder);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn gitignore_helper_rejects_symlinked_octopal_directory() {
+        use std::os::unix::fs::symlink;
+
+        let folder = temp_dir("gitignore-folder");
+        let outside = temp_dir("gitignore-outside");
+        symlink(&outside, folder.join(".octopal")).unwrap();
+        ensure_octopal_gitignore(&folder);
+        assert!(!outside.join(".gitignore").exists());
+        let _ = fs::remove_dir_all(folder);
+        let _ = fs::remove_dir_all(outside);
+    }
 }

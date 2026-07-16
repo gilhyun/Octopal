@@ -8,7 +8,7 @@ import {
 const manifest: ProvidersManifest = {
   openai: {
     displayName: 'OpenAI',
-    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5'],
+    models: ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-5.5', 'gpt-5.4', 'gpt-5'],
     authMethods: [],
   },
   anthropic: {
@@ -22,31 +22,39 @@ describe('provider model helpers', () => {
   it('filters OpenAI ChatGPT subscription to the Goose-supported catalog', () => {
     const models = modelOptionsForProviderAuth('openai', 'cli_subscription', manifest)
     expect(models).toEqual([
+      'gpt-5.5',
       'gpt-5.4',
       'gpt-5.3-codex',
     ])
-    expect(preferredModelForProvider('openai', models)).toBe('gpt-5.4')
+    expect(preferredModelForProvider('openai', models)).toBe('gpt-5.5')
   })
 
   it('keeps API-key OpenAI models from the manifest', () => {
     const models = modelOptionsForProviderAuth('openai', 'api_key', manifest)
-    expect(models).toEqual(['gpt-5.5', 'gpt-5.4', 'gpt-5'])
-    expect(preferredModelForProvider('openai', models)).toBe('gpt-5.5')
+    expect(models).toEqual([
+      'gpt-5.6-sol',
+      'gpt-5.6-terra',
+      'gpt-5.6-luna',
+      'gpt-5.5',
+      'gpt-5.4',
+      'gpt-5',
+    ])
+    expect(preferredModelForProvider('openai', models)).toBe('gpt-5.6-sol')
   })
 
   it('normalizes stale Codex CLI selections to the supported default', () => {
     expect(normalizeModelForProviderAuth(
       'openai',
       'cli_subscription',
-      'gpt-5.5',
+      'gpt-5.6-sol',
       manifest,
-    )).toBe('gpt-5.4')
+    )).toBe('gpt-5.5')
     expect(normalizeModelForProviderAuth(
       'openai',
       'api_key',
-      'gpt-5.5',
+      'gpt-5.6-sol',
       manifest,
-    )).toBe('gpt-5.5')
+    )).toBe('gpt-5.6-sol')
   })
 
   it('adds Anthropic aliases above manifest models', () => {

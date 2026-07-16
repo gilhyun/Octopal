@@ -218,10 +218,7 @@ pub async fn delete_api_key_cmd(
 /// Keychain prompts for every provider card. In env-fallback mode,
 /// consults env presence instead.
 #[tauri::command]
-pub fn has_api_key_cmd(
-    provider: String,
-    state: State<'_, ManagedState>,
-) -> Result<bool, String> {
+pub fn has_api_key_cmd(provider: String, state: State<'_, ManagedState>) -> Result<bool, String> {
     if env_fallback_active() {
         return Ok(std::env::var(env_var_name(&provider)).is_ok());
     }
@@ -285,10 +282,55 @@ pub struct TestConnectionResult {
     pub error: Option<String>,
 }
 
+fn provider_request_config(
+    provider: &str,
+    key: &str,
+) -> Option<(String, Vec<(&'static str, String)>)> {
+    match provider {
+        "anthropic" => Some((
+            "https://api.anthropic.com/v1/models".into(),
+            vec![
+                ("x-api-key", key.to_string()),
+                ("anthropic-version", "2023-06-01".into()),
+            ],
+        )),
+        "openai" => Some((
+            "https://api.openai.com/v1/models".into(),
+            vec![("authorization", format!("Bearer {key}"))],
+        )),
+        // Google also accepts the API key in a request header. Keeping it out
+        // of the URL prevents reqwest errors, proxies, and access logs from
+        // accidentally copying the secret into renderer-visible text.
+        "google" => Some((
+            "https://generativelanguage.googleapis.com/v1beta/models".into(),
+            vec![("x-goog-api-key", key.to_string())],
+        )),
+        "ollama" => {
+            // "key" is reused as the host URL for Ollama. UI stores an
+            // OLLAMA_HOST-style value in the same keyring slot.
+            let host = if key.is_empty() {
+                "http://localhost:11434".into()
+            } else {
+                key.trim_end_matches('/').to_string()
+            };
+            Some((format!("{host}/api/tags"), vec![]))
+        }
+        _ => None,
+    }
+}
+
+fn safe_request_error(error: &reqwest::Error) -> &'static str {
+    if error.is_timeout() {
+        "request timed out"
+    } else if error.is_connect() {
+        "could not connect to provider"
+    } else {
+        "provider request failed"
+    }
+}
+
 #[tauri::command]
-pub async fn test_provider_connection(
-    provider: String,
-) -> Result<TestConnectionResult, String> {
+pub async fn test_provider_connection(provider: String) -> Result<TestConnectionResult, String> {
     let start = std::time::Instant::now();
     let key = match load_api_key(&provider)? {
         Some(k) => k,
@@ -310,36 +352,9 @@ pub async fn test_provider_connection(
         Err(e) => return Err(format!("http client init: {e}")),
     };
 
-    let (url, headers): (String, Vec<(&'static str, String)>) = match provider.as_str() {
-        "anthropic" => (
-            "https://api.anthropic.com/v1/models".into(),
-            vec![
-                ("x-api-key", key.clone()),
-                ("anthropic-version", "2023-06-01".into()),
-            ],
-        ),
-        "openai" => (
-            "https://api.openai.com/v1/models".into(),
-            vec![("authorization", format!("Bearer {key}"))],
-        ),
-        "google" => (
-            format!(
-                "https://generativelanguage.googleapis.com/v1beta/models?key={}",
-                urlencoding::encode(&key)
-            ),
-            vec![],
-        ),
-        "ollama" => {
-            // "key" here is reused as host URL for ollama. UI stores
-            // OLLAMA_HOST-style value in the same keyring slot.
-            let host = if key.is_empty() {
-                "http://localhost:11434".into()
-            } else {
-                key.trim_end_matches('/').to_string()
-            };
-            (format!("{host}/api/tags"), vec![])
-        }
-        _ => {
+    let (url, headers) = match provider_request_config(&provider, &key) {
+        Some(config) => config,
+        None => {
             return Ok(TestConnectionResult {
                 ok: false,
                 latency_ms: start.elapsed().as_millis() as u64,
@@ -374,9 +389,10 @@ pub async fn test_provider_connection(
             ok: false,
             latency_ms: start.elapsed().as_millis() as u64,
             status: None,
-            // Format `e` with `{}` (not `{:#?}`) — the reqwest Display
-            // impl gives a one-line summary without inner body bytes.
-            error: Some(e.to_string()),
+            // Never return reqwest's formatted URL. Provider URLs can include
+            // credentials (for example a custom Ollama host), and older code
+            // put Google's API key directly in the query string.
+            error: Some(safe_request_error(&e).to_string()),
         }),
     }
 }
@@ -420,8 +436,7 @@ mod tests {
     }
     impl EnvGuard {
         fn set(&mut self, k: &str, v: Option<&str>) {
-            self.restore
-                .push((k.to_string(), std::env::var(k).ok()));
+            self.restore.push((k.to_string(), std::env::var(k).ok()));
             match v {
                 Some(val) => std::env::set_var(k, val),
                 None => std::env::remove_var(k),
@@ -521,5 +536,14 @@ mod tests {
         let s = keyring_status_cmd();
         assert_eq!(s.backend, "env_fallback");
         assert!(s.available);
+    }
+
+    #[test]
+    fn google_connection_config_keeps_key_out_of_url() {
+        let secret = "google-secret-key";
+        let (url, headers) = provider_request_config("google", secret).unwrap();
+        assert!(!url.contains(secret));
+        assert!(!url.contains("?key="));
+        assert_eq!(headers, vec![("x-goog-api-key", secret.to_string())]);
     }
 }

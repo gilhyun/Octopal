@@ -1,4 +1,5 @@
 export const CHATGPT_CODEX_MODELS = [
+  'gpt-5.5',
   'gpt-5.4',
   'gpt-5.3-codex',
 ]
@@ -27,7 +28,10 @@ export function preferredModelForProvider(providerId: string, options: string[])
       ?? ''
   }
   if (providerId === 'openai') {
-    return options.find((m) => m === 'gpt-5.5')
+    return options.find((m) => m === 'gpt-5.6-sol')
+      ?? options.find((m) => m === 'gpt-5.6-terra')
+      ?? options.find((m) => m === 'gpt-5.6-luna')
+      ?? options.find((m) => m === 'gpt-5.5')
       ?? options.find((m) => m === 'gpt-5.4')
       ?? options.find((m) => m === 'gpt-5')
       ?? options[0]

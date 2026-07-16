@@ -52,8 +52,7 @@ mod dock_menu {
 
         REGISTER_CLASS.call_once(|| {
             let superclass = Class::get("NSObject").unwrap();
-            let mut decl =
-                objc::declare::ClassDecl::new("OctoDockMenuTarget", superclass).unwrap();
+            let mut decl = objc::declare::ClassDecl::new("OctoDockMenuTarget", superclass).unwrap();
             unsafe {
                 decl.add_method(
                     sel!(newWindow:),
@@ -123,10 +122,17 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(managed)
         .on_window_event(|window, event| {
-            // Goose ACP pool: 200ms global grace on last-window close
-            // (ADR §6.7 / scope §3.2). SIGTERM → 4ms exit in probes, so the
-            // budget is pure defensive slack. Legacy process_pool is
-            // already cleaned up elsewhere via `stop_all_agents` / drop.
+            // Absolute renderer paths are not authority. Mint a short-lived,
+            // one-shot read authorization only from Tauri's native drop event.
+            if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
+                if let Some(state) = window.app_handle().try_state::<ManagedState>() {
+                    state.dropped_file_allowlist.approve(paths);
+                }
+            }
+
+            // Stop active runs and both idle process pools on last-window
+            // close. Dropping std::process::Child alone does not terminate a
+            // child, and the managed state can outlive the webview teardown.
             if let tauri::WindowEvent::CloseRequested { .. } = event {
                 let app_handle = window.app_handle();
                 // Only fire on the last window — multi-window instances
@@ -139,6 +145,21 @@ pub fn run() {
                 let Some(state) = app_handle.try_state::<ManagedState>() else {
                     return;
                 };
+                let active_runs = state
+                    .running_agents
+                    .lock()
+                    .map(|mut runs| runs.drain().collect::<Vec<_>>())
+                    .unwrap_or_default();
+                if let Ok(mut interrupted) = state.interrupted_runs.lock() {
+                    interrupted.extend(active_runs.iter().map(|(run_id, _)| run_id.clone()));
+                }
+                for (_, pid) in active_runs {
+                    state.process_pool.remove_by_pid(pid);
+                    state.goose_acp_pool.remove_by_pid(pid);
+                    commands::agent::kill_pid(pid);
+                }
+                state.process_pool.kill_all();
+
                 let pool = state.goose_acp_pool.clone();
                 tauri::async_runtime::spawn(async move {
                     let killed = pool.shutdown_all(200).await;
@@ -150,35 +171,6 @@ pub fn run() {
             }
         })
         .setup(|app| {
-            // Allow asset protocol to access .octopal config directory only
-            // (NOT the entire home directory — that triggers macOS permission popups)
-            if let Some(home) = dirs::home_dir() {
-                let octopal_dir = home.join(".octopal");
-                let _ = app
-                    .asset_protocol_scope()
-                    .allow_directory(&octopal_dir, true);
-            }
-            // Also allow /tmp for temporary files
-            let _ = app.asset_protocol_scope().allow_directory("/tmp", true);
-
-            // Allow all existing workspace folders in asset protocol scope
-            if let Ok(st) = app.state::<ManagedState>().app_state.lock() {
-                for ws in &st.workspaces {
-                    for folder in &ws.folders {
-                        let folder_path = std::path::Path::new(folder);
-                        let _ = app
-                            .asset_protocol_scope()
-                            .allow_directory(folder_path, true);
-                        // Explicitly allow .octopal subdir — hidden dirs may be
-                        // skipped by the glob matcher used in allow_directory.
-                        let octopal_sub = folder_path.join(".octopal");
-                        let _ = app
-                            .asset_protocol_scope()
-                            .allow_directory(&octopal_sub, true);
-                    }
-                }
-            }
-
             #[cfg(target_os = "macos")]
             dock_menu::setup(app);
 
