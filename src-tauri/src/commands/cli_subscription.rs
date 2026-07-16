@@ -290,16 +290,24 @@ mod tests {
         None
     }
 
+    #[cfg(unix)]
     #[tokio::test]
-    async fn probe_version_parses_stdout_from_echo() {
-        // `echo --version` prints "--version" to stdout and exits 0.
-        // Good enough to exercise the success branch.
-        let Some(echo) = posix_bin("echo") else {
-            return;
-        };
-        let result = probe_version(&echo).await;
+    async fn probe_version_parses_stdout_from_test_cli() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // BSD `echo` prints `--version` literally while GNU `echo` prints its
+        // own version banner. Use a deterministic executable so this test
+        // exercises the same success path on macOS and Linux.
+        let temp = tempfile::tempdir().unwrap();
+        let cli = temp.path().join("fake-cli");
+        std::fs::write(&cli, "#!/bin/sh\nprintf '%s\\n' 'fake-cli 1.2.3'\n").unwrap();
+        let mut permissions = std::fs::metadata(&cli).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&cli, permissions).unwrap();
+
+        let result = probe_version(&cli).await;
         assert!(result.found, "got: {result:?}");
-        assert!(result.version.unwrap().contains("--version"));
+        assert_eq!(result.version.as_deref(), Some("fake-cli 1.2.3"));
     }
 
     #[tokio::test]
