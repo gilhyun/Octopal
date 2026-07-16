@@ -89,13 +89,12 @@ pub fn candidate_search_paths() -> Vec<PathBuf> {
     let mut out: Vec<PathBuf> = Vec::new();
     let mut seen: std::collections::HashSet<PathBuf> = std::collections::HashSet::new();
 
-    let push = |dir: PathBuf,
-                out: &mut Vec<PathBuf>,
-                seen: &mut std::collections::HashSet<PathBuf>| {
-        if seen.insert(dir.clone()) {
-            out.push(dir);
-        }
-    };
+    let push =
+        |dir: PathBuf, out: &mut Vec<PathBuf>, seen: &mut std::collections::HashSet<PathBuf>| {
+            if seen.insert(dir.clone()) {
+                out.push(dir);
+            }
+        };
 
     // 1. Parent PATH — whatever the OS handed us.
     if let Some(path_var) = std::env::var_os("PATH") {
@@ -340,10 +339,7 @@ mod tests {
             "claude\nevil",
             "",
         ] {
-            assert!(
-                !is_valid_binary_name(bad),
-                "should reject: {bad:?}",
-            );
+            assert!(!is_valid_binary_name(bad), "should reject: {bad:?}",);
         }
     }
 
@@ -382,8 +378,14 @@ mod tests {
         let path = format!("{}:{}", dir_a.display(), dir_b.display());
         let _g = EnvGuard::set("PATH", &path);
         let dirs = candidate_search_paths();
-        let pos_a = dirs.iter().position(|d| *d == dir_a).expect("dir_a present");
-        let pos_b = dirs.iter().position(|d| *d == dir_b).expect("dir_b present");
+        let pos_a = dirs
+            .iter()
+            .position(|d| *d == dir_a)
+            .expect("dir_a present");
+        let pos_b = dirs
+            .iter()
+            .position(|d| *d == dir_b)
+            .expect("dir_b present");
         assert!(pos_a < pos_b, "PATH order preserved: {dirs:?}");
     }
 

@@ -59,6 +59,17 @@ impl ProcessEntry {
     }
 }
 
+impl Drop for ProcessEntry {
+    fn drop(&mut self) {
+        // Dropping std::process::Child does not terminate it. Make every
+        // early-return and pool-removal path fail safe by reaping the child.
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+        }
+        let _ = self.child.wait();
+    }
+}
+
 /// Manages a pool of persistent Claude CLI processes.
 pub struct ProcessPool {
     /// key: "folder::agent_name" or "__dispatcher__::folder"
@@ -80,7 +91,13 @@ impl ProcessPool {
 
     /// Return a process to the pool after use.
     pub fn put(&self, key: String, entry: ProcessEntry) {
-        self.processes.lock().unwrap().insert(key, entry);
+        let replaced = self.processes.lock().unwrap().insert(key, entry);
+        // Concurrent misses can both spawn a process for the same key. The
+        // newer entry wins, but the displaced child must be explicitly reaped
+        // because dropping `std::process::Child` leaves it running.
+        if let Some(mut replaced) = replaced {
+            replaced.kill();
+        }
     }
 
     /// Remove and kill a process by key.
@@ -91,8 +108,8 @@ impl ProcessPool {
         }
     }
 
-    /// Remove a process by PID (used when stop_agent is called).
-    /// Does NOT kill the process — the caller handles that.
+    /// Remove a process by PID (used when stop_agent is called). ProcessEntry's
+    /// Drop is a second-line kill/reap; the caller's PID kill remains harmless.
     pub fn remove_by_pid(&self, pid: u32) {
         let mut procs = self.processes.lock().unwrap();
         let key = procs
@@ -101,7 +118,6 @@ impl ProcessPool {
             .map(|(k, _)| k.clone());
         if let Some(k) = key {
             procs.remove(&k);
-            // Don't call kill here — the caller (stop_agent) handles that.
         }
     }
 
@@ -117,10 +133,7 @@ impl ProcessPool {
     ///
     /// `args` should NOT include the user prompt — that comes via stdin.
     /// Must include: `-p --verbose --input-format stream-json --output-format stream-json`
-    pub fn create_process(
-        args: &[String],
-        cwd: &str,
-    ) -> Result<ProcessEntry, String> {
+    pub fn create_process(args: &[String], cwd: &str) -> Result<ProcessEntry, String> {
         let mut child = claude_command()
             .args(args)
             .current_dir(cwd)
@@ -131,24 +144,30 @@ impl ProcessPool {
             .map_err(|e| format!("Failed to spawn persistent claude process: {}", e))?;
 
         let pid = child.id();
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("Failed to capture stdin")?;
-        let stdout = child
-            .stdout
-            .take()
-            .ok_or("Failed to capture stdout")?;
+        let stdin = match child.stdin.take() {
+            Some(stdin) => stdin,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Failed to capture stdin".to_string());
+            }
+        };
+        let stdout = match child.stdout.take() {
+            Some(stdout) => stdout,
+            None => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err("Failed to capture stdout".to_string());
+            }
+        };
 
         // Drain stderr in a background thread to prevent blocking.
         if let Some(stderr) = child.stderr.take() {
             std::thread::spawn(move || {
                 let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    if let Ok(l) = line {
-                        if !l.trim().is_empty() {
-                            eprintln!("[persistent-claude-stderr] {}", l);
-                        }
+                for line in reader.lines().map_while(Result::ok) {
+                    if !line.trim().is_empty() {
+                        eprintln!("[persistent-claude-stderr] {}", line);
                     }
                 }
             });
@@ -181,7 +200,17 @@ impl ProcessPool {
     }
 }
 
-#[cfg(test)]
+impl Drop for ProcessPool {
+    fn drop(&mut self) {
+        if let Ok(processes) = self.processes.get_mut() {
+            for (_, mut entry) in processes.drain() {
+                entry.kill();
+            }
+        }
+    }
+}
+
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
     use std::process::{Command, Stdio};
@@ -258,8 +287,8 @@ mod tests {
         assert_eq!(taken.pid, pid2);
         taken.kill();
 
-        // e1's process is now orphaned — kill it manually
-        unsafe { libc::kill(pid1 as i32, libc::SIGTERM); }
+        let status = unsafe { libc::kill(pid1 as i32, 0) };
+        assert_ne!(status, 0, "replaced process must be killed and reaped");
     }
 
     // ────────────────────────────────────────────────────────
@@ -317,7 +346,9 @@ mod tests {
         remaining.kill();
 
         // Clean up pid1's process
-        unsafe { libc::kill(pid1 as i32, libc::SIGTERM); }
+        unsafe {
+            libc::kill(pid1 as i32, libc::SIGTERM);
+        }
     }
 
     #[test]
@@ -440,7 +471,10 @@ mod tests {
         let mut taken = pool.take("key").unwrap();
 
         // Config changed → should create new process
-        assert_ne!(taken.config_hash, new_hash, "config hash mismatch should trigger replacement");
+        assert_ne!(
+            taken.config_hash, new_hash,
+            "config hash mismatch should trigger replacement"
+        );
         taken.kill();
     }
 
@@ -458,7 +492,10 @@ mod tests {
         let mut taken = pool.take("key").unwrap();
 
         // Same config → should reuse
-        assert_eq!(taken.config_hash, new_hash, "same config should reuse process");
+        assert_eq!(
+            taken.config_hash, new_hash,
+            "same config should reuse process"
+        );
         assert_eq!(taken.pid, original_pid, "PID should be the same (reused)");
         taken.kill();
     }
@@ -491,7 +528,9 @@ mod tests {
                     taken.kill();
                 } else {
                     // Another thread may have taken it — that's fine for this test
-                    unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+                    unsafe {
+                        libc::kill(pid as i32, libc::SIGTERM);
+                    }
                 }
             }));
         }
@@ -537,8 +576,7 @@ mod tests {
     }
 
     // ────────────────────────────────────────────────────────
-    // stop_agent flow simulation (remove_by_pid doesn't kill,
-    // because the caller handles that)
+    // stop_agent flow simulation (removal also reaps through Drop)
     // ────────────────────────────────────────────────────────
 
     #[test]
@@ -555,11 +593,9 @@ mod tests {
         // Entry should be gone
         assert!(pool.take("folder::agent").is_none());
 
-        // Process is still alive (caller kills it separately)
+        // RAII removal must not orphan the child even if the caller's
+        // follow-up PID signal is delayed or fails.
         let status = unsafe { libc::kill(pid as i32, 0) };
-        assert_eq!(status, 0, "process should still be alive — caller kills it");
-
-        // Cleanup
-        unsafe { libc::kill(pid as i32, libc::SIGTERM); }
+        assert_ne!(status, 0, "removed process must be killed and reaped");
     }
 }

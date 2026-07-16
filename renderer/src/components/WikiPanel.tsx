@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { FileText, Plus, Trash2, Save, ChevronDown, ChevronRight } from 'lucide-react'
 import { MarkdownRenderer } from './MarkdownRenderer'
@@ -25,6 +25,15 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
   const [saving, setSaving] = useState(false)
   const [newPageName, setNewPageName] = useState<string | null>(null)
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(new Set())
+  const listGenerationRef = useRef(0)
+  const readGenerationRef = useRef(0)
+  const editRevisionRef = useRef(0)
+  const saveGenerationRef = useRef(0)
+  const selectedRef = useRef(selected)
+  selectedRef.current = selected
+  const workspaceIdRef = useRef(workspaceId)
+  workspaceIdRef.current = workspaceId
+  const loadedSnapshotRef = useRef<{ key: string; mtime?: number } | null>(null)
 
   // Group pages by folder prefix. Root pages go under "" (empty key).
   // Folders sorted alphabetically; root pages rendered first.
@@ -45,6 +54,11 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
     return entries
   }, [pages])
 
+  const selectedMtime = useMemo(
+    () => pages.find((page) => page.name === selected)?.mtime,
+    [pages, selected],
+  )
+
   const toggleFolder = (folder: string) => {
     setCollapsedFolders((prev) => {
       const next = new Set(prev)
@@ -54,8 +68,15 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
     })
   }
 
-  const refreshPages = () => {
-    window.api.wikiList(workspaceId).then((list) => {
+  const refreshPages = useCallback(async () => {
+    const generation = ++listGenerationRef.current
+    const requestedWorkspace = workspaceId
+    try {
+      const list = await window.api.wikiList(requestedWorkspace)
+      if (
+        generation !== listGenerationRef.current
+        || workspaceIdRef.current !== requestedWorkspace
+      ) return
       setPages(list)
       // Use functional setState to avoid stale closure — always gets latest value
       setSelected((prev) => {
@@ -66,36 +87,61 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
         return prev
       })
       if (list.length === 0) setContent('')
-    })
-  }
-
-  useEffect(() => {
-    refreshPages()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    } catch {
+      // Polling/list refresh failure is non-fatal; retain the last good list.
+    }
   }, [workspaceId])
 
   useEffect(() => {
+    void refreshPages()
+  }, [refreshPages])
+
+  useEffect(() => {
     if (!selected) {
+      readGenerationRef.current += 1
+      loadedSnapshotRef.current = null
+      editRevisionRef.current = 0
       setContent('')
       setDirty(false)
       return
     }
-    window.api.wikiRead({ workspaceId: workspaceId, name: selected }).then((res) => {
+
+    const key = `${workspaceId}\u0000${selected}`
+    const loaded = loadedSnapshotRef.current
+    const pageChanged = loaded?.key !== key
+    const externalChange = !pageChanged && selectedMtime !== undefined && loaded.mtime !== selectedMtime
+    if (!pageChanged && !externalChange) return
+    // Never overwrite local edits merely because an agent changed the same
+    // page. Once the user saves/discards, dirty becomes false and the latest
+    // disk revision is loaded.
+    if (!pageChanged && dirty) return
+
+    const generation = ++readGenerationRef.current
+    let cancelled = false
+    window.api.wikiRead({ workspaceId, name: selected }).then((res) => {
+      if (cancelled || generation !== readGenerationRef.current) return
+      if (workspaceIdRef.current !== workspaceId || selectedRef.current !== selected) return
       if (res.ok) {
+        loadedSnapshotRef.current = { key, mtime: selectedMtime }
+        editRevisionRef.current = 0
         setContent(res.content)
         setDirty(false)
       }
+    }).catch(() => {
+      // Keep the last good content; a later selection or mtime change retries.
     })
-  }, [selected, workspaceId])
+    return () => {
+      cancelled = true
+    }
+  }, [dirty, selected, selectedMtime, workspaceId])
 
   // Poll for external changes (agents writing) every 3s
   useEffect(() => {
     const interval = setInterval(() => {
-      if (!dirty) refreshPages()
+      if (!dirty) void refreshPages()
     }, 3000)
     return () => clearInterval(interval)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dirty])
+  }, [dirty, refreshPages])
 
   const openCreatePage = () => {
     setNewPageName('')
@@ -132,17 +178,35 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
 
   const save = async () => {
     if (!selected) return
+    const requestedWorkspace = workspaceId
+    const requestedPage = selected
+    const revision = editRevisionRef.current
+    const generation = ++saveGenerationRef.current
     setSaving(true)
-    const res = await window.api.wikiWrite({
-      workspaceId: workspaceId,
-      name: selected,
-      content,
-    })
-    setSaving(false)
-    if (res.ok) {
-      setDirty(false)
-    } else {
-      alert(res.error)
+    try {
+      const res = await window.api.wikiWrite({
+        workspaceId: requestedWorkspace,
+        name: requestedPage,
+        content,
+      })
+      if (res.ok) {
+        // Keep the page dirty if the user typed again while this write was in
+        // flight, or navigated to another page/workspace.
+        if (
+          workspaceIdRef.current === requestedWorkspace
+          && selectedRef.current === requestedPage
+          && editRevisionRef.current === revision
+        ) {
+          setDirty(false)
+        }
+        void refreshPages()
+      } else {
+        alert(res.error)
+      }
+    } catch (e: unknown) {
+      alert(e instanceof Error ? e.message : String(e))
+    } finally {
+      if (generation === saveGenerationRef.current) setSaving(false)
     }
   }
 
@@ -240,6 +304,7 @@ export function WikiPanel({ workspaceId }: WikiPanelProps) {
                   className="wiki-editor"
                   value={content}
                   onChange={(e) => {
+                    editRevisionRef.current += 1
                     setContent(e.target.value)
                     setDirty(true)
                   }}

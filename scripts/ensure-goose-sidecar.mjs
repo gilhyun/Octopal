@@ -6,15 +6,15 @@
  * and usable standalone via `node scripts/ensure-goose-sidecar.mjs`.
  *
  * Reads the pinned version from scripts/goose-version.json, downloads the
- * matching release asset from GitHub (block/goose, currently redirected to
- * aaif-goose/goose), extracts the `goose`
+ * matching release asset from the pinned GitHub repository, verifies its
+ * SHA-256 digest, extracts the `goose`
  * binary into src-tauri/binaries/goose-<triple>[.exe], ad-hoc codesigns on
  * macOS, and caches archives under scripts/.cache/goose/<version>/.
  *
  * See docs/goose-integration-notes.md for rationale.
  */
 
-import { execFileSync, execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
   chmodSync,
@@ -24,12 +24,15 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   writeFileSync,
 } from "node:fs";
 import { arch, platform } from "node:os";
 import { dirname, join } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -58,7 +61,7 @@ function detectHostTriple() {
 function loadVersion() {
   const raw = readFileSync(versionFile, "utf8");
   const parsed = JSON.parse(raw);
-  if (!parsed.version || !parsed.assets) {
+  if (!parsed.version || !parsed.repository || !parsed.assets || !parsed.sha256) {
     throw new Error("goose-version.json missing required fields");
   }
   return parsed;
@@ -128,27 +131,40 @@ function existingBinaryMatchesPinnedVersion(outPath, version, outName) {
   return false;
 }
 
-async function downloadRelease(version, assetName, destPath) {
+async function downloadRelease(repository, version, assetName, destPath) {
   mkdirSync(dirname(destPath), { recursive: true });
-  const url = `https://github.com/block/goose/releases/download/${version}/${assetName}`;
+  const url = `https://github.com/${repository}/releases/download/${version}/${assetName}`;
   console.log(`  ↓ ${url}`);
   const res = await fetch(url, { redirect: "follow" });
   if (!res.ok) {
     throw new Error(`HTTP ${res.status} fetching ${url}`);
   }
-  const reader = res.body.getReader();
-  const stream = createWriteStream(destPath);
+  if (new URL(res.url).protocol !== "https:") {
+    throw new Error(`Refusing non-HTTPS redirect while fetching ${assetName}`);
+  }
+  const partialPath = `${destPath}.part`;
+  rmSync(partialPath, { force: true });
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!stream.write(value)) {
-        await new Promise((r) => stream.once("drain", r));
-      }
-    }
-  } finally {
-    stream.end();
-    await new Promise((r) => stream.once("close", r));
+    await pipeline(
+      Readable.fromWeb(res.body),
+      createWriteStream(partialPath, { flags: "wx" }),
+    );
+    renameSync(partialPath, destPath);
+  } catch (err) {
+    rmSync(partialPath, { force: true });
+    throw err;
+  }
+}
+
+function verifyArchive(path, expectedSha256) {
+  if (!/^[a-f0-9]{64}$/i.test(expectedSha256 ?? "")) {
+    throw new Error(`Invalid pinned SHA-256 for ${path}`);
+  }
+  const actual = sha256OfFile(path);
+  if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+    throw new Error(
+      `SHA-256 mismatch for ${path}: expected ${expectedSha256}, got ${actual}`,
+    );
   }
 }
 
@@ -162,7 +178,13 @@ function extractArchive(archivePath, workDir) {
     if (platform() === "win32") {
       execFileSync(
         "powershell",
-        ["-NoProfile", "-Command", `Expand-Archive -Force -Path '${archivePath}' -DestinationPath '${workDir}'`],
+        [
+          "-NoProfile",
+          "-Command",
+          "Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]",
+          archivePath,
+          workDir,
+        ],
         { stdio: "inherit" },
       );
     } else {
@@ -220,7 +242,7 @@ function adhocCodesignMacOS(path) {
 }
 
 export async function ensureGooseSidecar({ triple } = {}) {
-  const { version, assets } = loadVersion();
+  const { version, repository, assets, sha256 } = loadVersion();
   const target = triple ?? detectHostTriple();
   if (target === "universal-apple-darwin") {
     return ensureGooseUniversalSidecar();
@@ -228,6 +250,10 @@ export async function ensureGooseSidecar({ triple } = {}) {
   const assetName = assets[target];
   if (!assetName) {
     throw new Error(`No release asset mapped for target triple ${target} in goose-version.json`);
+  }
+  const expectedSha256 = sha256[target];
+  if (!expectedSha256) {
+    throw new Error(`No SHA-256 pinned for target triple ${target} in goose-version.json`);
   }
 
   const isWindows = target.endsWith("windows-msvc");
@@ -244,10 +270,18 @@ export async function ensureGooseSidecar({ triple } = {}) {
   mkdirSync(cacheVersionDir, { recursive: true });
   const archivePath = join(cacheVersionDir, assetName);
 
+  if (existsSync(archivePath)) {
+    try {
+      verifyArchive(archivePath, expectedSha256);
+      console.log(`  ✓ verified cached archive: ${assetName}`);
+    } catch (err) {
+      console.warn(`  ⚠ ${err.message}; downloading a clean copy`);
+      rmSync(archivePath, { force: true });
+    }
+  }
   if (!existsSync(archivePath)) {
-    await downloadRelease(version, assetName, archivePath);
-  } else {
-    console.log(`  ✓ cached archive: ${assetName}`);
+    await downloadRelease(repository, version, assetName, archivePath);
+    verifyArchive(archivePath, expectedSha256);
   }
 
   const workDir = join(cacheVersionDir, `extract-${target}`);

@@ -186,6 +186,7 @@
     "scrollToBottom": "맨 아래로",
     "attachFile": "파일 첨부",
     "removeAttachment": "첨부 파일 제거",
+    "attachmentSaveFailed": "첨부 파일 {{count}}개를 저장하지 못해 선택 상태로 남겨두었습니다. 다시 시도하거나 제거해주세요.",
     "stopAllAgents": "모든 에이전트 중지",
     "callTargets": "{{targets}}에게 전달할까요?",
     "handoffDismissed": "핸드오프 무시됨",
@@ -287,10 +288,14 @@
       "tabPermissions": "권한",
       "tabModel": "모델",
       "tabMcp": "MCP",
+      "nameRequired": "에이전트 이름을 입력해주세요.",
+      "nameInvalid": "문자, 숫자, 공백, 하이픈, 밑줄만 사용할 수 있습니다.",
+      "nameTooLong": "에이전트 이름은 {{max}}자 이하로 입력해주세요.",
       "rolePlaceholder": "React, TypeScript 전문 풀스택 개발자",
       "roleHint": "다른 에이전트에게 보여지는 짧은 소개 (1-2문장).",
       "promptLabel": "시스템 프롬프트",
       "promptHint": "에이전트의 전체 지시사항. prompt.md 파일로 저장되며 VS Code 등에서도 편집 가능합니다.",
+      "promptLoadError": "기존 프롬프트를 불러오지 못해 prompt.md는 변경하지 않습니다. {{error}}",
       "promptPlaceholder": "당신은 개발자 에이전트입니다. 깔끔한 코드를 작성하고, 기능을 구현하고, 버그를 수정합니다..."
     },
     "agentModel": {
@@ -329,6 +334,7 @@
   "activity": {
     "title": "최근 활동",
     "empty": "아직 활동이 없습니다",
+    "diffTooLarge": "이 diff는 안전하게 표시하기에 너무 큽니다(버전당 {{mb}}MB, 전체 {{lines}}줄 제한).",
     "toolCreated": "생성",
     "toolEdited": "편집",
     "toolRan": "실행",

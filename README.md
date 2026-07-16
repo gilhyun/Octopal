@@ -147,7 +147,7 @@ codex login                                        # OAuth once
 # Octopal handles ChatGPT-side OAuth on first message via goose
 ```
 
-> Why two npm packages for Claude? goose v1.31.0's `claude-acp` provider
+> Why two npm packages for Claude? Goose v1.41.0's `claude-acp` provider
 > spawns the `claude-agent-acp` adapter, which itself shells out to the
 > `claude` CLI. Both must be on `PATH`. Octopal's PATH augmentation
 > covers nvm/asdf/homebrew installs automatically.
@@ -210,15 +210,15 @@ Octopal uses GitHub Actions to automatically build and release when a version ta
 
 ```bash
 # Tag a release and push — CI builds macOS + Windows automatically
-git tag v0.1.43
-git push origin v0.1.43
+git tag v0.1.56
+git push origin v0.1.56
 ```
 
 The workflow (`.github/workflows/release.yml`) does:
-1. **Build** — macOS (universal: Intel + Apple Silicon) and Windows (MSI + NSIS) in parallel
-2. **Bundle goose** — Downloads the goose sidecar binary for each platform
-3. **Sign & Notarize** — Code signing + Apple notarization (maintainer secrets required)
-4. **Release** — Creates a GitHub Release with DMG, MSI, EXE, and auto-update artifacts
+1. **Verify** — Runs frontend/Rust tests and dependency audits, and checks the tag against every application version
+2. **Build** — Builds macOS universal and Windows packages with the SHA-256-pinned Goose sidecar
+3. **Sign & Notarize** — Signs updater artifacts and verifies Apple code signing and notarization
+4. **Publish** — Verifies updater signatures, generates `latest.json`, and creates the GitHub Release
 
 ### Forking & Building Yourself
 
@@ -226,15 +226,15 @@ If you fork Octopal, CI will run on your fork too. Here's what to know:
 
 | Item | What happens |
 |------|-------------|
-| **Secrets** | Your fork does NOT have the original repo's secrets. Signing/notarization will be skipped — you'll get unsigned builds. |
+| **Secrets** | Your fork does NOT have the original repo's secrets. Tagged release jobs fail closed until signing/notarization secrets are configured. |
 | **GITHUB_TOKEN** | Automatically provided by GitHub for your fork. Releases will be created on YOUR fork's releases page. |
 | **goose sidecar** | Downloaded from Block's public GitHub releases — works without any secrets. |
 | **Auto-update** | Won't work without `TAURI_SIGNING_PRIVATE_KEY`. Users will need to manually download new versions. |
 
 To set up signing on your fork, add these repository secrets:
 - `TAURI_SIGNING_PRIVATE_KEY` — For updater artifact signing
-- `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — For macOS code signing
-- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` — For Apple notarization
+- `APPLE_SIGNING_IDENTITY` / `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — For macOS code signing
+- `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` — For Apple notarization
 
 > No secrets? No problem. `pnpm build` produces a working unsigned app locally.
 
@@ -244,7 +244,7 @@ To set up signing on your fork, add these repository secrets:
 |-------|------|
 | Desktop | Tauri 2 (Rust backend) |
 | Frontend | React 18 + TypeScript 5.6 |
-| Build | Vite 5 + Cargo |
+| Build | Vite 8 + Cargo |
 | AI Engine | goose ACP (Claude + OpenAI multi-provider) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Icons | Lucide React |

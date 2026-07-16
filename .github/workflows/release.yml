@@ -7,10 +7,111 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
+  verify:
+    runs-on: ubuntu-latest
+    outputs:
+      prerelease: ${{ steps.release_metadata.outputs.prerelease }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Require updater signing secrets for tagged releases
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAURI_SIGNING_PRIVATE_KEY:-}" ]]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is required for tagged releases"
+            exit 1
+          fi
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.13.1
+          run_install: false
+
+      - name: Setup Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable, 2026-07-11
+        with:
+          toolchain: stable
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@2ca9b94c269419b7b0c711c09d0b21c4e1d51145 # v2.83.1
+        with:
+          tool: cargo-audit@0.22.2
+          fallback: none
+
+      - name: Audit Rust dependencies
+        run: cargo audit --file src-tauri/Cargo.lock
+
+      - name: Run Rust tests
+        run: cargo test --locked --manifest-path src-tauri/Cargo.toml --all-targets
+
+      - name: Install frontend dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Validate release tag and application versions
+        id: release_metadata
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          semver_re='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*))(\.((0|[1-9][0-9]*)|([0-9]*[A-Za-z-][0-9A-Za-z-]*)))*)?(\+([0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*))?$'
+          if [[ ! "$version" =~ $semver_re ]]; then
+            echo "::error::Release tag must be valid SemVer (received ${GITHUB_REF_NAME})"
+            exit 1
+          fi
+
+          package_version=$(jq -r '.version' package.json)
+          tauri_version=$(jq -r '.version' src-tauri/tauri.conf.json)
+          cargo_version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' src-tauri/Cargo.toml | head -n 1)
+
+          for declared_version in "$package_version" "$tauri_version" "$cargo_version"; do
+            if [[ "$declared_version" != "$version" ]]; then
+              echo "::error::Tag ${GITHUB_REF_NAME} does not match package/Tauri/Cargo versions (${package_version}, ${tauri_version}, ${cargo_version})"
+              exit 1
+            fi
+          done
+
+          version_core="${version%%+*}"
+          if [[ "$version_core" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run tests and typecheck
+        run: pnpm check
+
+      - name: Audit frontend dependencies
+        run: pnpm run audit:dependencies
+
   build:
+    needs: verify
     strategy:
       fail-fast: false
       matrix:
@@ -19,6 +120,8 @@ jobs:
             rust-targets: aarch64-apple-darwin,x86_64-apple-darwin
             tauri-args: --target universal-apple-darwin
             bundle-root: src-tauri/target/universal-apple-darwin/release/bundle
+            updater_artifact_glob: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
+            updater_signature_glob: src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
             artifact-glob: |
               src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
               src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz
@@ -27,38 +130,68 @@ jobs:
             rust-targets: ''
             tauri-args: ''
             bundle-root: src-tauri/target/release/bundle
+            updater_artifact_glob: src-tauri/target/release/bundle/nsis/*.exe
+            updater_signature_glob: src-tauri/target/release/bundle/nsis/*.exe.sig
             artifact-glob: |
               src-tauri/target/release/bundle/msi/*.msi
-              src-tauri/target/release/bundle/msi/*.msi.zip
-              src-tauri/target/release/bundle/msi/*.msi.zip.sig
+              src-tauri/target/release/bundle/msi/*.msi.sig
               src-tauri/target/release/bundle/nsis/*.exe
-              src-tauri/target/release/bundle/nsis/*.nsis.zip
-              src-tauri/target/release/bundle/nsis/*.nsis.zip.sig
+              src-tauri/target/release/bundle/nsis/*.exe.sig
 
     runs-on: ${{ matrix.platform }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Require Apple signing and notarization secrets
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+          required=(
+            APPLE_SIGNING_IDENTITY
+            APPLE_CERTIFICATE
+            APPLE_CERTIFICATE_PASSWORD
+            APPLE_ID
+            APPLE_PASSWORD
+            APPLE_TEAM_ID
+          )
+          for name in "${required[@]}"; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::${name} is required for tagged macOS releases"
+              exit 1
+            fi
+          done
 
       - name: Install pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
         with:
-          version: 10.8.1
+          version: 11.13.1
           run_install: false
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
           cache: pnpm
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable, 2026-07-11
         with:
+          toolchain: stable
           targets: ${{ matrix.rust-targets }}
 
       - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           workspaces: src-tauri -> target
 
@@ -67,37 +200,73 @@ jobs:
 
       - name: Build Tauri app
         env:
-          # macOS code signing + notarization
-          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
-          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
-          APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
-          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
-          # Tauri updater signing — wrapper enables createUpdaterArtifacts
-          # only when TAURI_SIGNING_PRIVATE_KEY is set (see
-          # scripts/tauri-build.mjs). Local contributor builds without
-          # the key skip updater artifacts and don't error out.
+          # Apple credentials must only be exposed to the macOS runner.
+          APPLE_SIGNING_IDENTITY: ${{ runner.os == 'macOS' && secrets.APPLE_SIGNING_IDENTITY || '' }}
+          APPLE_CERTIFICATE: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_ID: ${{ runner.os == 'macOS' && secrets.APPLE_ID || '' }}
+          APPLE_PASSWORD: ${{ runner.os == 'macOS' && secrets.APPLE_APP_SPECIFIC_PASSWORD || '' }}
+          APPLE_TEAM_ID: ${{ runner.os == 'macOS' && secrets.APPLE_TEAM_ID || '' }}
+          # Tauri updater signing is required on both release platforms.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-        # Use the wrapper (`pnpm build`), not raw `pnpm exec tauri build`,
-        # so two important pre-build steps run:
-        #   1. ensureGooseSidecar() downloads the pinned Goose binary into
-        #      src-tauri/binaries/ (gitignored — must be fetched per build)
-        #   2. createUpdaterArtifacts override is applied based on whether
-        #      the signing key env var is present
-        # The `--` is required so pnpm forwards matrix.tauri-args through
-        # to the wrapper instead of swallowing them as pnpm flags.
+        # The wrapper downloads the pinned Goose sidecar and enables updater
+        # artifacts only when the Tauri signing key is available.
         run: pnpm build -- ${{ matrix.tauri-args }}
+
+      - name: Verify release updater artifacts
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          updater_files=(${{ matrix.updater_artifact_glob }})
+          signature_files=(${{ matrix.updater_signature_glob }})
+
+          if [[ ${#updater_files[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one updater artifact, found ${#updater_files[@]}"
+            exit 1
+          fi
+          if [[ ${#signature_files[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one updater signature, found ${#signature_files[@]}"
+            exit 1
+          fi
+          if [[ "${signature_files[0]}" != "${updater_files[0]}.sig" ]]; then
+            echo "::error::Updater signature does not match ${updater_files[0]}"
+            exit 1
+          fi
+          if [[ ! -s "${updater_files[0]}" || ! -s "${signature_files[0]}" ]]; then
+            echo "::error::Updater artifact or signature is empty"
+            exit 1
+          fi
+
+      - name: Verify macOS signature and notarization ticket
+        if: runner.os == 'macOS' && startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          apps=("${{ matrix.bundle-root }}"/macos/*.app)
+          if [[ ${#apps[@]} -ne 1 ]]; then
+            echo "::error::Expected exactly one macOS app bundle, found ${#apps[@]}"
+            exit 1
+          fi
+
+          codesign --verify --deep --strict --verbose=2 "${apps[0]}"
+          signing_details=$(codesign --display --verbose=4 "${apps[0]}" 2>&1)
+          printf '%s\n' "$signing_details"
+          if ! grep -q '^Authority=Developer ID Application:' <<< "$signing_details"; then
+            echo "::error::macOS app is not signed with a Developer ID Application identity"
+            exit 1
+          fi
+          xcrun stapler validate "${apps[0]}"
 
       - name: List bundle output
         shell: bash
-        run: |
-          echo "=== ${{ matrix.bundle-root }} ==="
-          ls -lR "${{ matrix.bundle-root }}" || true
+        run: ls -lR "${{ matrix.bundle-root }}"
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.platform }}-build
           path: ${{ matrix.artifact-glob }}
@@ -105,85 +274,149 @@ jobs:
           retention-days: 5
 
   publish:
-    needs: build
+    needs: [verify, build]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/v')
+    permissions:
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install pinned Minisign verifier
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=0.12
+          archive="$RUNNER_TEMP/minisign-${version}-linux.tar.gz"
+          expected_sha256=9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73
+          install_dir="$RUNNER_TEMP/minisign-bin"
+
+          curl --fail --location --silent --show-error \
+            --proto '=https' --proto-redir '=https' --tlsv1.2 \
+            "https://github.com/jedisct1/minisign/releases/download/${version}/minisign-${version}-linux.tar.gz" \
+            --output "$archive"
+          printf '%s  %s\n' "$expected_sha256" "$archive" | sha256sum --check --strict
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP"
+          install --directory "$install_dir"
+          install --mode 0755 \
+            "$RUNNER_TEMP/minisign-linux/x86_64/minisign" \
+            "$install_dir/minisign"
+          echo "$install_dir" >> "$GITHUB_PATH"
+          "$install_dir/minisign" -v
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           path: dist-assets
           merge-multiple: true
 
       - name: List collected assets
-        run: find dist-assets -type f -maxdepth 3
+        run: find dist-assets -maxdepth 3 -type f -print
 
-      - name: Generate latest.json for updater
+      - name: Generate and validate latest.json for updater
+        shell: bash
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          NOTES="Release v${VERSION}"
-          BASE_URL="https://github.com/gilhyun/Octopal/releases/download/${GITHUB_REF_NAME}"
+          set -euo pipefail
 
-          # Read macOS signature
-          MAC_SIG=""
-          MAC_SIG_FILE=$(find dist-assets -name "*.app.tar.gz.sig" | head -1)
-          if [ -f "$MAC_SIG_FILE" ]; then
-            MAC_SIG=$(cat "$MAC_SIG_FILE")
-          fi
-          MAC_TAR=$(find dist-assets -name "*.app.tar.gz" ! -name "*.sig" | head -1)
-          MAC_TAR_NAME=$(basename "$MAC_TAR" 2>/dev/null || echo "")
-
-          # Read Windows NSIS signature
-          WIN_NSIS_SIG=""
-          WIN_NSIS_SIG_FILE=$(find dist-assets -name "*.nsis.zip.sig" | head -1)
-          if [ -f "$WIN_NSIS_SIG_FILE" ]; then
-            WIN_NSIS_SIG=$(cat "$WIN_NSIS_SIG_FILE")
-          fi
-          WIN_NSIS_ZIP=$(find dist-assets -name "*.nsis.zip" ! -name "*.sig" | head -1)
-          WIN_NSIS_ZIP_NAME=$(basename "$WIN_NSIS_ZIP" 2>/dev/null || echo "")
-
-          # Build JSON
-          cat > dist-assets/latest.json <<ENDJSON
-          {
-            "version": "${VERSION}",
-            "notes": "${NOTES}",
-            "pub_date": "${PUB_DATE}",
-            "platforms": {
-              "darwin-aarch64": {
-                "signature": "${MAC_SIG}",
-                "url": "${BASE_URL}/${MAC_TAR_NAME}"
-              },
-              "darwin-x86_64": {
-                "signature": "${MAC_SIG}",
-                "url": "${BASE_URL}/${MAC_TAR_NAME}"
-              },
-              "windows-x86_64": {
-                "signature": "${WIN_NSIS_SIG}",
-                "url": "${BASE_URL}/${WIN_NSIS_ZIP_NAME}"
-              }
-            }
+          find_single() {
+            local pattern="$1"
+            local matches=()
+            local match
+            while IFS= read -r match; do
+              [[ -n "$match" ]] && matches+=("$match")
+            done < <(find dist-assets -type f -name "$pattern" -print | sort)
+            if [[ ${#matches[@]} -ne 1 ]]; then
+              echo "::error::Expected exactly one ${pattern}, found ${#matches[@]}" >&2
+              if [[ ${#matches[@]} -gt 0 ]]; then
+                printf '%s\n' "${matches[@]}" >&2
+              fi
+              return 1
+            fi
+            printf '%s\n' "${matches[0]}"
           }
-          ENDJSON
-          echo "=== latest.json ==="
-          cat dist-assets/latest.json
+
+          version="${GITHUB_REF_NAME#v}"
+          pub_date=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          notes="Release v${version}"
+          base_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
+
+          mac_archive=$(find_single '*.app.tar.gz')
+          mac_signature_file=$(find_single '*.app.tar.gz.sig')
+          windows_installer=$(find_single '*.exe')
+          windows_signature_file=$(find_single '*.exe.sig')
+
+          if [[ "$mac_signature_file" != "${mac_archive}.sig" ]]; then
+            echo "::error::macOS updater archive and signature do not match"
+            exit 1
+          fi
+          if [[ "$windows_signature_file" != "${windows_installer}.sig" ]]; then
+            echo "::error::Windows updater installer and signature do not match"
+            exit 1
+          fi
+
+          mac_signature=$(<"$mac_signature_file")
+          windows_signature=$(<"$windows_signature_file")
+          if [[ -z "$mac_signature" || -z "$windows_signature" ]]; then
+            echo "::error::Updater signatures must not be empty"
+            exit 1
+          fi
+
+          verification_dir=$(mktemp -d)
+          trap 'rm -rf "$verification_dir"' EXIT
+          updater_pubkey=$(jq -er '.plugins.updater.pubkey | select(type == "string" and length > 0)' src-tauri/tauri.conf.json)
+          printf '%s' "$updater_pubkey" | base64 --decode > "$verification_dir/octopal.pub"
+          base64 --decode "$mac_signature_file" > "$verification_dir/mac.sig"
+          base64 --decode "$windows_signature_file" > "$verification_dir/windows.sig"
+          minisign -Vm "$mac_archive" -x "$verification_dir/mac.sig" -p "$verification_dir/octopal.pub"
+          minisign -Vm "$windows_installer" -x "$verification_dir/windows.sig" -p "$verification_dir/octopal.pub"
+
+          mac_name=$(basename "$mac_archive")
+          windows_name=$(basename "$windows_installer")
+          mac_url_name=$(jq -rn --arg value "$mac_name" '$value | @uri')
+          windows_url_name=$(jq -rn --arg value "$windows_name" '$value | @uri')
+
+          jq -n \
+            --arg version "$version" \
+            --arg notes "$notes" \
+            --arg pub_date "$pub_date" \
+            --arg mac_signature "$mac_signature" \
+            --arg mac_url "${base_url}/${mac_url_name}" \
+            --arg windows_signature "$windows_signature" \
+            --arg windows_url "${base_url}/${windows_url_name}" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "darwin-aarch64": { signature: $mac_signature, url: $mac_url },
+                "darwin-x86_64": { signature: $mac_signature, url: $mac_url },
+                "windows-x86_64": { signature: $windows_signature, url: $windows_url }
+              }
+            }' > dist-assets/latest.json
+
+          jq -e --arg version "$version" '
+            .version == $version and
+            (.platforms | length == 3) and
+            ([.platforms[] | select((.signature | length) == 0 or (.url | length) == 0)] | length == 0)
+          ' dist-assets/latest.json >/dev/null
+          jq . dist-assets/latest.json
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@718ea10b132b3b2eba29c1007bb80653f286566b # v3.0.1
         with:
           draft: false
+          prerelease: ${{ needs.verify.outputs.prerelease }}
           generate_release_notes: true
+          fail_on_unmatched_files: true
           files: |
             dist-assets/**/*.dmg
             dist-assets/**/*.msi
-            dist-assets/**/*.msi.zip
-            dist-assets/**/*.msi.zip.sig
+            dist-assets/**/*.msi.sig
             dist-assets/**/*.exe
-            dist-assets/**/*.nsis.zip
-            dist-assets/**/*.nsis.zip.sig
+            dist-assets/**/*.exe.sig
             dist-assets/**/*.app.tar.gz
             dist-assets/**/*.app.tar.gz.sig
             dist-assets/latest.json

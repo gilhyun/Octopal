@@ -15,81 +15,128 @@ interface McpValidationModalProps {
   onDone: () => void
 }
 
-/**
- * MCP Validation Modal — single server per agent.
- * Validates the MCP server config, offers package installation, and shows
- * actionable error messages (what went wrong + how to fix it).
- */
+function normalizeHealthResult(
+  result: { status: 'ok' | 'package_missing' | 'spawn_error' | 'timeout'; error?: string; packageName?: string } | undefined,
+  unknownError: string,
+): ServerResult {
+  if (!result) return { status: 'spawn_error', error: unknownError }
+  return {
+    status: result.status === 'ok'
+      ? 'ok'
+      : result.status === 'package_missing'
+        ? 'package_missing'
+        : 'spawn_error',
+    error: result.error,
+    packageName: result.packageName,
+  }
+}
+
+/** Validate every MCP server configured for the agent. */
 export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidationModalProps) {
   const { t } = useTranslation()
-
-  // Single server: take the first (and only) entry
-  const serverName = Object.keys(mcpServers)[0]
-  const serverConfig = mcpServers[serverName]
-
-  const [result, setResult] = useState<ServerResult>({ status: 'pending' })
+  const serverNames = Object.keys(mcpServers)
+  const initialResults = () => Object.fromEntries(
+    serverNames.map((name) => [name, { status: 'pending' as const }]),
+  )
+  const [results, setResults] = useState<Record<string, ServerResult>>(initialResults)
   const [phase, setPhase] = useState<'checking' | 'done'>('checking')
 
+  const updateResult = (serverName: string, result: ServerResult) => {
+    setResults((prev) => ({ ...prev, [serverName]: result }))
+  }
+
   const runHealthCheck = useCallback(async () => {
-    setResult({ status: 'checking' })
+    setResults(Object.fromEntries(
+      serverNames.map((name) => [name, { status: 'checking' as const }]),
+    ))
     setPhase('checking')
 
     try {
-      const res = await window.api.mcpHealthCheck({ mcpServers: { [serverName]: serverConfig } })
-      if (!res.ok) {
-        setResult({ status: 'spawn_error', error: (res as any).error || t('mcpValidation.unknownError') })
+      const response = await window.api.mcpHealthCheck({ mcpServers })
+      if (!response.ok) {
+        const error = response.error || t('mcpValidation.unknownError')
+        setResults(Object.fromEntries(
+          serverNames.map((name) => [name, { status: 'spawn_error' as const, error }]),
+        ))
       } else {
-        const r = res.results[serverName]
-        if (r) {
-          setResult({
-            status: r.status === 'ok' ? 'ok'
-              : r.status === 'package_missing' ? 'package_missing'
-              : 'spawn_error',
-            error: r.error,
-            packageName: r.packageName,
-          })
-        } else {
-          setResult({ status: 'spawn_error', error: t('mcpValidation.unknownError') })
-        }
+        setResults(Object.fromEntries(
+          serverNames.map((name) => [
+            name,
+            normalizeHealthResult(response.results[name], t('mcpValidation.unknownError')),
+          ]),
+        ))
       }
-    } catch (e: any) {
-      setResult({ status: 'spawn_error', error: e.message })
+    } catch (e: unknown) {
+      const error = e instanceof Error ? e.message : String(e)
+      setResults(Object.fromEntries(
+        serverNames.map((name) => [name, { status: 'spawn_error' as const, error }]),
+      ))
+    } finally {
+      setPhase('done')
     }
-    setPhase('done')
-  }, [serverName, serverConfig, t])
+  }, [mcpServers, t])
 
   useEffect(() => {
-    runHealthCheck()
+    void runHealthCheck()
   }, [runHealthCheck])
 
-  const installPackage = async (packageName: string) => {
-    setResult({ status: 'installing', packageName })
+  const installPackage = async (serverName: string, packageName: string) => {
+    updateResult(serverName, { status: 'installing', packageName })
 
-    const res = await window.api.mcpInstallPackage({ packageName })
-    if (res.ok) {
-      // Re-check after install
-      setResult({ status: 'checking', packageName })
+    try {
+      const install = await window.api.mcpInstallPackage({ packageName })
+      if (!install.ok) {
+        updateResult(serverName, {
+          status: 'install_failed',
+          error: install.error,
+          packageName,
+        })
+        return
+      }
+
+      updateResult(serverName, { status: 'checking', packageName })
       try {
-        const checkRes = await window.api.mcpHealthCheck({ mcpServers: { [serverName]: serverConfig } })
-        if (checkRes.ok && checkRes.results[serverName]) {
-          const r = checkRes.results[serverName]
-          setResult({
-            status: r.status === 'ok' ? 'ok' : 'spawn_error',
-            error: r.error,
+        const check = await window.api.mcpHealthCheck({
+          mcpServers: { [serverName]: mcpServers[serverName] },
+        })
+        if (!check.ok) {
+          updateResult(serverName, {
+            status: 'spawn_error',
+            error: check.error || t('mcpValidation.unknownError'),
             packageName,
           })
+          return
         }
-      } catch {
-        setResult({ status: 'ok', packageName }) // Assume OK if re-check fails
+        updateResult(
+          serverName,
+          normalizeHealthResult(check.results[serverName], t('mcpValidation.unknownError')),
+        )
+      } catch (e: unknown) {
+        // A failed verification is never success. Keep the server visibly in
+        // an error state so users do not trust an unverified installation.
+        updateResult(serverName, {
+          status: 'spawn_error',
+          error: e instanceof Error ? e.message : String(e),
+          packageName,
+        })
       }
-    } else {
-      setResult({ status: 'install_failed', error: res.error, packageName })
+    } catch (e: unknown) {
+      updateResult(serverName, {
+        status: 'install_failed',
+        error: e instanceof Error ? e.message : String(e),
+        packageName,
+      })
     }
   }
 
-  const isOk = result.status === 'ok'
-  const hasIssue = ['package_missing', 'spawn_error', 'install_failed'].includes(result.status)
-  const isWorking = ['pending', 'checking', 'installing'].includes(result.status)
+  const resultValues = serverNames.map((name) => results[name] ?? { status: 'pending' as const })
+  const isOk = serverNames.length > 0 && resultValues.every((result) => result.status === 'ok')
+  const hasIssue = resultValues.some((result) =>
+    ['package_missing', 'spawn_error', 'install_failed'].includes(result.status),
+  )
+  const isWorking = resultValues.some((result) =>
+    ['pending', 'checking', 'installing'].includes(result.status),
+  )
 
   const statusIcon = (status: ServerStatus) => {
     switch (status) {
@@ -103,8 +150,8 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
     }
   }
 
-  /** Build a user-friendly error description with actionable fix instructions */
-  const renderErrorDetail = () => {
+  /** Build a user-friendly error description with actionable fix instructions. */
+  const renderErrorDetail = (serverName: string, result: ServerResult) => {
     const error = result.error || ''
     const lowerError = error.toLowerCase()
 
@@ -118,7 +165,6 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
     }
 
     if (result.status === 'spawn_error') {
-      // Detect auth/token errors
       if (lowerError.includes('unauthorized') || lowerError.includes('invalid token') ||
           lowerError.includes('401') || lowerError.includes('403') || lowerError.includes('auth') ||
           lowerError.includes('token') || lowerError.includes('forbidden') ||
@@ -132,7 +178,6 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
         )
       }
 
-      // Detect network errors
       if (lowerError.includes('enotfound') || lowerError.includes('network') ||
           lowerError.includes('econnrefused') || lowerError.includes('timeout') ||
           lowerError.includes('fetch failed')) {
@@ -145,7 +190,6 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
         )
       }
 
-      // Generic spawn error — show the raw error
       return (
         <div className="mcp-validation-detail mcp-validation-detail--error">
           <div>{t('mcpValidation.spawnError')}</div>
@@ -173,43 +217,48 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
         <div className="modal-title">{t('mcpValidation.title')}</div>
 
         <div className="mcp-validation-list">
-          <div className={`mcp-validation-item mcp-validation--${result.status}`}>
-            <span className="mcp-validation-icon">{statusIcon(result.status)}</span>
-            <div className="mcp-validation-info">
-              <div className="mcp-validation-name">{serverName}</div>
-              {result.status === 'checking' && (
-                <div className="mcp-validation-detail">{t('mcpValidation.checking')}</div>
-              )}
-              {result.status === 'ok' && (
-                <div className="mcp-validation-detail mcp-validation-detail--ok">{t('mcpValidation.connected')}</div>
-              )}
-              {result.status === 'installing' && (
-                <div className="mcp-validation-detail">{t('mcpValidation.installing', { package: result.packageName })}</div>
-              )}
-              {renderErrorDetail()}
-            </div>
-            {result.status === 'package_missing' && result.packageName && (
-              <button
-                className="btn-primary btn-small"
-                onClick={() => installPackage(result.packageName!)}
-              >
-                {t('mcpValidation.install')}
-              </button>
-            )}
-            {result.status === 'install_failed' && result.packageName && (
-              <button
-                className="btn-secondary btn-small"
-                onClick={() => installPackage(result.packageName!)}
-              >
-                {t('mcpValidation.retry')}
-              </button>
-            )}
-          </div>
+          {serverNames.map((serverName) => {
+            const result = results[serverName] ?? { status: 'pending' as const }
+            return (
+              <div key={serverName} className={`mcp-validation-item mcp-validation--${result.status}`}>
+                <span className="mcp-validation-icon">{statusIcon(result.status)}</span>
+                <div className="mcp-validation-info">
+                  <div className="mcp-validation-name">{serverName}</div>
+                  {result.status === 'checking' && (
+                    <div className="mcp-validation-detail">{t('mcpValidation.checking')}</div>
+                  )}
+                  {result.status === 'ok' && (
+                    <div className="mcp-validation-detail mcp-validation-detail--ok">{t('mcpValidation.connected')}</div>
+                  )}
+                  {result.status === 'installing' && (
+                    <div className="mcp-validation-detail">{t('mcpValidation.installing', { package: result.packageName })}</div>
+                  )}
+                  {renderErrorDetail(serverName, result)}
+                </div>
+                {result.status === 'package_missing' && result.packageName && (
+                  <button
+                    className="btn-primary btn-small"
+                    onClick={() => void installPackage(serverName, result.packageName!)}
+                  >
+                    {t('mcpValidation.install')}
+                  </button>
+                )}
+                {result.status === 'install_failed' && result.packageName && (
+                  <button
+                    className="btn-secondary btn-small"
+                    onClick={() => void installPackage(serverName, result.packageName!)}
+                  >
+                    {t('mcpValidation.retry')}
+                  </button>
+                )}
+              </div>
+            )
+          })}
         </div>
 
         {phase === 'done' && isOk && (
           <div className="mcp-validation-summary mcp-validation-summary--ok">
-            {t('mcpValidation.serverConnected', { server: serverName })}
+            {t('mcpValidation.serverConnected', { server: serverNames.join(', ') })}
           </div>
         )}
         {phase === 'done' && hasIssue && (
@@ -220,7 +269,7 @@ export function McpValidationModal({ mcpServers, onClose, onDone }: McpValidatio
 
         <div className="modal-actions">
           {phase === 'done' && hasIssue && (
-            <button className="btn-secondary" onClick={runHealthCheck}>
+            <button className="btn-secondary" onClick={() => void runHealthCheck()}>
               {t('mcpValidation.recheck')}
             </button>
           )}

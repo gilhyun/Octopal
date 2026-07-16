@@ -62,7 +62,9 @@ fn env_snapshot() {
 
 /// Mode A — real keyring backend. Writes, reads, deletes, confirms idempotent.
 fn run_keyring_mode() {
-    println!("Mode A: keyring backend (macOS Keychain / Win Credential Manager / Linux Secret Service)");
+    println!(
+        "Mode A: keyring backend (macOS Keychain / Win Credential Manager / Linux Secret Service)"
+    );
 
     banner("cleanup before");
     match api_keys::delete_api_key(TEST_PROVIDER) {
@@ -94,7 +96,11 @@ fn run_keyring_mode() {
             if v == TEST_KEY {
                 println!("✓ roundtrip ok ({} bytes)", v.len());
             } else {
-                fail(format!("mismatch: got {} bytes, expected {}", v.len(), TEST_KEY.len()));
+                fail(format!(
+                    "mismatch: got {} bytes, expected {}",
+                    v.len(),
+                    TEST_KEY.len()
+                ));
             }
         }
         Ok(None) => fail("load returned None after save — keyring not persisting"),

@@ -100,6 +100,27 @@ interface DiffViewState {
   error?: string
 }
 
+export const MAX_DIFF_CHARS_PER_VERSION = 1_000_000
+export const MAX_DIFF_TOTAL_LINES = 5_000
+
+export type DiffLimitReason = 'size' | 'lines' | null
+
+/** Reject inputs that would make diffLines or the per-line DOM freeze the UI. */
+export function diffLimitReason(before: string, after: string): DiffLimitReason {
+  if (
+    before.length > MAX_DIFF_CHARS_PER_VERSION
+    || after.length > MAX_DIFF_CHARS_PER_VERSION
+  ) return 'size'
+
+  let lines = 2 // one logical line for each non-empty/empty snapshot
+  for (const text of [before, after]) {
+    for (let i = 0; i < text.length; i++) {
+      if (text.charCodeAt(i) === 10 && ++lines > MAX_DIFF_TOTAL_LINES) return 'lines'
+    }
+  }
+  return lines > MAX_DIFF_TOTAL_LINES ? 'lines' : null
+}
+
 /// Pure version of `relativeFor` that the file count memo can call without
 /// closing over component state.
 function relativeForStatic(target: string, folderPath?: string): string {
@@ -172,9 +193,24 @@ export function ActivityPanel({ activityLog, octos, folderMessages = [], folderP
         }),
         window.api.readCurrentFile({
           folderPath,
+          backupId: entry.backupId,
           filePath: rel,
         }),
       ])
+      const limitReason = diffLimitReason(before, after)
+      if (limitReason) {
+        setDiffView({
+          entry,
+          loading: false,
+          before: '',
+          after: '',
+          error: t('activity.diffTooLarge', {
+            mb: MAX_DIFF_CHARS_PER_VERSION / 1_000_000,
+            lines: MAX_DIFF_TOTAL_LINES.toLocaleString(),
+          }),
+        })
+        return
+      }
       setDiffView({ entry, loading: false, before, after })
     } catch (e: any) {
       setDiffView({

@@ -1,5 +1,6 @@
 {
-  "version": "v2.0.0-rc-04-27-0",
+  "version": "v1.41.0",
+  "repository": "aaif-goose/goose",
   "comment": "Pinned Goose release bundled as sidecar. See docs/goose-integration-notes.md §1 D1. Update this file and re-run build to bump.",
   "assets": {
     "aarch64-apple-darwin": "goose-aarch64-apple-darwin.tar.bz2",
@@ -7,5 +8,12 @@
     "x86_64-pc-windows-msvc": "goose-x86_64-pc-windows-msvc.zip",
     "x86_64-unknown-linux-gnu": "goose-x86_64-unknown-linux-gnu.tar.bz2",
     "aarch64-unknown-linux-gnu": "goose-aarch64-unknown-linux-gnu.tar.bz2"
+  },
+  "sha256": {
+    "aarch64-apple-darwin": "84e145273dc5b6100c392cc765376ee75d1bf37a2ef9e9fd9c42fee0d2d997e8",
+    "x86_64-apple-darwin": "b039fe30eecc54e85c7dca247cd96ed3064fa123551595e07b9f83b0cb7e8c15",
+    "x86_64-pc-windows-msvc": "b334f6ff38829e4edd3f7b47c10d0500093146fc5d2181edea4c2630ff3df269",
+    "x86_64-unknown-linux-gnu": "416de595f3e9e7c54a822bce06a79960b9387e3cd51a832a3eadf876237d5a1c",
+    "aarch64-unknown-linux-gnu": "01f57bbec56a62ed3903bf466d407e784c119aabface695f72d3f914dc90d410"
   }
 }

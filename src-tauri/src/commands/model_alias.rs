@@ -44,7 +44,7 @@ pub fn resolve(alias_or_id: &str, provider: &str) -> String {
 /// Normalize an Octopal model setting for the Goose provider we are about
 /// to spawn. Anthropic API and Claude subscription mode use different model
 /// namespaces, so the same saved agent model must be translated at the edge.
-pub const CHATGPT_CODEX_MODELS: &[&str] = &["gpt-5.4", "gpt-5.3-codex"];
+pub const CHATGPT_CODEX_MODELS: &[&str] = &["gpt-5.5", "gpt-5.4", "gpt-5.3-codex"];
 
 pub fn default_for_goose_provider(goose_provider: &str) -> Option<&'static str> {
     match goose_provider {
@@ -166,6 +166,10 @@ mod tests {
     #[test]
     fn chatgpt_codex_accepts_only_subscription_catalog() {
         assert_eq!(
+            resolve_for_goose_provider("gpt-5.5", "chatgpt_codex"),
+            "gpt-5.5"
+        );
+        assert_eq!(
             resolve_for_goose_provider("gpt-5.4", "chatgpt_codex"),
             "gpt-5.4"
         );
@@ -175,11 +179,11 @@ mod tests {
         );
         assert_eq!(
             resolve_for_goose_provider("opus", "chatgpt_codex"),
-            "gpt-5.4"
+            "gpt-5.5"
         );
         assert_eq!(
-            resolve_for_goose_provider("gpt-5.5", "chatgpt_codex"),
-            "gpt-5.4"
+            resolve_for_goose_provider("gpt-5.6-sol", "chatgpt_codex"),
+            "gpt-5.5"
         );
     }
 }

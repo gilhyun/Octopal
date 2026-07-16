@@ -145,7 +145,7 @@ codex login                                        # OAuth 한 번
 # ChatGPT 측 OAuth는 Octopal이 첫 메시지에서 Goose 통해 자동 처리
 ```
 
-> Claude는 왜 npm 패키지가 두 개인가요? Goose v1.31.0의 `claude-acp`
+> Claude는 왜 npm 패키지가 두 개인가요? Goose v1.41.0의 `claude-acp`
 > 프로바이더가 `claude-agent-acp` 어댑터를 spawn하고, 그 어댑터가 다시
 > `claude` CLI를 spawn하는 구조입니다. 둘 다 `PATH`에 있어야 합니다.
 > Octopal의 PATH 보강 로직이 nvm/asdf/homebrew 설치 위치를 자동 탐색
@@ -204,15 +204,15 @@ Octopal은 버전 태그를 푸시하면 GitHub Actions가 자동으로 빌드 &
 
 ```bash
 # 태그 찍고 푸시 — macOS + Windows 자동 빌드
-git tag v0.1.43
-git push origin v0.1.43
+git tag v0.1.56
+git push origin v0.1.56
 ```
 
 워크플로우 (`.github/workflows/release.yml`) 동작:
-1. **빌드** — macOS (유니버설: Intel + Apple Silicon) + Windows (MSI + NSIS) 동시 빌드
-2. **Goose 번들** — 플랫폼별 Goose sidecar 바이너리 자동 다운로드
-3. **서명 & 공증** — 코드 서명 + Apple 공증 (메인테이너 secrets 필요)
-4. **릴리즈** — DMG, MSI, EXE + 자동 업데이트 아티팩트로 GitHub Release 생성
+1. **검증** — 프런트엔드/Rust 테스트와 의존성 감사를 실행하고 태그와 모든 앱 버전을 대조
+2. **빌드** — SHA-256으로 고정한 Goose sidecar와 함께 macOS 유니버설 및 Windows 패키지 빌드
+3. **서명 & 공증** — 업데이터 아티팩트를 서명하고 Apple 코드 서명 및 공증 상태 검증
+4. **배포** — 업데이터 서명을 검증하고 `latest.json`을 만든 뒤 GitHub Release 생성
 
 ### 포크해서 직접 빌드하기
 
@@ -220,15 +220,15 @@ Octopal을 포크하면 CI가 포크에서도 동작합니다. 알아둘 점:
 
 | 항목 | 설명 |
 |------|------|
-| **Secrets** | 포크에는 원본 레포의 secrets가 없습니다. 서명/공증은 스킵되고, 서명 안 된 빌드가 만들어집니다. |
+| **Secrets** | 포크에는 원본 레포의 secrets가 없습니다. 태그 릴리스 작업은 서명/공증 secrets를 설정할 때까지 안전하게 실패합니다. |
 | **GITHUB_TOKEN** | GitHub가 포크 레포에 자동 제공합니다. 릴리즈는 포크의 Releases 페이지에 생성됩니다. |
 | **Goose sidecar** | Block의 공개 GitHub Releases에서 다운로드 — secrets 없이 동작합니다. |
 | **자동 업데이트** | `TAURI_SIGNING_PRIVATE_KEY` 없으면 동작하지 않습니다. 수동 다운로드 필요. |
 
 포크에서 서명을 설정하려면 레포 secrets에 추가:
 - `TAURI_SIGNING_PRIVATE_KEY` — 업데이터 아티팩트 서명용
-- `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — macOS 코드 서명용
-- `APPLE_ID` / `APPLE_PASSWORD` / `APPLE_TEAM_ID` — Apple 공증용
+- `APPLE_SIGNING_IDENTITY` / `APPLE_CERTIFICATE` / `APPLE_CERTIFICATE_PASSWORD` — macOS 코드 서명용
+- `APPLE_ID` / `APPLE_APP_SPECIFIC_PASSWORD` / `APPLE_TEAM_ID` — Apple 공증용
 
 > Secrets 없어도 괜찮습니다. `pnpm build`로 로컬에서 서명 없는 앱을 바로 빌드할 수 있습니다.
 
@@ -238,7 +238,7 @@ Octopal을 포크하면 CI가 포크에서도 동작합니다. 알아둘 점:
 |-------|------|
 | Desktop | Tauri 2 (Rust 백엔드) |
 | Frontend | React 18 + TypeScript 5.6 |
-| Build | Vite 5 + Cargo |
+| Build | Vite 8 + Cargo |
 | AI Engine | Goose ACP (Claude + OpenAI 멀티 프로바이더) |
 | Markdown | react-markdown + remark-gfm + rehype-highlight |
 | Icons | Lucide React |

@@ -1,9 +1,17 @@
 use base64::Engine;
 use serde::Serialize;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tauri::Manager;
+use tauri::State;
 use uuid::Uuid;
+
+const MAX_FILE_SIZE: u64 = 10 * 1024 * 1024;
+const MAX_BASE64_INPUT_SIZE: usize = (MAX_FILE_SIZE as usize).div_ceil(3) * 4 + 16;
+const UPLOADS_DIR: &str = ".octopal/uploads";
+
+use super::path_guard;
+use crate::state::ManagedState;
 
 #[derive(Serialize)]
 pub struct Attachment {
@@ -51,28 +59,24 @@ fn is_sensitive_path(path: &str) -> bool {
     sensitive_patterns.iter().any(|p| lower.contains(p))
 }
 
-/// Validate path containment (prevent traversal)
-fn validate_containment(base: &str, target: &str) -> bool {
-    let base_canon = match fs::canonicalize(base) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-    let target_path = Path::new(base).join(target);
-    let target_canon = match fs::canonicalize(&target_path) {
-        Ok(p) => p,
-        Err(_) => {
-            // File might not exist yet — check parent
-            if let Some(parent) = target_path.parent() {
-                match fs::canonicalize(parent) {
-                    Ok(p) => p,
-                    Err(_) => return false,
-                }
-            } else {
-                return false;
-            }
-        }
-    };
-    target_canon.starts_with(&base_canon)
+/// Resolve one attachment created by `save_file`. Attachment IPC is kept
+/// deliberately narrower than general workspace reads: only a direct regular
+/// file in `.octopal/uploads` is accepted, and it must remain under the size
+/// limit used when saving.
+pub(crate) fn resolve_upload_file(folder: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    let relative = path_guard::safe_relative(relative_path)?;
+    let parts: Vec<_> = relative.components().collect();
+    if parts.len() != 3 || parts[0].as_os_str() != ".octopal" || parts[1].as_os_str() != "uploads" {
+        return Err("Only files in .octopal/uploads may be read".to_string());
+    }
+    let resolved = path_guard::existing_regular_file_path(folder, &relative)?;
+    let size = fs::metadata(&resolved).map_err(|e| e.to_string())?.len();
+    if size > MAX_FILE_SIZE {
+        return Err(format!(
+            "File too large: {size} bytes (max {MAX_FILE_SIZE})"
+        ));
+    }
+    Ok(resolved)
 }
 
 #[tauri::command]
@@ -82,8 +86,35 @@ pub fn save_file(
     file_name: String,
     data: String,
     mime_type: String,
+    state: State<'_, ManagedState>,
 ) -> SaveResult {
-    let uploads_dir = Path::new(&folder_path).join(".octopal").join("uploads");
+    if data.len() > MAX_BASE64_INPUT_SIZE {
+        return SaveResult {
+            ok: false,
+            attachment: None,
+            error: Some(format!("File too large (max {MAX_FILE_SIZE} bytes)")),
+        };
+    }
+    let folder = match path_guard::registered_folder(&state, Path::new(&folder_path)) {
+        Ok(folder) => folder,
+        Err(error) => {
+            return SaveResult {
+                ok: false,
+                attachment: None,
+                error: Some(error),
+            }
+        }
+    };
+    let uploads_dir = match path_guard::write_target(&folder, UPLOADS_DIR) {
+        Ok(path) => path,
+        Err(error) => {
+            return SaveResult {
+                ok: false,
+                attachment: None,
+                error: Some(error),
+            }
+        }
+    };
     if fs::create_dir_all(&uploads_dir).is_err() {
         return SaveResult {
             ok: false,
@@ -93,19 +124,47 @@ pub fn save_file(
     }
 
     let id = Uuid::new_v4().to_string();
-    let ext = mime_type
+    let raw_ext = mime_type
         .split('/')
-        .last()
+        .next_back()
         .unwrap_or("bin")
         .replace("jpeg", "jpg")
         .replace("plain", "txt");
+    let ext = if !raw_ext.is_empty()
+        && raw_ext.len() <= 16
+        && raw_ext.bytes().all(|byte| byte.is_ascii_alphanumeric())
+    {
+        raw_ext
+    } else {
+        "bin".to_string()
+    };
     // Use ASCII-only chars in filename to avoid macOS Unicode normalization (NFC/NFD) issues
-    let ascii_name: String = file_name.chars()
+    let ascii_name: String = file_name
+        .chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_' || *c == '.')
+        .take(120)
         .collect();
-    let name_part = if ascii_name.is_empty() { "file".to_string() } else { ascii_name };
-    let safe_name = format!("{}_{}.{}", id.chars().take(8).collect::<String>(), name_part, ext);
-    let file_path = uploads_dir.join(&safe_name);
+    let name_part = if ascii_name.is_empty() {
+        "file".to_string()
+    } else {
+        ascii_name
+    };
+    let safe_name = format!(
+        "{}_{}.{}",
+        id.chars().take(8).collect::<String>(),
+        name_part,
+        ext
+    );
+    let file_path = match path_guard::write_target(&folder, &format!("{UPLOADS_DIR}/{safe_name}")) {
+        Ok(path) => path,
+        Err(error) => {
+            return SaveResult {
+                ok: false,
+                attachment: None,
+                error: Some(error),
+            }
+        }
+    };
 
     // data is base64 encoded
     let decoded = match base64::engine::general_purpose::STANDARD.decode(&data) {
@@ -115,20 +174,43 @@ pub fn save_file(
             data.as_bytes().to_vec()
         }
     };
+    if decoded.len() as u64 > MAX_FILE_SIZE {
+        return SaveResult {
+            ok: false,
+            attachment: None,
+            error: Some(format!("File too large (max {MAX_FILE_SIZE} bytes)")),
+        };
+    }
 
-    match fs::write(&file_path, &decoded) {
+    match crate::commands::atomic_file::with_path_lock(&file_path, || {
+        crate::commands::atomic_file::atomic_write(&file_path, &decoded)
+    }) {
         Ok(_) => {
-            // Ensure the saved file is accessible via asset protocol
-            let _ = app.asset_protocol_scope().allow_file(&file_path);
+            let relative = format!("{UPLOADS_DIR}/{safe_name}");
+            // Grant the asset protocol only this validated attachment. No
+            // workspace or parent-directory grants are installed anywhere.
+            let allowed_file = match resolve_upload_file(&folder, &relative) {
+                Ok(path) => path,
+                Err(error) => {
+                    return SaveResult {
+                        ok: false,
+                        attachment: None,
+                        error: Some(error),
+                    }
+                }
+            };
+            if let Err(error) = app.asset_protocol_scope().allow_file(&allowed_file) {
+                return SaveResult {
+                    ok: false,
+                    attachment: None,
+                    error: Some(format!("Failed to authorize saved attachment: {error}")),
+                };
+            }
             let att_type = if mime_type.starts_with("image/") {
                 "image"
             } else {
                 "text"
             };
-            let relative = format!(
-                ".octopal/uploads/{}",
-                safe_name
-            );
             SaveResult {
                 ok: true,
                 attachment: Some(Attachment {
@@ -151,26 +233,42 @@ pub fn save_file(
 }
 
 #[tauri::command]
-pub fn read_file_base64(folder_path: String, relative_path: String) -> ReadResult {
-    if is_sensitive_path(&relative_path) {
-        return ReadResult {
-            ok: false,
-            data: None,
-            error: Some("Access denied: sensitive path".to_string()),
-        };
-    }
-
-    if !validate_containment(&folder_path, &relative_path) {
-        return ReadResult {
-            ok: false,
-            data: None,
-            error: Some("Path traversal denied".to_string()),
-        };
-    }
-
-    let file_path = Path::new(&folder_path).join(&relative_path);
+pub fn read_file_base64(
+    folder_path: String,
+    relative_path: String,
+    state: State<'_, ManagedState>,
+) -> ReadResult {
+    let folder = match path_guard::registered_folder(&state, Path::new(&folder_path)) {
+        Ok(folder) => folder,
+        Err(error) => {
+            return ReadResult {
+                ok: false,
+                data: None,
+                error: Some(error),
+            }
+        }
+    };
+    let file_path = match resolve_upload_file(&folder, &relative_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return ReadResult {
+                ok: false,
+                data: None,
+                error: Some(error),
+            }
+        }
+    };
     match fs::read(&file_path) {
         Ok(bytes) => {
+            if bytes.len() as u64 > MAX_FILE_SIZE {
+                return ReadResult {
+                    ok: false,
+                    data: None,
+                    error: Some(format!(
+                        "File grew beyond the {MAX_FILE_SIZE} byte limit while reading"
+                    )),
+                };
+            }
             let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
             ReadResult {
                 ok: true,
@@ -187,11 +285,17 @@ pub fn read_file_base64(folder_path: String, relative_path: String) -> ReadResul
 }
 
 #[tauri::command]
-pub fn get_absolute_path(folder_path: String, relative_path: String) -> Result<String, String> {
-    let abs = Path::new(&folder_path).join(&relative_path);
-    let resolved = abs
-        .canonicalize()
-        .unwrap_or(abs.clone());
+pub fn get_absolute_path(
+    app: tauri::AppHandle,
+    folder_path: String,
+    relative_path: String,
+    state: State<'_, ManagedState>,
+) -> Result<String, String> {
+    let folder = path_guard::registered_folder(&state, Path::new(&folder_path))?;
+    let resolved = resolve_upload_file(&folder, &relative_path)?;
+    app.asset_protocol_scope()
+        .allow_file(&resolved)
+        .map_err(|e| format!("Failed to authorize attachment: {e}"))?;
     Ok(resolved.to_string_lossy().to_string())
 }
 
@@ -208,8 +312,6 @@ pub struct DroppedFile {
 
 /// Cap on dropped file size — matches the renderer's MAX_FILE_SIZE so the
 /// backend never reads anything that the UI would reject anyway.
-const MAX_DROPPED_FILE_SIZE: u64 = 10 * 1024 * 1024;
-
 /// Read an arbitrary file by absolute path. Used by the drag-and-drop flow:
 /// Tauri 2's native drag-drop event gives us absolute paths the user just
 /// dropped, and we read them here so the renderer can turn them into File
@@ -220,30 +322,39 @@ const MAX_DROPPED_FILE_SIZE: u64 = 10 * 1024 * 1024;
 ///   - Refuses anything bigger than MAX_DROPPED_FILE_SIZE
 ///   - Refuses non-files (no symlink chasing into directories)
 #[tauri::command]
-pub fn read_dropped_file(path: String) -> Result<DroppedFile, String> {
+pub fn read_dropped_file(
+    path: String,
+    state: State<'_, ManagedState>,
+) -> Result<DroppedFile, String> {
     if is_sensitive_path(&path) {
         return Err("Access denied: sensitive path".to_string());
     }
-    let p = Path::new(&path);
-    let metadata = fs::metadata(p).map_err(|e| e.to_string())?;
+    let p = state.dropped_file_allowlist.consume(Path::new(&path))?;
+    let metadata = fs::symlink_metadata(&p).map_err(|e| e.to_string())?;
     if !metadata.is_file() {
         return Err("Not a file".to_string());
     }
-    if metadata.len() > MAX_DROPPED_FILE_SIZE {
+    if metadata.len() > MAX_FILE_SIZE {
         return Err(format!(
             "File too large: {} bytes (max {})",
             metadata.len(),
-            MAX_DROPPED_FILE_SIZE
+            MAX_FILE_SIZE
         ));
     }
-    let bytes = fs::read(p).map_err(|e| e.to_string())?;
+    let bytes = fs::read(&p).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_FILE_SIZE {
+        return Err(format!(
+            "File grew beyond the {} byte limit while reading",
+            MAX_FILE_SIZE
+        ));
+    }
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes);
     let filename = p
         .file_name()
         .and_then(|n| n.to_str())
         .unwrap_or("file")
         .to_string();
-    let mime_type = guess_mime(p);
+    let mime_type = guess_mime(&p);
     Ok(DroppedFile {
         filename,
         data: encoded,
@@ -278,4 +389,53 @@ fn guess_mime(path: &Path) -> String {
         _ => "application/octet-stream",
     }
     .to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uploads_fixture() -> PathBuf {
+        let root = std::env::temp_dir().join(format!(
+            "octopal-files-test-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(root.join(UPLOADS_DIR)).unwrap();
+        fs::write(root.join(UPLOADS_DIR).join("attachment.txt"), b"ok").unwrap();
+        fs::write(root.join("outside.txt"), b"secret").unwrap();
+        root
+    }
+
+    #[test]
+    fn attachment_reads_are_limited_to_direct_upload_files() {
+        let root = uploads_fixture();
+        assert!(resolve_upload_file(&root, ".octopal/uploads/attachment.txt").is_ok());
+        for rejected in [
+            "outside.txt",
+            ".octopal/room-history.json",
+            ".octopal/uploads/nested/attachment.txt",
+            ".octopal/uploads/../room-history.json",
+        ] {
+            assert!(
+                resolve_upload_file(&root, rejected).is_err(),
+                "accepted {rejected:?}"
+            );
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_reads_reject_upload_symlinks() {
+        use std::os::unix::fs::symlink;
+
+        let root = uploads_fixture();
+        symlink(
+            root.join("outside.txt"),
+            root.join(UPLOADS_DIR).join("alias.txt"),
+        )
+        .unwrap();
+        assert!(resolve_upload_file(&root, ".octopal/uploads/alias.txt").is_err());
+        let _ = fs::remove_dir_all(root);
+    }
 }

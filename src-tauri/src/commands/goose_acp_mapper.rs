@@ -246,11 +246,20 @@ fn translate_message_chunk(update: &Value, is_thought: bool) -> Vec<MappedEvent>
         "Writing response…".to_string()
     };
     let chunk = if is_thought {
-        MappedEvent::AssistantThoughtChunk { text: text.to_string() }
+        MappedEvent::AssistantThoughtChunk {
+            text: text.to_string(),
+        }
     } else {
-        MappedEvent::AssistantTextChunk { text: text.to_string() }
+        MappedEvent::AssistantTextChunk {
+            text: text.to_string(),
+        }
     };
-    vec![MappedEvent::Activity { text: activity_label }, chunk]
+    vec![
+        MappedEvent::Activity {
+            text: activity_label,
+        },
+        chunk,
+    ]
 }
 
 fn translate_tool_call(update: &Value) -> Vec<MappedEvent> {
@@ -396,7 +405,10 @@ mod tests {
 
     #[test]
     fn normalize_shell_to_bash() {
-        assert_eq!(normalize_tool("developer__shell", None), NormalizedTool::Bash);
+        assert_eq!(
+            normalize_tool("developer__shell", None),
+            NormalizedTool::Bash
+        );
         assert_eq!(normalize_tool("shell", None), NormalizedTool::Bash);
     }
 
@@ -683,10 +695,7 @@ mod tests {
         assert_eq!(pr.tool_name, "developer__shell");
         assert!(pr.options.as_array().unwrap().len() == 2);
         let ri = pr.raw_input.unwrap();
-        assert_eq!(
-            ri.get("command").and_then(|v| v.as_str()),
-            Some("rm -rf /")
-        );
+        assert_eq!(ri.get("command").and_then(|v| v.as_str()), Some("rm -rf /"));
     }
 
     #[test]

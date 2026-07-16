@@ -2,8 +2,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use crate::commands::backup::BackupTracker;
 use crate::commands::file_lock::FileLockManager;
@@ -12,7 +13,7 @@ use crate::commands::process_pool::ProcessPool;
 use crate::commands::providers_manifest::{self, ProvidersManifest};
 
 /// Persistent app state (workspaces, folders)
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AppState {
     pub workspaces: Vec<Workspace>,
     #[serde(rename = "activeWorkspaceId")]
@@ -200,9 +201,10 @@ impl Default for BackupSettings {
 /// Anthropic card can represent the Pro/Max subscription path. Prior
 /// shape (`"anthropic": true|false`) still deserializes — `true` →
 /// `ApiKey`, `false` → `None`. See scope §4.1 + §4.2.
-#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum AuthMode {
+    #[default]
     None,
     ApiKey,
     CliSubscription,
@@ -232,12 +234,6 @@ impl AuthMode {
             AuthMode::ApiKey => "api_key",
             AuthMode::CliSubscription => "cli_subscription",
         }
-    }
-}
-
-impl Default for AuthMode {
-    fn default() -> Self {
-        AuthMode::None
     }
 }
 
@@ -290,7 +286,10 @@ pub struct ProvidersSettings {
     /// with `useLegacyClaudeCli` explicit in their settings.json keep
     /// their choice; only fresh installs and users without the field
     /// pick up the new default.
-    #[serde(rename = "useLegacyClaudeCli", default = "default_use_legacy_claude_cli")]
+    #[serde(
+        rename = "useLegacyClaudeCli",
+        default = "default_use_legacy_claude_cli"
+    )]
     pub use_legacy_claude_cli: bool,
 
     /// Phase 3: Provider ID matching a key in `providers.json`. Default
@@ -417,12 +416,86 @@ impl Default for AppSettings {
     }
 }
 
-impl Default for AppState {
+const DROPPED_FILE_ALLOWANCE_TTL: Duration = Duration::from_secs(30);
+
+/// One-shot authorization minted only by a native OS drag/drop event.
+///
+/// The renderer receives absolute paths in Tauri's drag/drop payload, but an
+/// IPC command carrying an absolute path must not itself be the authority to
+/// read that path. This allowlist bridges the two: the backend records the
+/// canonical regular files reported by the native event, and the subsequent
+/// `read_dropped_file` invocation consumes the matching entry exactly once.
+pub struct DroppedFileAllowlist {
+    entries: Mutex<HashMap<PathBuf, Instant>>,
+    ttl: Duration,
+}
+
+impl Default for DroppedFileAllowlist {
     fn default() -> Self {
         Self {
-            workspaces: vec![],
-            active_workspace_id: None,
+            entries: Mutex::new(HashMap::new()),
+            ttl: DROPPED_FILE_ALLOWANCE_TTL,
         }
+    }
+}
+
+impl DroppedFileAllowlist {
+    #[cfg(test)]
+    fn with_ttl(ttl: Duration) -> Self {
+        Self {
+            entries: Mutex::new(HashMap::new()),
+            ttl,
+        }
+    }
+
+    /// Register regular, non-symlink files from a native drop event.
+    pub fn approve(&self, paths: &[PathBuf]) {
+        let now = Instant::now();
+        let approved: Vec<PathBuf> = paths
+            .iter()
+            .filter_map(|path| {
+                let metadata = fs::symlink_metadata(path).ok()?;
+                if metadata.file_type().is_symlink() || !metadata.is_file() {
+                    return None;
+                }
+                let canonical = fs::canonicalize(path).ok()?;
+                fs::metadata(&canonical)
+                    .ok()
+                    .filter(|meta| meta.is_file())
+                    .map(|_| canonical)
+            })
+            .collect();
+
+        let Ok(mut entries) = self.entries.lock() else {
+            return;
+        };
+        entries.retain(|_, approved_at| now.duration_since(*approved_at) <= self.ttl);
+        for path in approved {
+            entries.insert(path, now);
+        }
+    }
+
+    /// Consume a recent native-drop authorization and return its canonical
+    /// path. Failed and repeated renderer invocations are not authorized.
+    pub fn consume(&self, requested: &Path) -> Result<PathBuf, String> {
+        let metadata = fs::symlink_metadata(requested).map_err(|e| e.to_string())?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err("Dropped path is not a regular file".to_string());
+        }
+        let canonical = fs::canonicalize(requested).map_err(|e| e.to_string())?;
+
+        let now = Instant::now();
+        let mut entries = self
+            .entries
+            .lock()
+            .map_err(|_| "dropped-file authorization lock poisoned".to_string())?;
+        entries.retain(|_, approved_at| now.duration_since(*approved_at) <= self.ttl);
+        entries
+            .remove(&canonical)
+            .map(|_| canonical)
+            .ok_or_else(|| {
+                "File was not recently approved by a native drag-and-drop event".to_string()
+            })
     }
 }
 
@@ -430,11 +503,20 @@ impl Default for AppState {
 pub struct ManagedState {
     pub app_state: Mutex<AppState>,
     pub settings: Mutex<AppSettings>,
+    /// Run ids are renderer-visible correlation ids, not authority. Reserve
+    /// them here before a turn starts so duplicate ids cannot merge process,
+    /// backup, or file-lock state across concurrent workspaces.
+    pub active_run_ids: Arc<Mutex<HashSet<String>>>,
     pub running_agents: Arc<Mutex<HashMap<String, u32>>>, // runId -> child PID
     pub interrupted_runs: Arc<Mutex<HashSet<String>>>,
     #[allow(dead_code)]
     pub permanent_grants: Mutex<HashSet<String>>,
+    /// MCP command configurations explicitly confirmed in a native dialog
+    /// for this app session. Renderer state alone cannot mint this trust.
+    pub trusted_mcp_configs: Mutex<HashSet<String>>,
     pub folder_watchers: Arc<Mutex<HashMap<String, notify::RecommendedWatcher>>>,
+    /// One-shot absolute file reads authorized by native drag/drop events.
+    pub dropped_file_allowlist: DroppedFileAllowlist,
     pub state_dir: PathBuf,
     #[allow(dead_code)]
     pub is_dev: bool,
@@ -516,10 +598,13 @@ impl ManagedState {
         Self {
             app_state: Mutex::new(app_state),
             settings: Mutex::new(settings),
+            active_run_ids: Arc::new(Mutex::new(HashSet::new())),
             running_agents: Arc::new(Mutex::new(HashMap::new())),
             interrupted_runs: Arc::new(Mutex::new(HashSet::new())),
             permanent_grants: Mutex::new(HashSet::new()),
+            trusted_mcp_configs: Mutex::new(HashSet::new()),
             folder_watchers: Arc::new(Mutex::new(HashMap::new())),
+            dropped_file_allowlist: DroppedFileAllowlist::default(),
             state_dir,
             is_dev,
             backup_tracker: Arc::new(BackupTracker::new()),
@@ -533,16 +618,18 @@ impl ManagedState {
 
     pub fn save_state(&self) -> Result<(), String> {
         let state = self.app_state.lock().map_err(|e| e.to_string())?;
-        let json = serde_json::to_string_pretty(&*state).map_err(|e| e.to_string())?;
         let file = self.state_dir.join("state.json");
-        fs::write(file, json).map_err(|e| e.to_string())
+        crate::commands::atomic_file::with_path_lock(&file, || {
+            crate::commands::atomic_file::atomic_write_json(&file, &*state)
+        })
     }
 
     pub fn save_settings(&self) -> Result<(), String> {
         let settings = self.settings.lock().map_err(|e| e.to_string())?;
-        let json = serde_json::to_string_pretty(&*settings).map_err(|e| e.to_string())?;
         let file = self.state_dir.join("settings.json");
-        fs::write(file, json).map_err(|e| e.to_string())
+        crate::commands::atomic_file::with_path_lock(&file, || {
+            crate::commands::atomic_file::atomic_write_json(&file, &*settings)
+        })
     }
 
     pub fn wiki_dir(&self, workspace_id: &str) -> PathBuf {
@@ -618,7 +705,10 @@ mod migration_tests {
             model: None,
         };
         let s = serde_json::to_string(&f).unwrap();
-        assert!(!s.contains("\"provider\""), "provider should be skipped: {s}");
+        assert!(
+            !s.contains("\"provider\""),
+            "provider should be skipped: {s}"
+        );
         assert!(!s.contains("\"model\""), "model should be skipped: {s}");
     }
 
@@ -709,16 +799,14 @@ mod migration_tests {
     #[test]
     fn auth_mode_reads_legacy_bool_true_as_api_key() {
         let json = r#"{"anthropic": true}"#;
-        let m: std::collections::BTreeMap<String, AuthMode> =
-            serde_json::from_str(json).unwrap();
+        let m: std::collections::BTreeMap<String, AuthMode> = serde_json::from_str(json).unwrap();
         assert_eq!(m.get("anthropic"), Some(&AuthMode::ApiKey));
     }
 
     #[test]
     fn auth_mode_reads_legacy_bool_false_as_none() {
         let json = r#"{"openai": false}"#;
-        let m: std::collections::BTreeMap<String, AuthMode> =
-            serde_json::from_str(json).unwrap();
+        let m: std::collections::BTreeMap<String, AuthMode> = serde_json::from_str(json).unwrap();
         assert_eq!(m.get("openai"), Some(&AuthMode::None));
     }
 
@@ -729,8 +817,7 @@ mod migration_tests {
             "b": "api_key",
             "c": "cli_subscription"
         }"#;
-        let m: std::collections::BTreeMap<String, AuthMode> =
-            serde_json::from_str(json).unwrap();
+        let m: std::collections::BTreeMap<String, AuthMode> = serde_json::from_str(json).unwrap();
         assert_eq!(m.get("a"), Some(&AuthMode::None));
         assert_eq!(m.get("b"), Some(&AuthMode::ApiKey));
         assert_eq!(m.get("c"), Some(&AuthMode::CliSubscription));
@@ -751,8 +838,7 @@ mod migration_tests {
         assert!(s.contains("\"api_key\""));
         assert!(s.contains("\"none\""));
 
-        let back: std::collections::BTreeMap<String, AuthMode> =
-            serde_json::from_str(&s).unwrap();
+        let back: std::collections::BTreeMap<String, AuthMode> = serde_json::from_str(&s).unwrap();
         assert_eq!(back, cfg);
     }
 
@@ -784,8 +870,7 @@ mod migration_tests {
             "google": false,
             "ollama": "cli_subscription"
         }"#;
-        let m: std::collections::BTreeMap<String, AuthMode> =
-            serde_json::from_str(json).unwrap();
+        let m: std::collections::BTreeMap<String, AuthMode> = serde_json::from_str(json).unwrap();
         assert_eq!(m.get("anthropic"), Some(&AuthMode::ApiKey));
         assert_eq!(m.get("openai"), Some(&AuthMode::ApiKey));
         assert_eq!(m.get("google"), Some(&AuthMode::None));
@@ -1047,5 +1132,64 @@ mod migration_tests {
             s.providers.configured_providers.get("openai"),
             Some(&AuthMode::None)
         );
+    }
+}
+
+#[cfg(test)]
+mod dropped_file_allowlist_tests {
+    use super::*;
+
+    fn temp_file(label: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!(
+            "octopal-drop-allowlist-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("dropped.txt");
+        fs::write(&file, b"dropped").unwrap();
+        (root, file)
+    }
+
+    #[test]
+    fn native_drop_authorization_is_consumed_once() {
+        let (root, file) = temp_file("once");
+        let allowlist = DroppedFileAllowlist::default();
+        allowlist.approve(std::slice::from_ref(&file));
+
+        assert_eq!(
+            allowlist.consume(&file).unwrap(),
+            fs::canonicalize(&file).unwrap()
+        );
+        assert!(allowlist.consume(&file).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn expired_drop_authorization_is_rejected() {
+        let (root, file) = temp_file("expired");
+        let allowlist = DroppedFileAllowlist::with_ttl(Duration::from_secs(30));
+        allowlist.entries.lock().unwrap().insert(
+            fs::canonicalize(&file).unwrap(),
+            Instant::now() - Duration::from_secs(31),
+        );
+
+        assert!(allowlist.consume(&file).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_drop_is_never_authorized() {
+        use std::os::unix::fs::symlink;
+
+        let (root, file) = temp_file("symlink");
+        let alias = root.join("alias.txt");
+        symlink(&file, &alias).unwrap();
+        let allowlist = DroppedFileAllowlist::default();
+        allowlist.approve(std::slice::from_ref(&alias));
+
+        assert!(allowlist.consume(&alias).is_err());
+        assert!(allowlist.consume(&file).is_err());
+        let _ = fs::remove_dir_all(root);
     }
 }

@@ -6,7 +6,7 @@
 //! config hash — rotation happens via explicit `invalidate_*` (scope §2.1).
 //!
 //! Key shape:
-//!   `{folder}::{agent}::{provider}::{model}::{sp_hash_hex}`
+//!   `{folder}::{agent}::{provider}::{auth_mode}::{model}`
 //!
 //! `hash_config` mirrors `ProcessPool::hash_config` but is semantically
 //! typed (no accidental arg order flips). The string key is what gets
@@ -39,12 +39,17 @@ pub struct GooseAcpEntry {
     pub key: String,
 }
 
-/// Pool keyed by `{folder}::{agent}::{provider}::{model}::{sp_hash_hex}`.
-/// No LRU cap — matches legacy `ProcessPool` (scope §2.4). Per-user
-/// practical ceiling is <10 entries; revisit if telemetry disagrees.
+/// Pool keyed by a stable agent/runtime identity. Prompt and team-context
+/// changes are represented by `config_hash` on the entry so a take detects
+/// drift and replaces the old process instead of accumulating a new key.
 pub struct GooseAcpPool {
     entries: Mutex<HashMap<String, GooseAcpEntry>>,
+    /// Monotonic generation per UI provider. Active turns capture this and
+    /// refuse to reinsert a sidecar if credentials/auth changed mid-turn.
+    provider_epochs: Mutex<HashMap<String, u64>>,
 }
+
+const MAX_IDLE_ENTRIES: usize = 32;
 
 impl Default for GooseAcpPool {
     fn default() -> Self {
@@ -56,6 +61,7 @@ impl GooseAcpPool {
     pub fn new() -> Self {
         Self {
             entries: Mutex::new(HashMap::new()),
+            provider_epochs: Mutex::new(HashMap::new()),
         }
     }
 
@@ -77,6 +83,41 @@ impl GooseAcpPool {
     #[must_use = "leftover entry must be shutdown by caller"]
     pub fn put(&self, key: String, entry: GooseAcpEntry) -> Option<GooseAcpEntry> {
         self.entries.lock().unwrap().insert(key, entry)
+    }
+
+    /// Atomically verify the provider generation and return a completed turn
+    /// to the pool. `invalidate_pool_for_provider` takes the same locks in the
+    /// same order, so credential rotation cannot slip between a generation
+    /// check and insertion. Any collision/capacity eviction is returned for
+    /// async shutdown outside the locks.
+    pub fn put_if_provider_epoch(
+        &self,
+        provider: &str,
+        expected_epoch: u64,
+        key: String,
+        entry: GooseAcpEntry,
+    ) -> Result<Vec<GooseAcpEntry>, Box<GooseAcpEntry>> {
+        let epochs = self.provider_epochs.lock().unwrap();
+        let current = epochs.get(provider).copied().unwrap_or(0);
+        if current != expected_epoch {
+            return Err(Box::new(entry));
+        }
+
+        let mut entries = self.entries.lock().unwrap();
+        let mut evicted = Vec::new();
+        if !entries.contains_key(&key) && entries.len() >= MAX_IDLE_ENTRIES {
+            if let Some(oldest_key) = entries.keys().next().cloned() {
+                if let Some(oldest) = entries.remove(&oldest_key) {
+                    evicted.push(oldest);
+                }
+            }
+        }
+        if let Some(collision) = entries.insert(key, entry) {
+            evicted.push(collision);
+        }
+        drop(entries);
+        drop(epochs);
+        Ok(evicted)
     }
 
     /// Remove a specific key. Returns the entry so the caller can decide
@@ -101,19 +142,36 @@ impl GooseAcpPool {
         }
     }
 
+    pub fn provider_epoch(&self, provider: &str) -> u64 {
+        self.provider_epochs
+            .lock()
+            .unwrap()
+            .get(provider)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// API-key-rotation hook (scope §2.3). Returns evicted entries so the
     /// caller can shutdown them off the lock. v0.2.0-beta calls this with
     /// no-op semantics (keys still live in env, not keyring) — the hook
     /// itself works; Phase 4 will populate the trigger side.
     #[must_use = "evicted entries must be shutdown by caller"]
     pub fn invalidate_pool_for_provider(&self, provider: &str) -> Vec<GooseAcpEntry> {
+        // Bump first. A sidecar currently checked out of `entries` will see
+        // the new generation before trying to return itself to the pool.
+        let mut epochs = self.provider_epochs.lock().unwrap();
+        let epoch = epochs.entry(provider.to_string()).or_insert(0);
+        *epoch = epoch.wrapping_add(1);
         let mut map = self.entries.lock().unwrap();
         let keys: Vec<String> = map
             .iter()
             .filter(|(_, e)| e.provider == provider)
             .map(|(k, _)| k.clone())
             .collect();
-        keys.into_iter().filter_map(|k| map.remove(&k)).collect()
+        let evicted = keys.into_iter().filter_map(|k| map.remove(&k)).collect();
+        drop(map);
+        drop(epochs);
+        evicted
     }
 
     /// Agent-delete / agent-rename hook. Key prefix is `{folder}::{agent}::…`.
@@ -196,13 +254,9 @@ impl GooseAcpPool {
         h.finish()
     }
 
-    /// Build the pool key string. The `sp_hash` is the same `u64` the
-    /// hash-config function computed over `system_prompt` (rendered as
-    /// hex, 16 chars) — we fold it into the key so two agents with
-    /// identical (folder, agent, provider, model) but different prompts
-    /// don't collide.
-    ///
-    /// Phase 5a Commit C-2: the key now includes an `auth_mode` segment
+    /// Build the stable pool key string. The config hash intentionally stays
+    /// on the entry so prompt/context drift evicts and replaces this key.
+    /// The key includes an `auth_mode` segment
     /// between `provider` and `model` so flipping ApiKey ↔ CliSubscription
     /// is visible in the key string (greppable in `[goose_acp_pool] …
     /// ::cli_subscription::…` log lines, scope §8 G1-5a).
@@ -212,9 +266,8 @@ impl GooseAcpPool {
         provider: &str,
         auth_mode: &str,
         model: &str,
-        sp_hash: u64,
     ) -> String {
-        format!("{folder}::{agent}::{provider}::{auth_mode}::{model}::{sp_hash:016x}")
+        format!("{folder}::{agent}::{provider}::{auth_mode}::{model}")
     }
 
     /// Dev-only: used exclusively by tests and `cargo check --features debug`
@@ -260,10 +313,20 @@ mod tests {
     #[test]
     fn hash_config_same_input_same_output() {
         let h1 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP",
         );
         let h2 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP",
         );
         assert_eq!(h1, h2);
     }
@@ -271,21 +334,35 @@ mod tests {
     #[test]
     fn hash_config_model_change_drifts() {
         let h1 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP",
         );
-        let h2 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-opus-4-7", "SP",
-        );
+        let h2 =
+            GooseAcpPool::hash_config("/p", "dev", "anthropic", "api_key", "claude-opus-4-7", "SP");
         assert_ne!(h1, h2);
     }
 
     #[test]
     fn hash_config_system_prompt_change_drifts() {
         let h1 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP1",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP1",
         );
         let h2 = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP2",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP2",
         );
         assert_ne!(h1, h2);
     }
@@ -300,7 +377,12 @@ mod tests {
         // respawn with the new GOOSE_PROVIDER). Symmetric in both
         // directions — flipping back also drifts.
         let h_api = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", "SP",
+            "/p",
+            "dev",
+            "anthropic",
+            "api_key",
+            "claude-sonnet-4-6",
+            "SP",
         );
         let h_cli = GooseAcpPool::hash_config(
             "/p",
@@ -318,9 +400,8 @@ mod tests {
 
         // `none` also drifts from both; covers the edge where a user
         // temporarily clears config then re-adds it.
-        let h_none = GooseAcpPool::hash_config(
-            "/p", "dev", "anthropic", "none", "claude-sonnet-4-6", "SP",
-        );
+        let h_none =
+            GooseAcpPool::hash_config("/p", "dev", "anthropic", "none", "claude-sonnet-4-6", "SP");
         assert_ne!(h_none, h_api);
         assert_ne!(h_none, h_cli);
     }
@@ -353,18 +434,15 @@ mod tests {
     #[test]
     fn key_for_has_stable_shape() {
         // §8 G1-5a expects `::cli_subscription::` in the key — pin the
-        // segment order: folder::agent::provider::auth_mode::model::sp.
+        // segment order: folder::agent::provider::auth_mode::model.
         let k = GooseAcpPool::key_for(
             "/p",
             "dev",
             "anthropic",
             "cli_subscription",
             "claude-sonnet-4-6",
-            0xdeadbeef,
         );
-        assert_eq!(
-            k, "/p::dev::anthropic::cli_subscription::claude-sonnet-4-6::00000000deadbeef",
-        );
+        assert_eq!(k, "/p::dev::anthropic::cli_subscription::claude-sonnet-4-6",);
     }
 
     #[test]
@@ -373,20 +451,26 @@ mod tests {
         // must be able to tell the auth mode without cross-referencing
         // settings. Both mode variants must produce distinct, visible
         // substrings.
-        let k_api = GooseAcpPool::key_for(
-            "/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6", 0,
-        );
+        let k_api = GooseAcpPool::key_for("/p", "dev", "anthropic", "api_key", "claude-sonnet-4-6");
         let k_cli = GooseAcpPool::key_for(
             "/p",
             "dev",
             "anthropic",
             "cli_subscription",
             "claude-sonnet-4-6",
-            0,
         );
         assert!(k_api.contains("::api_key::"));
         assert!(k_cli.contains("::cli_subscription::"));
         assert_ne!(k_api, k_cli);
+    }
+
+    #[test]
+    fn provider_invalidation_advances_active_turn_generation() {
+        let pool = GooseAcpPool::new();
+        assert_eq!(pool.provider_epoch("openai"), 0);
+        assert!(pool.invalidate_pool_for_provider("openai").is_empty());
+        assert_eq!(pool.provider_epoch("openai"), 1);
+        assert_eq!(pool.provider_epoch("anthropic"), 0);
     }
 
     // ── G3: pool deduplication (the merge-gate invariant) ────────────
@@ -433,14 +517,6 @@ mod tests {
             "anthropic",
             "api_key",
             "claude-sonnet-4-6",
-            GooseAcpPool::hash_config(
-                "/my/folder",
-                "dev",
-                "anthropic",
-                "api_key",
-                "claude-sonnet-4-6",
-                "you are a developer",
-            ),
         );
 
         for turn in 0..10 {
@@ -476,8 +552,8 @@ mod tests {
         // spawners race and both put() to the same key, the older entry
         // must be returned — silent drop would leak the older sidecar.
         let pool = FakePool::new();
-        // Key format after C-2: folder::agent::provider::auth_mode::model::sp.
-        let k = "x::y::anthropic::api_key::m::0000000000000000".to_string();
+        // Key format: folder::agent::provider::auth_mode::model.
+        let k = "x::y::anthropic::api_key::m".to_string();
         let first = pool.put(k.clone(), (1, 0, "anthropic".into()));
         assert!(first.is_none());
 
@@ -490,9 +566,8 @@ mod tests {
     fn invalidate_for_agent_prefix_filter() {
         // Same agent name across two folders must stay isolated.
         let pool = FakePool::new();
-        let sp = GooseAcpPool::hash_config("/a", "dev", "anthropic", "api_key", "m", "sp");
-        let k_a = GooseAcpPool::key_for("/a", "dev", "anthropic", "api_key", "m", sp);
-        let k_b = GooseAcpPool::key_for("/b", "dev", "anthropic", "api_key", "m", sp);
+        let k_a = GooseAcpPool::key_for("/a", "dev", "anthropic", "api_key", "m");
+        let k_b = GooseAcpPool::key_for("/b", "dev", "anthropic", "api_key", "m");
 
         pool.put(k_a.clone(), (1, 0, "anthropic".into()));
         pool.put(k_b.clone(), (2, 0, "anthropic".into()));

@@ -122,26 +122,14 @@ pub fn resolve_for_turn(
         .provider
         .as_deref()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            if !settings_default_provider.is_empty() {
-                Some(settings_default_provider)
-            } else {
-                None
-            }
-        })
+        .or((!settings_default_provider.is_empty()).then_some(settings_default_provider))
         .unwrap_or(BUILTIN_PROVIDER)
         .to_string();
     let model = binding
         .model
         .as_deref()
         .filter(|s| !s.is_empty())
-        .or_else(|| {
-            if !settings_default_model.is_empty() {
-                Some(settings_default_model)
-            } else {
-                None
-            }
-        })
+        .or((!settings_default_model.is_empty()).then_some(settings_default_model))
         .unwrap_or(BUILTIN_MODEL)
         .to_string();
     (provider, model)
@@ -202,8 +190,9 @@ mod tests {
         // user manually editing JSON), normalize() coerces to None so
         // resolve_for_turn doesn't pass `""` to Goose.
         let raw = r#"{ "provider": "", "model": "" }"#;
-        let binding: AgentBinding =
-            serde_json::from_str::<AgentBinding>(raw).unwrap().normalize();
+        let binding: AgentBinding = serde_json::from_str::<AgentBinding>(raw)
+            .unwrap()
+            .normalize();
         assert!(binding.provider.is_none());
         assert!(binding.model.is_none());
     }

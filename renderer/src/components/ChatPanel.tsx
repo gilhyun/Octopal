@@ -384,6 +384,10 @@ export function ChatPanel({
   const isNearBottomRef = useRef(true)
 
   const [pendingAttachments, setPendingAttachments] = useState<PendingAttachment[]>([])
+  const pendingAttachmentsRef = useRef<PendingAttachment[]>([])
+  const submitInFlightRef = useRef(false)
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [attachmentError, setAttachmentError] = useState<string | null>(null)
   const [isDragging, setIsDragging] = useState(false)
   const [failedImages, setFailedImages] = useState<Set<string>>(new Set())
   const [showScrollDown, setShowScrollDown] = useState(false)
@@ -429,6 +433,7 @@ export function ChatPanel({
   }
 
   const addFiles = useCallback((files: File[]) => {
+    setAttachmentError(null)
     setPendingAttachments(prev => {
       const remaining = MAX_ATTACHMENTS - prev.length
       if (remaining <= 0) return prev
@@ -514,6 +519,7 @@ export function ChatPanel({
   }, [addFiles])
 
   const removeAttachment = useCallback((id: string) => {
+    setAttachmentError(null)
     setPendingAttachments(prev => {
       const att = prev.find(a => a.id === id)
       if (att?.previewUrl) URL.revokeObjectURL(att.previewUrl)
@@ -521,14 +527,18 @@ export function ChatPanel({
     })
   }, [])
 
-  // Clean up object URLs on unmount
+  useEffect(() => {
+    pendingAttachmentsRef.current = pendingAttachments
+  }, [pendingAttachments])
+
+  // Clean up the latest object URLs on unmount. A ref is required here: an
+  // empty-dependency cleanup otherwise captures only the initial empty array.
   useEffect(() => {
     return () => {
-      pendingAttachments.forEach(a => {
+      pendingAttachmentsRef.current.forEach(a => {
         if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
       })
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   // ── Pasted-text attachment helper ──
@@ -614,12 +624,15 @@ export function ChatPanel({
     if (pendingAttachments.length === 0 || !activeFolder) return []
 
     const saved: Attachment[] = []
-    for (const pa of pendingAttachments) {
-      const arrayBuffer = await pa.file.arrayBuffer()
-      const base64 = btoa(
-        new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
-      )
+    const savedIds = new Set<string>()
+    const failedIds = new Set<string>()
+    const snapshot = pendingAttachments
+    for (const pa of snapshot) {
       try {
+        const arrayBuffer = await pa.file.arrayBuffer()
+        const base64 = btoa(
+          new Uint8Array(arrayBuffer).reduce((data, byte) => data + String.fromCharCode(byte), '')
+        )
         const result = await window.api.saveFile({
           folderPath: activeFolder,
           fileName: pa.file.name,
@@ -630,17 +643,27 @@ export function ChatPanel({
           const att = result.attachment as Attachment
           if (pa.isPastedText) (att as any).isPastedText = true
           saved.push(att)
+          savedIds.add(pa.id)
+        } else {
+          failedIds.add(pa.id)
         }
       } catch (err) {
         console.error('Failed to save attachment:', err)
+        failedIds.add(pa.id)
       }
     }
 
-    // Clean up preview URLs
-    pendingAttachments.forEach(a => {
-      if (a.previewUrl) URL.revokeObjectURL(a.previewUrl)
+    // Remove/revoke only successfully saved files. Failed files remain selected
+    // so the user can retry or remove them explicitly.
+    snapshot.forEach((attachment) => {
+      if (savedIds.has(attachment.id) && attachment.previewUrl) {
+        URL.revokeObjectURL(attachment.previewUrl)
+      }
     })
-    setPendingAttachments([])
+    setPendingAttachments((current) => current.filter((attachment) => !savedIds.has(attachment.id)))
+    if (failedIds.size > 0) {
+      setAttachmentError(t('chat.attachmentSaveFailed', { count: failedIds.size }))
+    }
     return saved
   }
 
@@ -799,12 +822,22 @@ export function ChatPanel({
   }
 
   const handleSend = async () => {
-    const attachments = await savePendingAttachments()
-    send(attachments.length > 0 ? attachments : undefined)
-    setTimeout(() => adjustTextareaHeight(), 0)
-    // 전송 후 스크롤이 하단이 아니면 하단으로 이동
-    if (!isNearBottomRef.current) {
-      setTimeout(() => scrollToBottom(), 50)
+    if (submitInFlightRef.current) return
+    if (!input.trim() && pendingAttachments.length === 0) return
+    submitInFlightRef.current = true
+    setIsSubmitting(true)
+    setAttachmentError(null)
+    try {
+      const attachments = await savePendingAttachments()
+      await send(attachments.length > 0 ? attachments : undefined)
+      setTimeout(() => adjustTextareaHeight(), 0)
+      // 전송 후 스크롤이 하단이 아니면 하단으로 이동
+      if (!isNearBottomRef.current) {
+        setTimeout(() => scrollToBottom(), 50)
+      }
+    } finally {
+      submitInFlightRef.current = false
+      setIsSubmitting(false)
     }
   }
 
@@ -1248,6 +1281,12 @@ export function ChatPanel({
           </div>
         )}
 
+        {attachmentError && (
+          <div className="modal-error attachment-save-error" role="alert">
+            {attachmentError}
+          </div>
+        )}
+
         <div className="composer-row">
           <input
             ref={fileInputRef}
@@ -1260,7 +1299,7 @@ export function ChatPanel({
           <button
             className="attach-btn"
             onClick={() => fileInputRef.current?.click()}
-            disabled={!activeFolder}
+            disabled={!activeFolder || isSubmitting}
             title={t('chat.attachFile')}
           >
             <Paperclip size={18} />
@@ -1283,7 +1322,7 @@ export function ChatPanel({
               onChange={onInputChange}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
-              disabled={!activeFolder}
+              disabled={!activeFolder || isSubmitting}
               rows={1}
             />
           </BorderBeam>
@@ -1294,7 +1333,11 @@ export function ChatPanel({
               </button>
             </BorderBeam>
           ) : (
-            <button className="send" onClick={handleSend} disabled={!activeFolder}>
+            <button
+              className="send"
+              onClick={handleSend}
+              disabled={!activeFolder || isSubmitting || (!input.trim() && pendingAttachments.length === 0)}
+            >
               <Send size={16} />
             </button>
           )}

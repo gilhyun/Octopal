@@ -1,8 +1,12 @@
 use crate::state::ManagedState;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::HashSet;
 use std::fs;
 use std::io::BufRead;
 use std::path::Path;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use super::claude_cli::claude_command;
@@ -11,8 +15,9 @@ use super::claude_cli::claude_command;
 extern crate libc;
 
 /// Defense-in-depth: strip control characters (newlines, tabs, etc.) from any
-/// string before interpolating it into a system prompt. This prevents prompt
-/// injection even if upstream sanitization is bypassed (e.g. hand-edited .octo files).
+/// value interpolated into a single-line system-prompt field. The value remains
+/// user-authored instruction text; this only prevents it from breaking the
+/// surrounding prompt structure.
 pub fn sanitize_prompt_field(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_control() { ' ' } else { c })
@@ -63,7 +68,10 @@ pub struct UsageData {
     output_tokens: u64,
     #[serde(rename = "cacheReadTokens", skip_serializing_if = "Option::is_none")]
     cache_read_tokens: Option<u64>,
-    #[serde(rename = "cacheCreationTokens", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "cacheCreationTokens",
+        skip_serializing_if = "Option::is_none"
+    )]
     cache_creation_tokens: Option<u64>,
     #[serde(rename = "costUsd", skip_serializing_if = "Option::is_none")]
     cost_usd: Option<f64>,
@@ -112,12 +120,258 @@ pub struct StopAllResult {
     pub stopped: u32,
 }
 
+struct ActiveRunReservation {
+    run_id: String,
+    active: Arc<Mutex<HashSet<String>>>,
+}
+
+impl ActiveRunReservation {
+    fn reserve(active: Arc<Mutex<HashSet<String>>>, run_id: &str) -> Result<Self, String> {
+        if run_id.len() > 128 {
+            return Err("invalid run id".to_string());
+        }
+        super::path_guard::safe_segment(run_id, "run id")?;
+        let mut runs = active
+            .lock()
+            .map_err(|_| "active run registry poisoned".to_string())?;
+        if !runs.insert(run_id.to_string()) {
+            return Err("run id is already active".to_string());
+        }
+        drop(runs);
+        Ok(Self {
+            run_id: run_id.to_string(),
+            active,
+        })
+    }
+}
+
+impl Drop for ActiveRunReservation {
+    fn drop(&mut self) {
+        if let Ok(mut active) = self.active.lock() {
+            active.remove(&self.run_id);
+        }
+    }
+}
+
+fn resolve_attachment_paths(root: &Path, paths: &[String]) -> Result<Vec<String>, String> {
+    paths
+        .iter()
+        .map(|relative| {
+            super::files::resolve_upload_file(root, relative)
+                .map(|path| path.to_string_lossy().into_owned())
+                .map_err(|error| format!("Invalid attachment path {relative:?}: {error}"))
+        })
+        .collect()
+}
+
+async fn native_confirm(
+    app: &AppHandle,
+    title: &str,
+    message: String,
+    confirm_label: &str,
+) -> Result<bool, String> {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .message(message)
+        .title(title)
+        .kind(MessageDialogKind::Warning)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            confirm_label.to_string(),
+            "Cancel".to_string(),
+        ))
+        .show(move |confirmed| {
+            let _ = tx.send(confirmed);
+        });
+    rx.await
+        .map_err(|e| format!("confirmation dialog failed: {e}"))
+}
+
+async fn confirm_legacy_mcp_config(
+    app: &AppHandle,
+    state: &State<'_, ManagedState>,
+    octo_path: &str,
+    agent_name: &str,
+    servers: &serde_json::Value,
+) -> Result<bool, String> {
+    let bytes = serde_json::to_vec(servers).map_err(|e| e.to_string())?;
+    if bytes.len() > 64 * 1024 {
+        return Err("MCP configuration is too large to review safely".to_string());
+    }
+    let entries = servers
+        .as_object()
+        .ok_or_else(|| "MCP servers must be a JSON object".to_string())?;
+    if entries.len() > 8 {
+        return Err("At most 8 MCP servers can be approved at once".to_string());
+    }
+    for (name, config) in entries {
+        if name.chars().count() > 80 {
+            return Err("MCP server name is too long to review safely".to_string());
+        }
+        let command = config
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| format!("MCP server {name:?} has no command"))?;
+        if command.is_empty() || command.chars().count() > 256 {
+            return Err(format!("MCP server {name:?} has an invalid command"));
+        }
+        if let Some(args) = config.get("args") {
+            let args = args
+                .as_array()
+                .ok_or_else(|| format!("MCP server {name:?} args must be an array"))?;
+            if args.len() > 12
+                || args
+                    .iter()
+                    .any(|arg| arg.as_str().is_none_or(|value| value.chars().count() > 256))
+            {
+                return Err(format!(
+                    "MCP server {name:?} has too many or oversized arguments"
+                ));
+            }
+        }
+    }
+    let fingerprint = format!("{octo_path}:{:x}", Sha256::digest(&bytes));
+    if state
+        .trusted_mcp_configs
+        .lock()
+        .map_err(|_| "MCP trust registry poisoned".to_string())?
+        .contains(&fingerprint)
+    {
+        return Ok(true);
+    }
+
+    let summary = entries
+        .iter()
+        .map(|(name, config)| {
+            let clean = |value: &str| {
+                sanitize_prompt_field(value)
+                    .chars()
+                    .take(256)
+                    .collect::<String>()
+            };
+            let command = clean(
+                config
+                    .get("command")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("<missing command>"),
+            );
+            let args = config
+                .get("args")
+                .and_then(|value| value.as_array())
+                .map(|values| {
+                    values
+                        .iter()
+                        .filter_map(|value| value.as_str())
+                        .map(clean)
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
+                .unwrap_or_default();
+            format!("• {}: {command} {args}", clean(name))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let confirmed = native_confirm(
+        app,
+        "Allow MCP commands?",
+        format!(
+            "Agent ‘{}’ wants to start local MCP commands from this workspace. MCP commands run with your user account and may execute code.\n\n{summary}",
+            sanitize_prompt_field(agent_name)
+        ),
+        "Allow for this session",
+    )
+    .await?;
+    if confirmed {
+        state
+            .trusted_mcp_configs
+            .lock()
+            .map_err(|_| "MCP trust registry poisoned".to_string())?
+            .insert(fingerprint);
+    }
+    Ok(confirmed)
+}
+
+fn append_agent_history(
+    octo_path: &Path,
+    prompt: &str,
+    output: &str,
+    user_ts: f64,
+) -> Result<(), String> {
+    crate::commands::atomic_file::with_path_lock(octo_path, || {
+        let content =
+            fs::read_to_string(octo_path).map_err(|e| format!("read agent history: {e}"))?;
+        let mut octo: serde_json::Value =
+            serde_json::from_str(&content).map_err(|e| format!("parse agent history: {e}"))?;
+        if let Some(history) = octo
+            .get_mut("history")
+            .and_then(|value| value.as_array_mut())
+        {
+            let now_ms = chrono::Utc::now().timestamp_millis() as f64;
+            history.push(serde_json::json!({
+                "role": "user",
+                "text": prompt,
+                "ts": user_ts,
+                "roomTs": user_ts,
+            }));
+            history.push(serde_json::json!({
+                "role": "assistant",
+                "text": output,
+                "ts": now_ms,
+                "roomTs": now_ms,
+            }));
+        }
+        crate::commands::atomic_file::atomic_write_json(octo_path, &octo)
+            .map_err(|e| format!("write agent history: {e}"))
+    })
+}
+
+fn append_agent_room_history(
+    room_history_path: &Path,
+    pending_id: Option<&str>,
+    agent_name: &str,
+    output: &str,
+    usage: Option<&UsageData>,
+) -> Result<(), String> {
+    let parent = room_history_path
+        .parent()
+        .ok_or_else(|| "room history has no parent directory".to_string())?;
+    fs::create_dir_all(parent).map_err(|e| format!("create room history directory: {e}"))?;
+
+    crate::commands::atomic_file::with_path_lock(room_history_path, || {
+        crate::commands::folder::maybe_rotate_room_history(room_history_path);
+        let mut room_history: Vec<serde_json::Value> = if room_history_path.exists() {
+            let content = fs::read_to_string(room_history_path)
+                .map_err(|e| format!("read room history: {e}"))?;
+            serde_json::from_str(&content).map_err(|e| format!("parse room history: {e}"))?
+        } else {
+            Vec::new()
+        };
+
+        let entry_id = pending_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let mut entry = serde_json::json!({
+            "id": entry_id,
+            "agentName": agent_name,
+            "text": output,
+            "ts": chrono::Utc::now().timestamp_millis() as f64,
+        });
+        if let Some(usage) = usage {
+            entry["usage"] = serde_json::to_value(usage)
+                .map_err(|e| format!("serialize room history usage: {e}"))?;
+        }
+        room_history.push(entry);
+
+        crate::commands::atomic_file::atomic_write_json(room_history_path, &room_history)
+            .map_err(|e| format!("write room history: {e}"))
+    })
+}
+
 /// Check if claude CLI is installed and logged in
 #[tauri::command]
 pub async fn check_claude_cli() -> Result<serde_json::Value, String> {
-    let output = claude_command()
-        .arg("--version")
-        .output();
+    let output = claude_command().arg("--version").output();
 
     match output {
         Ok(out) if out.status.success() => {
@@ -134,6 +388,7 @@ pub async fn check_claude_cli() -> Result<serde_json::Value, String> {
 /// folder watcher's history reload reconciles with the in-memory bubble
 /// instead of producing a duplicate. Falls back to a fresh UUID when omitted.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn send_message(
     folder_path: String,
     octo_path: String,
@@ -150,15 +405,48 @@ pub async fn send_message(
     app: AppHandle,
     state: State<'_, ManagedState>,
 ) -> Result<SendResult, String> {
-    let folder = Path::new(&folder_path);
-    if !folder.is_dir() {
-        return Ok(SendResult {
-            ok: false,
-            output: None,
-            error: Some("Invalid folder path".to_string()),
-            usage: None,
-        });
-    }
+    let _run_reservation =
+        match ActiveRunReservation::reserve(state.active_run_ids.clone(), &run_id) {
+            Ok(reservation) => reservation,
+            Err(error) => {
+                return Ok(SendResult {
+                    ok: false,
+                    output: None,
+                    error: Some(error),
+                    usage: None,
+                })
+            }
+        };
+    let folder = match super::path_guard::registered_folder(&state, Path::new(&folder_path)) {
+        Ok(folder) => folder,
+        Err(error) => {
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some(error),
+                usage: None,
+            })
+        }
+    };
+    let octo_path = match super::octo::validate_agent_config_for_workspace(
+        &state,
+        Path::new(&octo_path),
+        &folder,
+    ) {
+        Ok(path) => path.to_string_lossy().into_owned(),
+        Err(error) => {
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some(error),
+                usage: None,
+            })
+        }
+    };
+    // From this point on, never reuse renderer-provided aliases. Pool keys,
+    // child cwd, events, and persistence all receive the canonical registered
+    // workspace path so a retargeted symlink alias cannot redirect writes.
+    let folder_path = folder.to_string_lossy().into_owned();
 
     // Read the agent config file (.json or legacy .octo)
     let octo_content: serde_json::Value = {
@@ -182,11 +470,15 @@ pub async fn send_message(
         // v3: same directory as config.json → prompt.md
         let v3_path = parent.join("prompt.md");
         if v3_path.exists() {
-            fs::read_to_string(&v3_path).ok().filter(|s| !s.trim().is_empty())
+            fs::read_to_string(&v3_path)
+                .ok()
+                .filter(|s| !s.trim().is_empty())
         } else if let Some(stem) = octo_file.file_stem().and_then(|s| s.to_str()) {
             // Legacy flat: {stem}.md
             let legacy_path = parent.join(format!("{}.md", stem));
-            fs::read_to_string(&legacy_path).ok().filter(|s| !s.trim().is_empty())
+            fs::read_to_string(&legacy_path)
+                .ok()
+                .filter(|s| !s.trim().is_empty())
         } else {
             None
         }
@@ -242,7 +534,11 @@ pub async fn send_message(
     // Wiki
     {
         let s = state.app_state.lock().map_err(|e| e.to_string())?;
-        if let Some(ws) = s.workspaces.iter().find(|w| w.folders.contains(&folder_path)) {
+        if let Some(ws) = s
+            .workspaces
+            .iter()
+            .find(|w| w.folders.contains(&folder_path))
+        {
             let wiki_dir = state.wiki_dir(&ws.id);
             fs::create_dir_all(&wiki_dir).ok();
             // Recursively collect pages so sub-folder pages (e.g. "docs/intro.md")
@@ -283,8 +579,14 @@ pub async fn send_message(
             if !peer_list.is_empty() {
                 system_parts.push("\nYou are in a group chat with these other agents:".to_string());
                 for p in peer_list {
-                    let pname = sanitize_prompt_field(p.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-                    let prole = sanitize_prompt_field(p.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
+                    let pname = sanitize_prompt_field(
+                        p.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                    );
+                    let prole = sanitize_prompt_field(
+                        p.get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("assistant"),
+                    );
                     system_parts.push(format!("- @{}: {}", pname, prole));
                 }
             }
@@ -298,8 +600,14 @@ pub async fn send_message(
                 let collab_list: Vec<String> = collabs
                     .iter()
                     .map(|c| {
-                        let n = sanitize_prompt_field(c.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-                        let r = sanitize_prompt_field(c.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
+                        let n = sanitize_prompt_field(
+                            c.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                        );
+                        let r = sanitize_prompt_field(
+                            c.get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("assistant"),
+                        );
                         format!("- @{} ({})", n, r)
                     })
                     .collect();
@@ -314,17 +622,23 @@ pub async fn send_message(
     // Auto-delegation: self-assessment instructions. Isolated agents don't
     // learn about the handoff protocol at all — they're single-shot.
     if !is_isolated {
-    if let Some(peer_list) = &peers {
-        if !peer_list.is_empty() {
-            let peer_summary: Vec<String> = peer_list
-                .iter()
-                .map(|p| {
-                    let pname = sanitize_prompt_field(p.get("name").and_then(|v| v.as_str()).unwrap_or("?"));
-                    let prole = sanitize_prompt_field(p.get("role").and_then(|v| v.as_str()).unwrap_or("assistant"));
-                    format!("@{} ({})", pname, prole)
-                })
-                .collect();
-            system_parts.push(format!(
+        if let Some(peer_list) = &peers {
+            if !peer_list.is_empty() {
+                let peer_summary: Vec<String> = peer_list
+                    .iter()
+                    .map(|p| {
+                        let pname = sanitize_prompt_field(
+                            p.get("name").and_then(|v| v.as_str()).unwrap_or("?"),
+                        );
+                        let prole = sanitize_prompt_field(
+                            p.get("role")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("assistant"),
+                        );
+                        format!("@{} ({})", pname, prole)
+                    })
+                    .collect();
+                system_parts.push(format!(
                 "\n=== HANDOFF PROTOCOL ===\n\
                 Before starting any task, assess:\n\
                 1. Does this task match MY expertise ({name} — {role})?\n\
@@ -354,8 +668,8 @@ pub async fn send_message(
                 role = sanitize_prompt_field(octo_content.get("role").and_then(|v| v.as_str()).unwrap_or("assistant")),
                 peers = peer_summary.join(", ")
             ));
+            }
         }
-    }
     } // end: !is_isolated wrapper for the handoff protocol block
 
     // Recent conversation — now injected as a user-message prefix (not in
@@ -382,23 +696,23 @@ pub async fn send_message(
 
         if !all_msgs.is_empty() {
             let current_prompt_trimmed = prompt.trim();
-            let skip_last = all_msgs.last().map(|m| {
-                let is_user = m
-                    .get("agentName")
-                    .and_then(|v| v.as_str())
-                    == Some("user");
-                let text_matches = m
-                    .get("text")
-                    .and_then(|v| v.as_str())
-                    .map(|t| {
-                        let t_trim = t.trim();
-                        !t_trim.is_empty()
-                            && (current_prompt_trimmed == t_trim
-                                || current_prompt_trimmed.contains(t_trim))
-                    })
-                    .unwrap_or(false);
-                is_user && text_matches
-            }).unwrap_or(false);
+            let skip_last = all_msgs
+                .last()
+                .map(|m| {
+                    let is_user = m.get("agentName").and_then(|v| v.as_str()) == Some("user");
+                    let text_matches = m
+                        .get("text")
+                        .and_then(|v| v.as_str())
+                        .map(|t| {
+                            let t_trim = t.trim();
+                            !t_trim.is_empty()
+                                && (current_prompt_trimmed == t_trim
+                                    || current_prompt_trimmed.contains(t_trim))
+                        })
+                        .unwrap_or(false);
+                    is_user && text_matches
+                })
+                .unwrap_or(false);
 
             let take_len = if skip_last {
                 all_msgs.len().saturating_sub(1)
@@ -410,10 +724,7 @@ pub async fn send_message(
             let mut used_chars: usize = 0;
 
             for msg in all_msgs[..take_len].iter().rev() {
-                let speaker = msg
-                    .get("agentName")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("?");
+                let speaker = msg.get("agentName").and_then(|v| v.as_str()).unwrap_or("?");
 
                 if speaker == "__dispatcher__" || speaker == "__system__" {
                     continue;
@@ -475,7 +786,9 @@ pub async fn send_message(
     let perms = octo_content.get("permissions");
     let has_active_perms = perms
         .map(|p| {
-            p.get("fileWrite").and_then(|v| v.as_bool()).unwrap_or(false)
+            p.get("fileWrite")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false)
                 || p.get("bash").and_then(|v| v.as_bool()).unwrap_or(false)
                 || p.get("network").and_then(|v| v.as_bool()).unwrap_or(false)
         })
@@ -659,13 +972,14 @@ pub async fn send_message(
         .join("\n")
     };
 
-    claude_args.push("--system-prompt".to_string());
-    claude_args.push(format!(
+    let system_prompt_text = format!(
         "{}{}\n\nWorking folder: {}",
         system_parts.join("\n"),
         cap_line,
         folder_path
-    ));
+    );
+    claude_args.push("--system-prompt".to_string());
+    claude_args.push(system_prompt_text.clone());
 
     // Attachments — use absolute paths with @ references so Claude CLI
     // can read and include them as vision/text content blocks.
@@ -673,19 +987,28 @@ pub async fn send_message(
     let mut image_refs: Vec<String> = vec![];
     let mut text_refs: Vec<String> = vec![];
     if let Some(imgs) = &image_paths {
-        for img in imgs {
-            let abs = Path::new(&folder_path).join(img);
-            if abs.exists() {
-                // Use absolute path for reliable file resolution in -p mode
-                image_refs.push(abs.to_string_lossy().to_string());
+        match resolve_attachment_paths(&folder, imgs) {
+            Ok(paths) => image_refs = paths,
+            Err(error) => {
+                return Ok(SendResult {
+                    ok: false,
+                    output: None,
+                    error: Some(error),
+                    usage: None,
+                })
             }
         }
     }
     if let Some(txts) = &text_paths {
-        for txt in txts {
-            let abs = Path::new(&folder_path).join(txt);
-            if abs.exists() {
-                text_refs.push(abs.to_string_lossy().to_string());
+        match resolve_attachment_paths(&folder, txts) {
+            Ok(paths) => text_refs = paths,
+            Err(error) => {
+                return Ok(SendResult {
+                    ok: false,
+                    output: None,
+                    error: Some(error),
+                    usage: None,
+                })
             }
         }
     }
@@ -708,12 +1031,15 @@ pub async fn send_message(
     // arg is redundant and actively harmful.
 
     // Emit activity
-    let _ = app.emit("octo:activity", ActivityEvent {
-        run_id: run_id.clone(),
-        text: "Thinking…".to_string(),
-        folder_path: folder_path.clone(),
-        agent_name: agent_name.clone(),
-    });
+    let _ = app.emit(
+        "octo:activity",
+        ActivityEvent {
+            run_id: run_id.clone(),
+            text: "Thinking…".to_string(),
+            folder_path: folder_path.clone(),
+            agent_name: agent_name.clone(),
+        },
+    );
 
     // Spawn / reuse persistent claude CLI process.
     //
@@ -741,25 +1067,46 @@ pub async fn send_message(
             )
         };
         std::thread::spawn(move || {
-            let _ = crate::commands::backup::prune_with_limits(
-                &prune_folder,
-                max_count,
-                max_age,
-            );
+            let _ = crate::commands::backup::prune_with_limits(&prune_folder, max_count, max_age);
         });
     }
 
-    eprintln!("[agent:args] agent={} args={:?}", agent_name, claude_args);
+    // Never log the full argv: it contains the system prompt and the raw MCP
+    // config, whose `env` object commonly includes API keys and tokens.
+    let logged_model = claude_args
+        .windows(2)
+        .find(|pair| pair[0] == "--model")
+        .map(|pair| pair[1].as_str())
+        .unwrap_or("default");
+    let mcp_server_count = mcp_config
+        .get("mcpServers")
+        .and_then(|servers| servers.as_object())
+        .map_or(0, serde_json::Map::len);
+    eprintln!(
+        "[agent:spawn] agent={} model={} permissions_configured={} mcp_servers={}",
+        agent_name, logged_model, has_active_perms, mcp_server_count
+    );
 
-    // Compute config hash for cache invalidation (model + perms + MCP change → restart)
+    // Compute config hash for cache invalidation. The full system prompt is
+    // included so role/prompt/wiki/peer changes cannot reuse stale context.
     let config_hash = {
-        let model_str = claude_args.iter().skip_while(|a| *a != "--model").nth(1)
-            .cloned().unwrap_or_default();
+        let model_str = claude_args
+            .iter()
+            .skip_while(|a| *a != "--model")
+            .nth(1)
+            .cloned()
+            .unwrap_or_default();
         let perms_str = format!("{:?}", perms);
-        let mcp_str = octo_content.get("mcpServers")
-            .map(|v| v.to_string()).unwrap_or_default();
+        let mcp_str = octo_content
+            .get("mcpServers")
+            .map(|v| v.to_string())
+            .unwrap_or_default();
         super::process_pool::ProcessPool::hash_config(&[
-            &agent_name, &model_str, &perms_str, &mcp_str,
+            &agent_name,
+            &model_str,
+            &perms_str,
+            &mcp_str,
+            &system_prompt_text,
         ])
     };
 
@@ -785,37 +1132,48 @@ pub async fn send_message(
         .ok()
         .map(|s| s.providers.use_legacy_claude_cli)
         .unwrap_or(true);
-    let dev_override = cfg!(debug_assertions)
-        && std::env::var("OCTOPAL_USE_GOOSE").as_deref() == Ok("1");
+    let dev_override =
+        cfg!(debug_assertions) && std::env::var("OCTOPAL_USE_GOOSE").as_deref() == Ok("1");
     let use_goose = !legacy || dev_override;
+    if !use_goose && mcp_server_count > 0 {
+        let servers = mcp_config
+            .get("mcpServers")
+            .cloned()
+            .unwrap_or_else(|| serde_json::json!({}));
+        if !confirm_legacy_mcp_config(&app, &state, &octo_path, &agent_name, &servers).await? {
+            return Ok(SendResult {
+                ok: false,
+                output: None,
+                error: Some("MCP command execution was not approved".to_string()),
+                usage: None,
+            });
+        }
+    }
     eprintln!(
         "[agent:gate] agent={} legacy={} dev_override={} → {}",
         agent_name,
         legacy,
         dev_override,
-        if use_goose { "run_agent_turn" } else { "legacy claude_cli" }
+        if use_goose {
+            "run_agent_turn"
+        } else {
+            "legacy claude_cli"
+        }
     );
     if use_goose {
-        let system_prompt_text = format!(
-            "{}{}\n\nWorking folder: {}",
-            system_parts.join("\n"),
-            cap_line,
-            folder_path
-        );
         let resolved_model = chosen_alias
             .as_ref()
             .map(|alias| crate::commands::model_probe::resolve_model_for_cli(alias, &state))
             .unwrap_or_default();
-        let permissions: Option<crate::state::OctoPermissions> = perms
-            .cloned()
-            .and_then(|v| serde_json::from_value(v).ok());
+        let permissions: Option<crate::state::OctoPermissions> =
+            perms.cloned().and_then(|v| serde_json::from_value(v).ok());
         let params = crate::commands::goose_acp::RunAgentTurnParams {
             folder_path: folder_path.clone(),
             octo_path: octo_path.clone(),
             agent_name: agent_name.clone(),
             run_id: run_id.clone(),
             pending_id: pending_id.clone(),
-            system_prompt: system_prompt_text,
+            system_prompt: system_prompt_text.clone(),
             user_prompt: prompt.clone(),
             contextual_prompt: contextual_prompt.clone(),
             user_ts,
@@ -867,8 +1225,13 @@ pub async fn send_message(
         state_agents.lock().unwrap().insert(run_id_clone.clone(), pid);
 
         // Send message via stdin (stream-json protocol)
-        process.send_message(&contextual_prompt)
-            .map_err(|e| format!("Failed to send message: {}", e))?;
+        if let Err(error) = process.send_message(&contextual_prompt) {
+            state_agents.lock().unwrap().remove(&run_id_clone);
+            state_interrupted.lock().unwrap().remove(&run_id_clone);
+            file_lock_manager.release_run(&run_id_clone);
+            backup_tracker.finalize_run(&run_id_clone);
+            return Err(format!("Failed to send message: {error}"));
+        }
 
         let mut final_result = String::new();
         let mut final_usage: Option<UsageData> = None;
@@ -1038,19 +1401,17 @@ pub async fn send_message(
                                         .and_then(|v| v.as_str())
                                         .unwrap_or("");
                                     if !fp.is_empty() {
-                                        let abs_path = if Path::new(fp).is_absolute() {
-                                            std::path::PathBuf::from(fp)
-                                        } else {
-                                            Path::new(&folder_clone).join(fp)
-                                        };
-                                        if let Err(existing) = file_lock_manager
-                                            .try_acquire(
-                                                abs_path.clone(),
+                                        if let Ok(lock_path) = super::path_guard::normalized_contained_target(
+                                            Path::new(&folder_clone),
+                                            Path::new(fp),
+                                        ) {
+                                            if let Err(existing) = file_lock_manager.try_acquire(
+                                                lock_path,
                                                 &run_id_clone,
                                                 &agent_name_clone,
-                                            )
-                                        {
-                                            conflict_with = Some(existing);
+                                            ) {
+                                                conflict_with = Some(existing);
+                                            }
                                         }
                                         backup_id = backup_tracker.snapshot(
                                             Path::new(&folder_clone),
@@ -1185,76 +1546,18 @@ pub async fn send_message(
 
     match result {
         Ok((output, usage)) => {
-            // Update octo history
-            let mut octo: serde_json::Value = {
-                let content = fs::read_to_string(&octo_path).map_err(|e| e.to_string())?;
-                serde_json::from_str(&content).map_err(|e| e.to_string())?
-            };
-            let history = octo
-                .get_mut("history")
-                .and_then(|h| h.as_array_mut());
-            if let Some(hist) = history {
-                hist.push(serde_json::json!({
-                    "role": "user",
-                    "text": prompt,
-                    "ts": user_ts,
-                    "roomTs": user_ts,
-                }));
-                hist.push(serde_json::json!({
-                    "role": "assistant",
-                    "text": output,
-                    "ts": chrono::Utc::now().timestamp_millis() as f64,
-                    "roomTs": chrono::Utc::now().timestamp_millis() as f64,
-                }));
-            }
-            fs::write(&octo_path, serde_json::to_string_pretty(&octo).unwrap())
-                .map_err(|e| e.to_string())?;
+            append_agent_history(Path::new(&octo_path), &prompt, &output, user_ts)?;
 
             // Append to room history
-            let room_history_path = Path::new(&folder_path)
-                .join(".octopal")
-                .join("room-history.json");
-            let octopal_dir = Path::new(&folder_path).join(".octopal");
-            fs::create_dir_all(&octopal_dir).ok();
-
-            // Rotate if the file has grown past our size threshold. Idempotent
-            // + safe if the file is missing or malformed.
-            crate::commands::folder::maybe_rotate_room_history(&room_history_path);
-
-            let mut room_history: Vec<serde_json::Value> = if room_history_path.exists() {
-                fs::read_to_string(&room_history_path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_default()
-            } else {
-                vec![]
-            };
-
-            // Reuse the UI's pending-bubble ID when provided so the folder
-            // watcher's hot-reload can match the on-disk entry to the
-            // in-memory bubble (preserving permission/handoff UI state
-            // without producing a duplicate). Fall back to a fresh UUID for
-            // any legacy callers that don't pass pending_id.
-            let entry_id = pending_id
-                .clone()
-                .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
-            let mut history_entry = serde_json::json!({
-                "id": entry_id,
-                "agentName": agent_name,
-                "text": output,
-                "ts": chrono::Utc::now().timestamp_millis() as f64,
-            });
-            // Persist usage data so it survives reload
-            if let Some(ref u) = usage {
-                history_entry["usage"] = serde_json::to_value(u).unwrap_or_default();
-            }
-            room_history.push(history_entry);
-
-            fs::write(
+            let room_history_path =
+                super::path_guard::write_target(&folder, ".octopal/room-history.json")?;
+            append_agent_room_history(
                 &room_history_path,
-                serde_json::to_string_pretty(&room_history).unwrap(),
-            )
-            .ok();
+                pending_id.as_deref(),
+                &agent_name,
+                &output,
+                usage.as_ref(),
+            )?;
 
             Ok(SendResult {
                 ok: true,
@@ -1283,7 +1586,10 @@ pub fn stop_agent(run_id: String, state: State<'_, ManagedState>) -> StopResult 
         state.process_pool.remove_by_pid(pid);
         state.goose_acp_pool.remove_by_pid(pid);
         kill_pid(pid);
-        eprintln!("[goose_acp_pool] stop_agent pid={} (may have been legacy)", pid);
+        eprintln!(
+            "[goose_acp_pool] stop_agent pid={} (may have been legacy)",
+            pid
+        );
         StopResult {
             ok: true,
             stopped: Some(true),
@@ -1301,11 +1607,7 @@ pub fn stop_all_agents(state: State<'_, ManagedState>) -> StopAllResult {
     let mut agents = state.running_agents.lock().unwrap();
     let count = agents.len() as u32;
     for (run_id, pid) in agents.drain() {
-        state
-            .interrupted_runs
-            .lock()
-            .unwrap()
-            .insert(run_id);
+        state.interrupted_runs.lock().unwrap().insert(run_id);
         state.process_pool.remove_by_pid(pid);
         state.goose_acp_pool.remove_by_pid(pid);
         kill_pid(pid);
@@ -1360,9 +1662,7 @@ pub fn get_platform() -> String {
 
 // ── MCP health / install ──
 #[tauri::command]
-pub fn mcp_health_check(
-    mcp_servers: serde_json::Value,
-) -> serde_json::Value {
+pub fn mcp_health_check(mcp_servers: serde_json::Value) -> serde_json::Value {
     let Some(servers) = mcp_servers.as_object() else {
         return serde_json::json!({
             "ok": false,
@@ -1383,7 +1683,7 @@ pub fn mcp_health_check(
 }
 
 #[tauri::command]
-pub fn mcp_install_package(package_name: String) -> serde_json::Value {
+pub async fn mcp_install_package(app: AppHandle, package_name: String) -> serde_json::Value {
     if !is_safe_npm_package_name(&package_name) {
         return serde_json::json!({
             "ok": false,
@@ -1398,21 +1698,45 @@ pub fn mcp_install_package(package_name: String) -> serde_json::Value {
         });
     };
 
-    let output = std::process::Command::new(npm)
+    let confirmed = match native_confirm(
+        &app,
+        "Install npm package?",
+        format!(
+            "Install ‘{package_name}’ globally? npm packages can run lifecycle scripts with your user account during installation. Only continue if you trust this exact package."
+        ),
+        "Install",
+    )
+    .await
+    {
+        Ok(confirmed) => confirmed,
+        Err(error) => return serde_json::json!({ "ok": false, "error": error }),
+    };
+    if !confirmed {
+        return serde_json::json!({
+            "ok": false,
+            "error": "Installation cancelled"
+        });
+    }
+
+    let mut command = tokio::process::Command::new(npm);
+    command
         .args(["install", "-g", &package_name])
-        .output();
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    let output = tokio::time::timeout(Duration::from_secs(120), command.status()).await;
 
     match output {
-        Ok(out) if out.status.success() => serde_json::json!({ "ok": true }),
-        Ok(out) => {
-            let stderr = String::from_utf8_lossy(&out.stderr).trim().to_string();
-            let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-            serde_json::json!({
-                "ok": false,
-                "error": if stderr.is_empty() { stdout } else { stderr }
-            })
-        }
-        Err(e) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        Ok(Ok(status)) if status.success() => serde_json::json!({ "ok": true }),
+        Ok(Ok(status)) => serde_json::json!({
+            "ok": false,
+            "error": format!("npm installation failed with status {status}")
+        }),
+        Ok(Err(e)) => serde_json::json!({ "ok": false, "error": e.to_string() }),
+        Err(_) => serde_json::json!({
+            "ok": false,
+            "error": "npm installation timed out after 120 seconds"
+        }),
     }
 }
 
@@ -1500,14 +1824,18 @@ fn is_safe_npm_package_name(name: &str) -> bool {
     }
     let valid_part = |part: &str| {
         !part.is_empty()
-            && part.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')
-            })
+            && part
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     };
     if let Some(rest) = name.strip_prefix('@') {
         let mut parts = rest.split('/');
-        let Some(scope) = parts.next() else { return false };
-        let Some(pkg) = parts.next() else { return false };
+        let Some(scope) = parts.next() else {
+            return false;
+        };
+        let Some(pkg) = parts.next() else {
+            return false;
+        };
         parts.next().is_none() && valid_part(scope) && valid_part(pkg)
     } else {
         !name.contains('/') && valid_part(name)
@@ -1579,11 +1907,7 @@ pub fn open_octo_file(app_handle: &tauri::AppHandle, file_path: &str) {
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&contents) {
             json.get("name")
                 .and_then(|v| v.as_str())
-                .unwrap_or_else(|| {
-                    path.file_stem()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("agent")
-                })
+                .unwrap_or_else(|| path.file_stem().and_then(|s| s.to_str()).unwrap_or("agent"))
                 .to_string()
         } else {
             path.file_stem()
@@ -1653,4 +1977,155 @@ pub fn respond_file_access(
         "granted": granted,
         "permanent": decision == "allow_always"
     })
+}
+
+#[cfg(test)]
+mod attachment_security_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "octopal-attachment-{label}-{}",
+            uuid::Uuid::new_v4().simple()
+        ));
+        fs::create_dir_all(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn run_ids_are_unique_while_active_and_path_safe() {
+        let active = Arc::new(Mutex::new(HashSet::new()));
+        let first = ActiveRunReservation::reserve(active.clone(), "run-safe-1").unwrap();
+        assert!(ActiveRunReservation::reserve(active.clone(), "run-safe-1").is_err());
+        assert!(ActiveRunReservation::reserve(active.clone(), "../escape").is_err());
+        drop(first);
+        assert!(ActiveRunReservation::reserve(active, "run-safe-1").is_ok());
+    }
+
+    #[test]
+    fn attachment_paths_must_be_regular_files_inside_workspace() {
+        let root = temp_dir("root");
+        fs::create_dir_all(root.join(".octopal/uploads")).unwrap();
+        fs::write(root.join(".octopal/uploads/inside.txt"), "ok").unwrap();
+
+        assert!(resolve_attachment_paths(&root, &[".octopal/uploads/inside.txt".into()]).is_ok());
+        assert!(resolve_attachment_paths(&root, &["inside.txt".into()]).is_err());
+        assert!(resolve_attachment_paths(&root, &["../outside.txt".into()]).is_err());
+        assert!(resolve_attachment_paths(&root, &["/etc/passwd".into()]).is_err());
+        assert!(resolve_attachment_paths(&root, &["missing.txt".into()]).is_err());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn attachment_symlink_to_outside_is_rejected() {
+        use std::os::unix::fs::symlink;
+
+        let root = temp_dir("symlink-root");
+        let outside = temp_dir("symlink-outside");
+        fs::write(outside.join("secret.txt"), "secret").unwrap();
+        fs::create_dir_all(root.join(".octopal/uploads")).unwrap();
+        symlink(
+            outside.join("secret.txt"),
+            root.join(".octopal/uploads/attachment.txt"),
+        )
+        .unwrap();
+
+        assert!(
+            resolve_attachment_paths(&root, &[".octopal/uploads/attachment.txt".into()]).is_err()
+        );
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn concurrent_agent_history_appends_keep_every_turn() {
+        let root = temp_dir("agent-history");
+        let config = Arc::new(root.join("config.json"));
+        fs::write(config.as_ref(), r#"{"history":[]}"#).unwrap();
+
+        let workers: Vec<_> = (0..12)
+            .map(|index| {
+                let config = config.clone();
+                std::thread::spawn(move || {
+                    append_agent_history(
+                        config.as_ref(),
+                        &format!("prompt-{index}"),
+                        &format!("output-{index}"),
+                        index as f64,
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let config: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(config.as_ref()).unwrap()).unwrap();
+        let history = config["history"].as_array().unwrap();
+        assert_eq!(history.len(), 24);
+        for index in 0..12 {
+            assert!(history.iter().any(|entry| {
+                entry["role"] == "user" && entry["text"] == format!("prompt-{index}")
+            }));
+            assert!(history.iter().any(|entry| {
+                entry["role"] == "assistant" && entry["text"] == format!("output-{index}")
+            }));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn concurrent_room_history_appends_keep_every_entry() {
+        let root = temp_dir("room-history");
+        let history_path = Arc::new(root.join(".octopal").join("room-history.json"));
+
+        let workers: Vec<_> = (0..12)
+            .map(|index| {
+                let history_path = history_path.clone();
+                std::thread::spawn(move || {
+                    append_agent_room_history(
+                        history_path.as_ref(),
+                        Some(&format!("pending-{index}")),
+                        "test-agent",
+                        &format!("output-{index}"),
+                        None,
+                    )
+                    .unwrap();
+                })
+            })
+            .collect();
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let history: Vec<serde_json::Value> =
+            serde_json::from_str(&fs::read_to_string(history_path.as_ref()).unwrap()).unwrap();
+        assert_eq!(history.len(), 12);
+        for index in 0..12 {
+            assert!(history.iter().any(|entry| {
+                entry["id"] == format!("pending-{index}")
+                    && entry["text"] == format!("output-{index}")
+            }));
+        }
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn malformed_history_is_reported_without_overwrite() {
+        let root = temp_dir("malformed-history");
+        let config = root.join("config.json");
+        let room_history = root.join("room-history.json");
+        fs::write(&config, "not json").unwrap();
+        fs::write(&room_history, "not json").unwrap();
+
+        assert!(append_agent_history(&config, "prompt", "output", 1.0).is_err());
+        assert!(append_agent_room_history(&room_history, None, "agent", "output", None).is_err());
+        assert_eq!(fs::read_to_string(&config).unwrap(), "not json");
+        assert_eq!(fs::read_to_string(&room_history).unwrap(), "not json");
+        let _ = fs::remove_dir_all(root);
+    }
 }

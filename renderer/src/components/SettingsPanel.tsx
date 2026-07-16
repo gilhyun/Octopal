@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import {
   Settings,
@@ -48,6 +48,8 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [dirty, setDirty] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [saveError, setSaveError] = useState<string | null>(null)
+  const settingsRevisionRef = useRef(0)
   const [newTrigger, setNewTrigger] = useState('')
   const [newExpansion, setNewExpansion] = useState('')
   const [shortcutError, setShortcutError] = useState<string | null>(null)
@@ -117,6 +119,12 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
     }
   }, [])
 
+  const markDirty = () => {
+    settingsRevisionRef.current += 1
+    setDirty(true)
+    setSaveError(null)
+  }
+
   const update = <K extends keyof AppSettings>(
     section: K,
     patch: Partial<AppSettings[K]>
@@ -127,7 +135,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
       [section]: { ...settings[section], ...patch },
     }
     setSettings(updated)
-    setDirty(true)
+    markDirty()
   }
 
   const updateNested = (
@@ -144,7 +152,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
       },
     }
     setSettings(updated)
-    setDirty(true)
+    markDirty()
   }
 
   const changeLanguage = async (lang: string) => {
@@ -184,7 +192,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
       },
     }
     setSettings(updated)
-    setDirty(true)
+    markDirty()
     setNewTrigger('')
     setNewExpansion('')
     setShortcutError(null)
@@ -237,18 +245,28 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
 
   const save = async () => {
     if (!settings || !dirty) return
+    const snapshot = settings
+    const revision = settingsRevisionRef.current
     setSaving(true)
-    await window.api.saveSettings(settings)
+    setSaveError(null)
+    try {
+      await window.api.saveSettings(snapshot)
 
-    // Apply font size to document
-    document.documentElement.style.setProperty(
-      '--chat-font-size',
-      `${settings.appearance.chatFontSize}px`
-    )
+      // Apply only the snapshot that actually reached disk.
+      document.documentElement.style.setProperty(
+        '--chat-font-size',
+        `${snapshot.appearance.chatFontSize}px`
+      )
+      onSettingsSaved?.(snapshot)
 
-    setSaving(false)
-    setDirty(false)
-    onSettingsSaved?.(settings)
+      // Controls remain editable during save. Do not clear the save bar when
+      // the user made a newer edit while this older snapshot was in flight.
+      if (settingsRevisionRef.current === revision) setDirty(false)
+    } catch (e: unknown) {
+      setSaveError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setSaving(false)
+    }
   }
 
   if (!settings) {
@@ -519,7 +537,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
                           },
                         }
                         setSettings(updated)
-                        setDirty(true)
+                        markDirty()
                       }}
                     >
                       <Trash2 size={14} />
@@ -786,7 +804,7 @@ export function SettingsPanel({ onSettingsSaved }: SettingsPanelProps = {}) {
 
         {dirty && (
           <div className="settings-save-bar">
-            <span>{t('settings.unsavedChanges')}</span>
+            <span>{saveError || t('settings.unsavedChanges')}</span>
             <button
               className="settings-save-btn"
               onClick={save}
