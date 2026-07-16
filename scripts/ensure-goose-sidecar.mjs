@@ -180,12 +180,18 @@ function extractArchive(archivePath, workDir) {
         "powershell",
         [
           "-NoProfile",
+          "-NonInteractive",
           "-Command",
-          "Expand-Archive -Force -LiteralPath $args[0] -DestinationPath $args[1]",
-          archivePath,
-          workDir,
+          "$ErrorActionPreference = 'Stop'; Expand-Archive -Force -LiteralPath $env:OCTOPAL_GOOSE_ARCHIVE -DestinationPath $env:OCTOPAL_GOOSE_DESTINATION",
         ],
-        { stdio: "inherit" },
+        {
+          stdio: "inherit",
+          env: {
+            ...process.env,
+            OCTOPAL_GOOSE_ARCHIVE: archivePath,
+            OCTOPAL_GOOSE_DESTINATION: workDir,
+          },
+        },
       );
     } else {
       execFileSync("unzip", ["-o", archivePath, "-d", workDir], { stdio: "inherit" });
