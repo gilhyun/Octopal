@@ -38,10 +38,62 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tauri::AppHandle;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
+
+/// Strip the Windows extended-length (`\\?\`) prefix before a path leaves this
+/// process over ACP.
+///
+/// `fs::canonicalize` returns verbatim paths on Windows, and Octopal stores
+/// that form so `path_guard`'s canonical-form check keeps working. But a
+/// verbatim path is not a usable working directory for the child chain
+/// (`goose` -> `claude-agent-acp` -> `claude`): `session/new` never answers.
+/// Measured on 2026-08-30 with a standalone ACP probe, same adapter, one
+/// variable changed:
+///
+/// ```text
+/// cwd = M:\OCTOPAL-SANDBOX       -> sessionId in 4096 ms
+/// cwd = \\?\M:\OCTOPAL-SANDBOX   -> no response after 30000 ms
+/// ```
+///
+/// Stripping happens only here, at the serialization boundary. Nothing stored
+/// changes, so every internal comparison (`path_guard`, `octo`, `backup`)
+/// keeps comparing verbatim paths to verbatim paths.
+///
+/// Two cases are deliberately left alone:
+/// - `\\?\UNC\server\share` — stripping would produce a broken path.
+/// - paths that would exceed `MAX_PATH` (260) without the prefix — those need
+///   the verbatim form to be addressable at all.
+fn acp_cwd(cwd: &Path) -> String {
+    let raw = cwd.to_string_lossy();
+    #[cfg(windows)]
+    {
+        if let Some(rest) = raw.strip_prefix(r"\\?\") {
+            if !rest.starts_with("UNC\\") && rest.len() < 260 {
+                return rest.to_string();
+            }
+        }
+    }
+    raw.into_owned()
+}
 use tauri_plugin_shell::ShellExt;
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 const GOOSE_PROMPT_TIMEOUT_SECS: u64 = 300;
+
+/// Timeout for the ACP handshake calls (`initialize`, `session/new`).
+///
+/// Was 5s, chosen on macOS where `session/new` returns in ~10ms on a warm
+/// pool. On Windows a cold spawn is far slower: measured 2026-08-31 with a
+/// standalone ACP probe against `claude-agent-acp`, `session/new` took
+/// **4096 ms** — 900 ms of headroom under the old ceiling. Sonnet fit,
+/// Opus did not, and the failure surfaced as a bare
+/// "session/new: timeout after 5s" with no hint that the model was the
+/// variable.
+///
+/// 30s is not a measured optimum, it is headroom. The real cost of being
+/// wrong here is asymmetric: too short breaks a working setup with a
+/// misleading message, too long only delays an error that was going to
+/// happen anyway.
+const ACP_HANDSHAKE_TIMEOUT_SECS: u64 = 30;
 const STREAM_BUFFER_CAPACITY: usize = 1024;
 const RAW_EVENT_TAIL_CAPACITY: usize = 128;
 const STDERR_TAIL_CAPACITY: usize = 200;
@@ -969,7 +1021,7 @@ impl AcpClient {
             .request(
                 "initialize",
                 json!({ "protocolVersion": 1, "clientCapabilities": {} }),
-                Duration::from_secs(5),
+                Duration::from_secs(ACP_HANDSHAKE_TIMEOUT_SECS),
             )
             .await?;
         self.capabilities = resp
@@ -989,10 +1041,10 @@ impl AcpClient {
             .request(
                 "session/new",
                 json!({
-                    "cwd": cwd.to_string_lossy(),
+                    "cwd": acp_cwd(cwd),
                     "mcpServers": mcp_servers,
                 }),
-                Duration::from_secs(5),
+                Duration::from_secs(ACP_HANDSHAKE_TIMEOUT_SECS),
             )
             .await?;
         resp.get("result")
