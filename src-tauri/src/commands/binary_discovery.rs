@@ -174,17 +174,30 @@ pub fn candidate_search_paths() -> Vec<PathBuf> {
     out
 }
 
-/// Render the candidate search paths as a single `:`-joined string,
-/// suitable for assignment to a child process's PATH env. Empty if
-/// no candidates resolved (vanishingly unlikely — the parent PATH
-/// alone is usually non-empty even on bare LaunchServices spawns).
+/// Render the candidate search paths as a single string joined with the
+/// platform's PATH list separator, suitable for assignment to a child
+/// process's PATH env. Empty if no candidates resolved (vanishingly
+/// unlikely — the parent PATH alone is usually non-empty even on bare
+/// LaunchServices spawns).
+///
+/// The separator is `;` on Windows and `:` on POSIX. This mirrors the
+/// `env::split_paths` we read the parent PATH with: joining with `:` on
+/// Windows produces one unsplittable string, and every child that reads
+/// PATH — `codex.cmd` most visibly — fails to find its own interpreter.
 pub fn augmented_path_value() -> String {
     let dirs = candidate_search_paths();
-    let path_strs: Vec<String> = dirs
-        .into_iter()
+    if let Ok(joined) = std::env::join_paths(&dirs) {
+        return joined.to_string_lossy().into_owned();
+    }
+    // A candidate holds the separator itself (or, on Windows, a quote),
+    // which `join_paths` refuses. Drop those entries rather than hand the
+    // child a PATH that silently truncates at the offending one.
+    let sep = if cfg!(windows) { ";" } else { ":" };
+    dirs.iter()
         .map(|p| p.to_string_lossy().into_owned())
-        .collect();
-    path_strs.join(":")
+        .filter(|s| !s.contains(sep))
+        .collect::<Vec<_>>()
+        .join(sep)
 }
 
 /// Look up a binary by name in the candidate search paths. Returns
@@ -193,8 +206,9 @@ pub fn augmented_path_value() -> String {
 ///
 /// "Executable" means: the path resolves to a regular file (after
 /// symlink resolution) AND the file's permissions include at least
-/// one execute bit on POSIX. On Windows we accept the file plus
-/// common executable extensions (`.exe`, `.cmd`, `.bat`); the symlink
+/// one execute bit on POSIX. On Windows we try the common executable
+/// extensions (`.exe`, `.cmd`, `.bat`) first and fall back to the bare
+/// name only if none of them exist; the symlink
 /// dance in `~/.nvm/.../claude.exe → ../lib/.../claude.exe` works on
 /// macOS because `is_file()` follows symlinks and the target is the
 /// real Bun-compiled binary.
@@ -208,12 +222,16 @@ pub fn discover_binary(name: &str) -> Option<PathBuf> {
 
     for dir in candidate_search_paths() {
         let candidate = dir.join(name);
-        if is_runnable(&candidate) {
-            return Some(candidate);
-        }
 
-        // Windows executable extensions. POSIX no-op (the cfg gate
-        // means the loop body doesn't even compile on POSIX).
+        // Windows executable extensions, tried BEFORE the bare name.
+        // npm installs both `claude` (a POSIX shell shim, no extension)
+        // and `claude.cmd` side by side. `CreateProcess` cannot run the
+        // shim: spawning it fails with "%1 is not a valid Win32
+        // application". Checking the bare name first returns the shim and
+        // the failure surfaces far from here. Names are extension-free by
+        // construction — `is_valid_binary_name` allows only [A-Za-z0-9_-]
+        // — so `with_extension` never overwrites a caller's own suffix.
+        // POSIX no-op (the cfg gate means the body doesn't even compile).
         #[cfg(windows)]
         {
             for ext in ["exe", "cmd", "bat"] {
@@ -222,6 +240,10 @@ pub fn discover_binary(name: &str) -> Option<PathBuf> {
                     return Some(with_ext);
                 }
             }
+        }
+
+        if is_runnable(&candidate) {
+            return Some(candidate);
         }
     }
     None
@@ -305,6 +327,13 @@ mod tests {
         dir
     }
 
+    /// The platform's PATH list separator — `;` on Windows, `:` on
+    /// POSIX. Tests that build a fake PATH must use it: `env::split_paths`
+    /// splits on this and nothing else, so a colon-joined fixture on
+    /// Windows arrives as one unsplittable entry and the test measures
+    /// the fixture rather than the code.
+    const PATH_SEP: &str = if cfg!(windows) { ";" } else { ":" };
+
     // ── name validation ──────────────────────────────────────────
 
     #[test]
@@ -359,10 +388,8 @@ mod tests {
         // accident) should appear only once in the candidate list.
         let dir_a = unique_tmp("dedup-a");
         let path_with_dup = format!(
-            "{}:{}:{}",
-            dir_a.display(),
-            dir_a.display(),
-            dir_a.display()
+            "{a}{PATH_SEP}{a}{PATH_SEP}{a}",
+            a = dir_a.display(),
         );
         let _g = EnvGuard::set("PATH", &path_with_dup);
         let dirs = candidate_search_paths();
@@ -375,7 +402,7 @@ mod tests {
         // Parent PATH order is preserved; heuristic dirs come after.
         let dir_a = unique_tmp("first-a");
         let dir_b = unique_tmp("first-b");
-        let path = format!("{}:{}", dir_a.display(), dir_b.display());
+        let path = format!("{}{PATH_SEP}{}", dir_a.display(), dir_b.display());
         let _g = EnvGuard::set("PATH", &path);
         let dirs = candidate_search_paths();
         let pos_a = dirs
@@ -391,11 +418,14 @@ mod tests {
 
     #[test]
     fn candidate_search_paths_skips_empty_path_segments() {
-        // POSIX PATH like `:::foo` has empty entries that traditionally
-        // mean "current dir" — refusing to pollute the candidate list
-        // with empty paths is safer.
+        // A PATH like `:::foo` (`;;;foo` on Windows) has empty entries
+        // that traditionally mean "current dir" — refusing to pollute the
+        // candidate list with empty paths is safer.
         let dir_a = unique_tmp("skip-empty");
-        let path = format!("::{}::", dir_a.display());
+        let path = format!(
+            "{PATH_SEP}{PATH_SEP}{}{PATH_SEP}{PATH_SEP}",
+            dir_a.display(),
+        );
         let _g = EnvGuard::set("PATH", &path);
         let dirs = candidate_search_paths();
         for d in &dirs {
@@ -463,10 +493,31 @@ mod tests {
         let bin_name = "octopal-test-tool-003";
         let path_a = touch_executable(&dir_a, bin_name);
         touch_executable(&dir_b, bin_name);
-        let path_var = format!("{}:{}", dir_a.display(), dir_b.display());
+        let path_var = format!("{}{PATH_SEP}{}", dir_a.display(), dir_b.display());
         let _g = EnvGuard::set("PATH", &path_var);
 
         assert_eq!(discover_binary(bin_name), Some(path_a));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn discover_binary_prefers_extension_over_bare_shim() {
+        // npm installs `claude` (a POSIX shell shim, no extension) next
+        // to `claude.cmd`. `CreateProcess` cannot run the shim — it fails
+        // with "%1 is not a valid Win32 application" — so discovery must
+        // return the `.cmd` even though the bare name is found first in
+        // the same directory.
+        let dir = unique_tmp("win-ext-pref");
+        let bin_name = "octopal-test-tool-004";
+        let bare = touch_executable(&dir, bin_name);
+        let with_cmd = touch_executable(&dir, &format!("{bin_name}.cmd"));
+        let _g = EnvGuard::set("PATH", &dir.display().to_string());
+
+        assert_eq!(
+            discover_binary(bin_name),
+            Some(with_cmd),
+            "must not return the bare shim {bare:?}",
+        );
     }
 
     // ── augmented_path_value ─────────────────────────────────────
@@ -483,19 +534,24 @@ mod tests {
     }
 
     #[test]
-    fn augmented_path_value_uses_colon_separator() {
-        // POSIX-only — Windows path separator differs and we don't
-        // ship Windows in 5a-finalize scope.
+    fn augmented_path_value_uses_platform_separator() {
+        // The output must survive a round trip through `split_paths`,
+        // which is how every child process reads PATH. Asserting on a
+        // literal `:` passed on Windows for the wrong reason: a drive
+        // letter puts a colon in every absolute path.
         let dir_a = unique_tmp("sep-a");
         let dir_b = unique_tmp("sep-b");
-        let path = format!("{}:{}", dir_a.display(), dir_b.display());
+        let path = format!("{}{PATH_SEP}{}", dir_a.display(), dir_b.display());
         let _g = EnvGuard::set("PATH", &path);
         let aug = augmented_path_value();
-        // Both dirs visible AND separated by `:`, in input order.
-        let pos_a = aug.find(&dir_a.display().to_string()).expect("a in aug");
-        let pos_b = aug.find(&dir_b.display().to_string()).expect("b in aug");
-        assert!(pos_a < pos_b, "PATH order preserved in augmented value");
-        assert!(aug.contains(':'));
+
+        let split: Vec<PathBuf> = std::env::split_paths(&aug).collect();
+        let pos_a = split.iter().position(|d| *d == dir_a).expect("a in aug");
+        let pos_b = split.iter().position(|d| *d == dir_b).expect("b in aug");
+        assert!(
+            pos_a < pos_b,
+            "PATH order preserved in augmented value: {split:?}",
+        );
     }
 
     // ── env mutation guard ───────────────────────────────────────
