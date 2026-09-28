@@ -204,8 +204,8 @@ Octopal은 버전 태그를 푸시하면 GitHub Actions가 자동으로 빌드 &
 
 ```bash
 # 태그 찍고 푸시 — macOS + Windows 자동 빌드
-git tag v0.1.56
-git push origin v0.1.56
+git tag v0.1.57
+git push origin v0.1.57
 ```
 
 워크플로우 (`.github/workflows/release.yml`) 동작:

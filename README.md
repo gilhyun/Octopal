@@ -210,8 +210,8 @@ Octopal uses GitHub Actions to automatically build and release when a version ta
 
 ```bash
 # Tag a release and push — CI builds macOS + Windows automatically
-git tag v0.1.56
-git push origin v0.1.56
+git tag v0.1.57
+git push origin v0.1.57
 ```
 
 The workflow (`.github/workflows/release.yml`) does:

@@ -2,6 +2,19 @@
 
 All notable changes to Octopal will be documented in this file.
 
+## [0.1.57] - 2026-09-28
+
+### Fixes
+
+- Fixed Windows agent startup by normalizing working directories at the ACP boundary, using the platform PATH separator, and preferring executable extensions over npm POSIX shims.
+- Increased ACP initialization and session creation timeouts to accommodate slower cold starts.
+
+### Maintenance
+
+- Updated Vitest to 4.1.11 and refreshed vulnerable transitive frontend dependencies.
+- Updated rustls to 0.23.45 to fix TLS handshake validation (RUSTSEC-2026-0285).
+- Thanks to @BobieTrap for the Windows fixes and integration testing (#9).
+
 ## [0.1.56] - 2026-07-16
 
 ### Security
